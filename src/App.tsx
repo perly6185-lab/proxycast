@@ -1,33 +1,21 @@
 import { useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { Dashboard } from "./components/Dashboard";
-import { Providers } from "./components/Providers";
 import { SettingsPage } from "./components/settings";
-import { SwitchPage } from "./components/switch";
-import { ClientsPage } from "./components/clients";
-import { McpPage } from "./components/mcp";
-import { PromptsPage } from "./components/prompts";
 import { ApiServerPage } from "./components/api-server/ApiServerPage";
-import { SkillsPage } from "./components/skills";
 import { ProviderPoolPage } from "./components/provider-pool";
-import { RoutingPage } from "./components/routing";
-import { ResiliencePage } from "./components/resilience";
-import { ConfigPage } from "./components/config";
+import { RoutingManagementPage } from "./components/routing/RoutingManagementPage";
+import { ConfigManagementPage } from "./components/config/ConfigManagementPage";
+import { ExtensionsPage } from "./components/extensions";
 
 type Page =
   | "dashboard"
-  | "clients"
-  | "api-server"
-  | "providers"
-  | "settings"
-  | "switch"
-  | "mcp"
-  | "prompts"
-  | "skills"
   | "provider-pool"
-  | "routing"
-  | "resilience"
-  | "config";
+  | "routing-management"
+  | "config-management"
+  | "extensions"
+  | "api-server"
+  | "settings";
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>("dashboard");
@@ -38,28 +26,16 @@ function App() {
         return <Dashboard />;
       case "provider-pool":
         return <ProviderPoolPage />;
-      case "clients":
-        return <ClientsPage />;
+      case "routing-management":
+        return <RoutingManagementPage />;
+      case "config-management":
+        return <ConfigManagementPage />;
+      case "extensions":
+        return <ExtensionsPage />;
       case "api-server":
         return <ApiServerPage />;
-      case "providers":
-        return <Providers />;
       case "settings":
         return <SettingsPage />;
-      case "switch":
-        return <SwitchPage />;
-      case "mcp":
-        return <McpPage />;
-      case "prompts":
-        return <PromptsPage />;
-      case "skills":
-        return <SkillsPage />;
-      case "routing":
-        return <RoutingPage />;
-      case "resilience":
-        return <ResiliencePage />;
-      case "config":
-        return <ConfigPage />;
       default:
         return <Dashboard />;
     }

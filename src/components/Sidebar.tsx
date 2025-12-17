@@ -1,32 +1,22 @@
 import {
   LayoutDashboard,
   Settings,
-  Plug,
-  MessageSquare,
-  Monitor,
   Globe,
-  Boxes,
   Database,
   Route,
-  Shield,
   FileCode,
+  Puzzle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Page =
   | "dashboard"
-  | "clients"
-  | "api-server"
-  | "providers"
-  | "settings"
-  | "switch"
-  | "mcp"
-  | "prompts"
-  | "skills"
   | "provider-pool"
-  | "routing"
-  | "resilience"
-  | "config";
+  | "routing-management"
+  | "config-management"
+  | "extensions"
+  | "api-server"
+  | "settings";
 
 interface SidebarProps {
   currentPage: Page;
@@ -36,14 +26,10 @@ interface SidebarProps {
 const navItems = [
   { id: "dashboard" as Page, label: "仪表盘", icon: LayoutDashboard },
   { id: "provider-pool" as Page, label: "凭证池", icon: Database },
-  { id: "routing" as Page, label: "智能路由", icon: Route },
-  { id: "resilience" as Page, label: "容错配置", icon: Shield },
-  { id: "config" as Page, label: "配置管理", icon: FileCode },
-  { id: "clients" as Page, label: "配置切换", icon: Monitor },
+  { id: "routing-management" as Page, label: "路由管理", icon: Route },
+  { id: "config-management" as Page, label: "配置管理", icon: FileCode },
+  { id: "extensions" as Page, label: "扩展", icon: Puzzle },
   { id: "api-server" as Page, label: "API Server", icon: Globe },
-  { id: "mcp" as Page, label: "MCP", icon: Plug },
-  { id: "prompts" as Page, label: "Prompts", icon: MessageSquare },
-  { id: "skills" as Page, label: "Skills", icon: Boxes },
   { id: "settings" as Page, label: "设置", icon: Settings },
 ];
 

@@ -55,7 +55,11 @@ function ToggleSwitch({
   );
 }
 
-export function PromptsPage() {
+interface PromptsPageProps {
+  hideHeader?: boolean;
+}
+
+export function PromptsPage({ hideHeader = false }: PromptsPageProps) {
   const [activeApp, setActiveApp] = useState<AppType>("claude");
   const {
     prompts,
@@ -179,12 +183,14 @@ export function PromptsPage() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="mb-4">
-        <h2 className="text-2xl font-bold">Prompts</h2>
-        <p className="text-muted-foreground">
-          管理不同应用的系统提示词（{currentApp.filename}）
-        </p>
-      </div>
+      {!hideHeader && (
+        <div className="mb-4">
+          <h2 className="text-2xl font-bold">Prompts</h2>
+          <p className="text-muted-foreground">
+            管理不同应用的系统提示词（{currentApp.filename}）
+          </p>
+        </div>
+      )}
 
       <HelpTip title="什么是 Prompts？" variant="amber">
         <ul className="list-disc list-inside space-y-1 text-sm text-amber-700 dark:text-amber-400">

@@ -4,3 +4,4 @@ export { ExclusionList } from "./ExclusionList";
 export { InjectionRules } from "./InjectionRules";
 export { RoutingPage } from "./RoutingPage";
 export type { RoutingPageRef } from "./RoutingPage";
+export { RoutingManagementPage } from "./RoutingManagementPage";

@@ -8,6 +8,7 @@ import type { AppType } from "@/lib/api/skills";
 
 interface SkillsPageProps {
   initialApp?: AppType;
+  hideHeader?: boolean;
 }
 
 export interface SkillsPageRef {
@@ -16,7 +17,7 @@ export interface SkillsPageRef {
 }
 
 export const SkillsPage = forwardRef<SkillsPageRef, SkillsPageProps>(
-  ({ initialApp = "claude" }, ref) => {
+  ({ initialApp = "claude", hideHeader = false }, ref) => {
     const [app] = useState<AppType>(initialApp);
     const [searchQuery, setSearchQuery] = useState("");
     const [filterStatus, setFilterStatus] = useState<
@@ -92,14 +93,38 @@ export const SkillsPage = forwardRef<SkillsPageRef, SkillsPageProps>(
 
     return (
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold">Skills</h2>
-            <p className="text-muted-foreground">
-              浏览和安装 Claude Code Skills
-            </p>
+        {!hideHeader && (
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-bold">Skills</h2>
+              <p className="text-muted-foreground">
+                浏览和安装 Claude Code Skills
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={refresh}
+                disabled={loading}
+                className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+              >
+                <RefreshCw
+                  className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
+                />
+                刷新
+              </button>
+              <button
+                onClick={() => setRepoManagerOpen(true)}
+                className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
+              >
+                <Settings className="h-4 w-4" />
+                仓库管理
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
+        )}
+
+        {hideHeader && (
+          <div className="flex items-center justify-end gap-2">
             <button
               onClick={refresh}
               disabled={loading}
@@ -118,7 +143,7 @@ export const SkillsPage = forwardRef<SkillsPageRef, SkillsPageProps>(
               仓库管理
             </button>
           </div>
-        </div>
+        )}
 
         <HelpTip title="什么是 Skills？" variant="green">
           <ul className="list-disc list-inside space-y-1 text-sm text-green-700 dark:text-green-400">

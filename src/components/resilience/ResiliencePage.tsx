@@ -9,7 +9,14 @@ export interface ResiliencePageRef {
 
 type TabType = "retry" | "failover";
 
-export const ResiliencePage = forwardRef<ResiliencePageRef>((_props, ref) => {
+interface ResiliencePageProps {
+  hideHeader?: boolean;
+}
+
+export const ResiliencePage = forwardRef<
+  ResiliencePageRef,
+  ResiliencePageProps
+>(({ hideHeader = false }, ref) => {
   const [activeTab, setActiveTab] = useState<TabType>("retry");
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -28,22 +35,36 @@ export const ResiliencePage = forwardRef<ResiliencePageRef>((_props, ref) => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold flex items-center gap-2">
-            <Shield className="h-6 w-6" />
-            容错配置
-          </h2>
-          <p className="text-muted-foreground">配置重试机制和故障转移策略</p>
+      {!hideHeader && (
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-bold flex items-center gap-2">
+              <Shield className="h-6 w-6" />
+              容错配置
+            </h2>
+            <p className="text-muted-foreground">配置重试机制和故障转移策略</p>
+          </div>
+          <button
+            onClick={refresh}
+            className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
+          >
+            <RefreshCw className="h-4 w-4" />
+            刷新
+          </button>
         </div>
-        <button
-          onClick={refresh}
-          className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
-        >
-          <RefreshCw className="h-4 w-4" />
-          刷新
-        </button>
-      </div>
+      )}
+
+      {hideHeader && (
+        <div className="flex items-center justify-end">
+          <button
+            onClick={refresh}
+            className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
+          >
+            <RefreshCw className="h-4 w-4" />
+            刷新
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-2 border-b">

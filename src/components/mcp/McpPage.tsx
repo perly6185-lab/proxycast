@@ -59,7 +59,11 @@ const defaultServerConfig = JSON.stringify(
   2,
 );
 
-export function McpPage() {
+interface McpPageProps {
+  hideHeader?: boolean;
+}
+
+export function McpPage({ hideHeader = false }: McpPageProps) {
   const {
     servers,
     loading,
@@ -234,14 +238,72 @@ export function McpPage() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="mb-4 flex items-start justify-between">
-        <div>
-          <h2 className="text-2xl font-bold">MCP 服务器</h2>
-          <p className="text-muted-foreground">
-            管理 Model Context Protocol 服务器配置，同步到外部应用
-          </p>
+      {!hideHeader && (
+        <div className="mb-4 flex items-start justify-between">
+          <div>
+            <h2 className="text-2xl font-bold">MCP 服务器</h2>
+            <p className="text-muted-foreground">
+              管理 Model Context Protocol 服务器配置，同步到外部应用
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* 从外部导入按钮 */}
+            <div className="relative">
+              <button
+                onClick={() => setShowImportMenu(!showImportMenu)}
+                disabled={importing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border hover:bg-muted text-sm"
+                title="从外部应用导入 MCP 配置"
+              >
+                <Download
+                  className={cn("h-4 w-4", importing && "animate-pulse")}
+                />
+                {importing ? "导入中..." : "导入"}
+              </button>
+              {showImportMenu && (
+                <div className="absolute right-0 top-full mt-1 w-40 py-1 bg-popover border rounded-lg shadow-lg z-10">
+                  <button
+                    onClick={() => handleImport()}
+                    className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted"
+                  >
+                    全部导入
+                  </button>
+                  <button
+                    onClick={() => handleImport("claude")}
+                    className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted"
+                  >
+                    从 Claude Code
+                  </button>
+                  <button
+                    onClick={() => handleImport("codex")}
+                    className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted"
+                  >
+                    从 Codex
+                  </button>
+                  <button
+                    onClick={() => handleImport("gemini")}
+                    className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted"
+                  >
+                    从 Gemini CLI
+                  </button>
+                </div>
+              )}
+            </div>
+            {/* 同步到外部按钮 */}
+            <button
+              onClick={handleSyncToLive}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm"
+              title="同步配置到所有外部应用"
+            >
+              <Upload className="h-4 w-4" />
+              同步
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+      )}
+
+      {hideHeader && (
+        <div className="mb-4 flex items-center justify-end gap-2">
           {/* 从外部导入按钮 */}
           <div className="relative">
             <button
@@ -294,7 +356,7 @@ export function McpPage() {
             同步
           </button>
         </div>
-      </div>
+      )}
 
       <HelpTip title="什么是 MCP？" variant="blue">
         <ul className="list-disc list-inside space-y-1 text-sm text-blue-700 dark:text-blue-400">

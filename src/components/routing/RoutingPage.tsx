@@ -21,367 +21,413 @@ export interface RoutingPageRef {
 
 type TabType = "aliases" | "rules" | "exclusions" | "injection";
 
-export const RoutingPage = forwardRef<RoutingPageRef>((_props, ref) => {
-  const [activeTab, setActiveTab] = useState<TabType>("aliases");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+interface RoutingPageProps {
+  hideHeader?: boolean;
+}
 
-  // Data state
-  const [aliases, setAliases] = useState<ModelAlias[]>([]);
-  const [rules, setRules] = useState<RoutingRule[]>([]);
-  const [exclusions, setExclusions] = useState<Record<ProviderType, string[]>>(
-    {} as Record<ProviderType, string[]>,
-  );
-  const [injectionRules, setInjectionRules] = useState<InjectionRule[]>([]);
-  const [injectionEnabled, setInjectionEnabled] = useState(false);
+export const RoutingPage = forwardRef<RoutingPageRef, RoutingPageProps>(
+  ({ hideHeader = false }, ref) => {
+    const [activeTab, setActiveTab] = useState<TabType>("aliases");
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
-  // Presets state
-  const [presets, setPresets] = useState<RecommendedPreset[]>([]);
-  const [showPresets, setShowPresets] = useState(false);
-  const [applyingPreset, setApplyingPreset] = useState<string | null>(null);
+    // Data state
+    const [aliases, setAliases] = useState<ModelAlias[]>([]);
+    const [rules, setRules] = useState<RoutingRule[]>([]);
+    const [exclusions, setExclusions] = useState<
+      Record<ProviderType, string[]>
+    >({} as Record<ProviderType, string[]>);
+    const [injectionRules, setInjectionRules] = useState<InjectionRule[]>([]);
+    const [injectionEnabled, setInjectionEnabled] = useState(false);
 
-  const refresh = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [
-        aliasesData,
-        rulesData,
-        exclusionsData,
-        injectionConfig,
-        presetsData,
-      ] = await Promise.all([
-        routerApi.getModelAliases(),
-        routerApi.getRoutingRules(),
-        routerApi.getExclusions(),
-        injectionApi.getInjectionConfig(),
-        routerApi.getRecommendedPresets(),
-      ]);
-      setAliases(aliasesData);
-      setRules(rulesData);
-      setExclusions(exclusionsData);
-      setInjectionRules(injectionConfig.rules);
-      setInjectionEnabled(injectionConfig.enabled);
-      setPresets(presetsData);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
+    // Presets state
+    const [presets, setPresets] = useState<RecommendedPreset[]>([]);
+    const [showPresets, setShowPresets] = useState(false);
+    const [applyingPreset, setApplyingPreset] = useState<string | null>(null);
 
-  const handleApplyPreset = async (
-    presetId: string,
-    merge: boolean = false,
-  ) => {
-    setApplyingPreset(presetId);
-    try {
-      await routerApi.applyRecommendedPreset(presetId, merge);
+    const refresh = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const [
+          aliasesData,
+          rulesData,
+          exclusionsData,
+          injectionConfig,
+          presetsData,
+        ] = await Promise.all([
+          routerApi.getModelAliases(),
+          routerApi.getRoutingRules(),
+          routerApi.getExclusions(),
+          injectionApi.getInjectionConfig(),
+          routerApi.getRecommendedPresets(),
+        ]);
+        setAliases(aliasesData);
+        setRules(rulesData);
+        setExclusions(exclusionsData);
+        setInjectionRules(injectionConfig.rules);
+        setInjectionEnabled(injectionConfig.enabled);
+        setPresets(presetsData);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    const handleApplyPreset = async (
+      presetId: string,
+      merge: boolean = false,
+    ) => {
+      setApplyingPreset(presetId);
+      try {
+        await routerApi.applyRecommendedPreset(presetId, merge);
+        await refresh();
+        setShowPresets(false);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setApplyingPreset(null);
+      }
+    };
+
+    const handleClearAll = async () => {
+      if (!confirm("确定要清空所有路由配置吗？此操作不可撤销。")) return;
+      try {
+        await routerApi.clearAllRoutingConfig();
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    };
+
+    useImperativeHandle(ref, () => ({
+      refresh,
+    }));
+
+    useEffect(() => {
+      refresh();
+    }, []);
+
+    // Alias handlers
+    const handleAddAlias = async (alias: string, actual: string) => {
+      await routerApi.addModelAlias(alias, actual);
       await refresh();
-      setShowPresets(false);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setApplyingPreset(null);
-    }
-  };
+    };
 
-  const handleClearAll = async () => {
-    if (!confirm("确定要清空所有路由配置吗？此操作不可撤销。")) return;
-    try {
-      await routerApi.clearAllRoutingConfig();
+    const handleRemoveAlias = async (alias: string) => {
+      await routerApi.removeModelAlias(alias);
       await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
+    };
 
-  useImperativeHandle(ref, () => ({
-    refresh,
-  }));
+    // Rule handlers
+    const handleAddRule = async (rule: RoutingRule) => {
+      await routerApi.addRoutingRule(rule);
+      await refresh();
+    };
 
-  useEffect(() => {
-    refresh();
-  }, []);
+    const handleRemoveRule = async (pattern: string) => {
+      await routerApi.removeRoutingRule(pattern);
+      await refresh();
+    };
 
-  // Alias handlers
-  const handleAddAlias = async (alias: string, actual: string) => {
-    await routerApi.addModelAlias(alias, actual);
-    await refresh();
-  };
+    const handleUpdateRule = async (pattern: string, rule: RoutingRule) => {
+      await routerApi.updateRoutingRule(pattern, rule);
+      await refresh();
+    };
 
-  const handleRemoveAlias = async (alias: string) => {
-    await routerApi.removeModelAlias(alias);
-    await refresh();
-  };
+    // Exclusion handlers
+    const handleAddExclusion = async (
+      provider: ProviderType,
+      pattern: string,
+    ) => {
+      await routerApi.addExclusion(provider, pattern);
+      await refresh();
+    };
 
-  // Rule handlers
-  const handleAddRule = async (rule: RoutingRule) => {
-    await routerApi.addRoutingRule(rule);
-    await refresh();
-  };
+    const handleRemoveExclusion = async (
+      provider: ProviderType,
+      pattern: string,
+    ) => {
+      await routerApi.removeExclusion(provider, pattern);
+      await refresh();
+    };
 
-  const handleRemoveRule = async (pattern: string) => {
-    await routerApi.removeRoutingRule(pattern);
-    await refresh();
-  };
+    // Injection handlers
+    const handleToggleInjection = async (enabled: boolean) => {
+      await injectionApi.setInjectionEnabled(enabled);
+      setInjectionEnabled(enabled);
+    };
 
-  const handleUpdateRule = async (pattern: string, rule: RoutingRule) => {
-    await routerApi.updateRoutingRule(pattern, rule);
-    await refresh();
-  };
+    const handleAddInjectionRule = async (rule: InjectionRule) => {
+      await injectionApi.addInjectionRule(rule);
+      await refresh();
+    };
 
-  // Exclusion handlers
-  const handleAddExclusion = async (
-    provider: ProviderType,
-    pattern: string,
-  ) => {
-    await routerApi.addExclusion(provider, pattern);
-    await refresh();
-  };
+    const handleRemoveInjectionRule = async (id: string) => {
+      await injectionApi.removeInjectionRule(id);
+      await refresh();
+    };
 
-  const handleRemoveExclusion = async (
-    provider: ProviderType,
-    pattern: string,
-  ) => {
-    await routerApi.removeExclusion(provider, pattern);
-    await refresh();
-  };
+    const handleUpdateInjectionRule = async (
+      id: string,
+      rule: InjectionRule,
+    ) => {
+      await injectionApi.updateInjectionRule(id, rule);
+      await refresh();
+    };
 
-  // Injection handlers
-  const handleToggleInjection = async (enabled: boolean) => {
-    await injectionApi.setInjectionEnabled(enabled);
-    setInjectionEnabled(enabled);
-  };
+    const tabs: { id: TabType; label: string; count: number }[] = [
+      { id: "aliases", label: "模型别名", count: aliases.length },
+      { id: "rules", label: "路由规则", count: rules.length },
+      {
+        id: "exclusions",
+        label: "排除列表",
+        count: Object.values(exclusions).flat().length,
+      },
+      { id: "injection", label: "参数注入", count: injectionRules.length },
+    ];
 
-  const handleAddInjectionRule = async (rule: InjectionRule) => {
-    await injectionApi.addInjectionRule(rule);
-    await refresh();
-  };
-
-  const handleRemoveInjectionRule = async (id: string) => {
-    await injectionApi.removeInjectionRule(id);
-    await refresh();
-  };
-
-  const handleUpdateInjectionRule = async (id: string, rule: InjectionRule) => {
-    await injectionApi.updateInjectionRule(id, rule);
-    await refresh();
-  };
-
-  const tabs: { id: TabType; label: string; count: number }[] = [
-    { id: "aliases", label: "模型别名", count: aliases.length },
-    { id: "rules", label: "路由规则", count: rules.length },
-    {
-      id: "exclusions",
-      label: "排除列表",
-      count: Object.values(exclusions).flat().length,
-    },
-    { id: "injection", label: "参数注入", count: injectionRules.length },
-  ];
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold flex items-center gap-2">
-            <Route className="h-6 w-6" />
-            智能路由
-          </h2>
-          <p className="text-muted-foreground">
-            配置模型映射、路由规则和排除列表
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowPresets(true)}
-            className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90"
-          >
-            <Sparkles className="h-4 w-4" />
-            推荐配置
-          </button>
-          <button
-            onClick={handleClearAll}
-            disabled={loading || (aliases.length === 0 && rules.length === 0)}
-            className="flex items-center gap-2 rounded-lg border border-red-300 px-3 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30"
-          >
-            <Trash2 className="h-4 w-4" />
-            清空
-          </button>
-          <button
-            onClick={refresh}
-            disabled={loading}
-            className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-            刷新
-          </button>
-        </div>
-      </div>
-
-      {/* Presets Modal */}
-      {showPresets && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-2xl rounded-lg bg-background p-6 shadow-xl max-h-[80vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold flex items-center gap-2">
-                <Sparkles className="h-5 w-5 text-primary" />
-                推荐配置
-              </h3>
+    return (
+      <div className="space-y-6">
+        {!hideHeader && (
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-bold flex items-center gap-2">
+                <Route className="h-6 w-6" />
+                智能路由
+              </h2>
+              <p className="text-muted-foreground">
+                配置模型映射、路由规则和排除列表
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setShowPresets(false)}
-                className="text-muted-foreground hover:text-foreground"
+                onClick={() => setShowPresets(true)}
+                className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90"
               >
-                ✕
+                <Sparkles className="h-4 w-4" />
+                推荐配置
+              </button>
+              <button
+                onClick={handleClearAll}
+                disabled={
+                  loading || (aliases.length === 0 && rules.length === 0)
+                }
+                className="flex items-center gap-2 rounded-lg border border-red-300 px-3 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30"
+              >
+                <Trash2 className="h-4 w-4" />
+                清空
+              </button>
+              <button
+                onClick={refresh}
+                disabled={loading}
+                className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+              >
+                <RefreshCw
+                  className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
+                />
+                刷新
               </button>
             </div>
-            <p className="text-sm text-muted-foreground mb-4">
-              选择一个预设配置快速设置路由规则和模型别名
-            </p>
-            <div className="space-y-3">
-              {presets.map((preset) => (
-                <div
-                  key={preset.id}
-                  className="rounded-lg border p-4 hover:border-primary/50 transition-colors"
+          </div>
+        )}
+
+        {/* 当隐藏标题时，显示操作按钮 */}
+        {hideHeader && (
+          <div className="flex items-center justify-end gap-2">
+            <button
+              onClick={() => setShowPresets(true)}
+              className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90"
+            >
+              <Sparkles className="h-4 w-4" />
+              推荐配置
+            </button>
+            <button
+              onClick={handleClearAll}
+              disabled={loading || (aliases.length === 0 && rules.length === 0)}
+              className="flex items-center gap-2 rounded-lg border border-red-300 px-3 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30"
+            >
+              <Trash2 className="h-4 w-4" />
+              清空
+            </button>
+            <button
+              onClick={refresh}
+              disabled={loading}
+              className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
+              />
+              刷新
+            </button>
+          </div>
+        )}
+
+        {/* Presets Modal */}
+        {showPresets && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+            <div className="w-full max-w-2xl rounded-lg bg-background p-6 shadow-xl max-h-[80vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-primary" />
+                  推荐配置
+                </h3>
+                <button
+                  onClick={() => setShowPresets(false)}
+                  className="text-muted-foreground hover:text-foreground"
                 >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <h4 className="font-medium">{preset.name}</h4>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        {preset.description}
-                      </p>
-                      <div className="flex gap-4 mt-2 text-xs text-muted-foreground">
-                        <span>{preset.aliases.length} 个别名</span>
-                        <span>{preset.rules.length} 条规则</span>
+                  ✕
+                </button>
+              </div>
+              <p className="text-sm text-muted-foreground mb-4">
+                选择一个预设配置快速设置路由规则和模型别名
+              </p>
+              <div className="space-y-3">
+                {presets.map((preset) => (
+                  <div
+                    key={preset.id}
+                    className="rounded-lg border p-4 hover:border-primary/50 transition-colors"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <h4 className="font-medium">{preset.name}</h4>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {preset.description}
+                        </p>
+                        <div className="flex gap-4 mt-2 text-xs text-muted-foreground">
+                          <span>{preset.aliases.length} 个别名</span>
+                          <span>{preset.rules.length} 条规则</span>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 ml-4">
+                        <button
+                          onClick={() => handleApplyPreset(preset.id, true)}
+                          disabled={applyingPreset !== null}
+                          className="flex items-center gap-1 rounded px-3 py-1.5 text-sm border hover:bg-muted disabled:opacity-50"
+                        >
+                          {applyingPreset === preset.id ? (
+                            <RefreshCw className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Check className="h-3 w-3" />
+                          )}
+                          合并
+                        </button>
+                        <button
+                          onClick={() => handleApplyPreset(preset.id, false)}
+                          disabled={applyingPreset !== null}
+                          className="flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                        >
+                          {applyingPreset === preset.id ? (
+                            <RefreshCw className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Check className="h-3 w-3" />
+                          )}
+                          应用
+                        </button>
                       </div>
                     </div>
-                    <div className="flex gap-2 ml-4">
-                      <button
-                        onClick={() => handleApplyPreset(preset.id, true)}
-                        disabled={applyingPreset !== null}
-                        className="flex items-center gap-1 rounded px-3 py-1.5 text-sm border hover:bg-muted disabled:opacity-50"
-                      >
-                        {applyingPreset === preset.id ? (
-                          <RefreshCw className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <Check className="h-3 w-3" />
-                        )}
-                        合并
-                      </button>
-                      <button
-                        onClick={() => handleApplyPreset(preset.id, false)}
-                        disabled={applyingPreset !== null}
-                        className="flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                      >
-                        {applyingPreset === preset.id ? (
-                          <RefreshCw className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <Check className="h-3 w-3" />
-                        )}
-                        应用
-                      </button>
-                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
+        )}
+
+        <HelpTip title="智能路由说明" variant="blue">
+          <ul className="list-disc list-inside space-y-1 text-sm text-blue-700 dark:text-blue-400">
+            <li>
+              <span className="font-medium">模型别名</span>
+              ：使用熟悉的模型名（如 gpt-4）映射到实际模型
+            </li>
+            <li>
+              <span className="font-medium">路由规则</span>
+              ：将特定模型路由到指定 Provider，支持通配符匹配
+            </li>
+            <li>
+              <span className="font-medium">排除列表</span>
+              ：从特定 Provider 排除某些模型
+            </li>
+            <li>精确匹配规则优先于通配符规则</li>
+          </ul>
+        </HelpTip>
+
+        {error && (
+          <div className="rounded-lg border border-red-500 bg-red-50 p-4 text-red-700 dark:bg-red-950/30">
+            {error}
+          </div>
+        )}
+
+        {/* Tabs */}
+        <div className="flex gap-2 border-b">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px flex items-center gap-2 ${
+                activeTab === tab.id
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {tab.label}
+              {tab.count > 0 && (
+                <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs">
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
-      )}
 
-      <HelpTip title="智能路由说明" variant="blue">
-        <ul className="list-disc list-inside space-y-1 text-sm text-blue-700 dark:text-blue-400">
-          <li>
-            <span className="font-medium">模型别名</span>
-            ：使用熟悉的模型名（如 gpt-4）映射到实际模型
-          </li>
-          <li>
-            <span className="font-medium">路由规则</span>
-            ：将特定模型路由到指定 Provider，支持通配符匹配
-          </li>
-          <li>
-            <span className="font-medium">排除列表</span>
-            ：从特定 Provider 排除某些模型
-          </li>
-          <li>精确匹配规则优先于通配符规则</li>
-        </ul>
-      </HelpTip>
-
-      {error && (
-        <div className="rounded-lg border border-red-500 bg-red-50 p-4 text-red-700 dark:bg-red-950/30">
-          {error}
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div className="flex gap-2 border-b">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px flex items-center gap-2 ${
-              activeTab === tab.id
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {tab.label}
-            {tab.count > 0 && (
-              <span className="rounded-full bg-muted px-1.5 py-0.5 text-xs">
-                {tab.count}
-              </span>
+        {/* Tab content */}
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        ) : (
+          <div className="py-4">
+            {activeTab === "aliases" && (
+              <ModelMapping
+                aliases={aliases}
+                onAdd={handleAddAlias}
+                onRemove={handleRemoveAlias}
+                loading={loading}
+              />
             )}
-          </button>
-        ))}
+            {activeTab === "rules" && (
+              <RoutingRules
+                rules={rules}
+                onAdd={handleAddRule}
+                onRemove={handleRemoveRule}
+                onUpdate={handleUpdateRule}
+                loading={loading}
+              />
+            )}
+            {activeTab === "exclusions" && (
+              <ExclusionList
+                exclusions={exclusions}
+                onAdd={handleAddExclusion}
+                onRemove={handleRemoveExclusion}
+                loading={loading}
+              />
+            )}
+            {activeTab === "injection" && (
+              <InjectionRules
+                rules={injectionRules}
+                enabled={injectionEnabled}
+                onToggleEnabled={handleToggleInjection}
+                onAdd={handleAddInjectionRule}
+                onRemove={handleRemoveInjectionRule}
+                onUpdate={handleUpdateInjectionRule}
+                loading={loading}
+              />
+            )}
+          </div>
+        )}
       </div>
-
-      {/* Tab content */}
-      {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-        </div>
-      ) : (
-        <div className="py-4">
-          {activeTab === "aliases" && (
-            <ModelMapping
-              aliases={aliases}
-              onAdd={handleAddAlias}
-              onRemove={handleRemoveAlias}
-              loading={loading}
-            />
-          )}
-          {activeTab === "rules" && (
-            <RoutingRules
-              rules={rules}
-              onAdd={handleAddRule}
-              onRemove={handleRemoveRule}
-              onUpdate={handleUpdateRule}
-              loading={loading}
-            />
-          )}
-          {activeTab === "exclusions" && (
-            <ExclusionList
-              exclusions={exclusions}
-              onAdd={handleAddExclusion}
-              onRemove={handleRemoveExclusion}
-              loading={loading}
-            />
-          )}
-          {activeTab === "injection" && (
-            <InjectionRules
-              rules={injectionRules}
-              enabled={injectionEnabled}
-              onToggleEnabled={handleToggleInjection}
-              onAdd={handleAddInjectionRule}
-              onRemove={handleRemoveInjectionRule}
-              onUpdate={handleUpdateInjectionRule}
-              loading={loading}
-            />
-          )}
-        </div>
-      )}
-    </div>
-  );
-});
+    );
+  },
+);
 
 RoutingPage.displayName = "RoutingPage";
