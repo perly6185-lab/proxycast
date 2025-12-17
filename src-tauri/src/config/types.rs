@@ -7,6 +7,66 @@ use crate::injection::{InjectionMode, InjectionRule};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// ============ 凭证池配置类型 ============
+
+/// 凭证池配置
+///
+/// 管理多个 Provider 的多个凭证，支持负载均衡
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct CredentialPoolConfig {
+    /// Kiro 凭证列表（OAuth）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kiro: Vec<CredentialEntry>,
+    /// Gemini 凭证列表（OAuth）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gemini: Vec<CredentialEntry>,
+    /// Qwen 凭证列表（OAuth）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub qwen: Vec<CredentialEntry>,
+    /// OpenAI 凭证列表（API Key）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub openai: Vec<ApiKeyEntry>,
+    /// Claude 凭证列表（API Key）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claude: Vec<ApiKeyEntry>,
+}
+
+/// OAuth 凭证条目
+///
+/// 用于 Kiro、Gemini、Qwen 等 OAuth 认证的 Provider
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CredentialEntry {
+    /// 凭证 ID
+    pub id: String,
+    /// Token 文件路径（相对于 auth_dir）
+    pub token_file: String,
+    /// 是否禁用
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+/// API Key 凭证条目
+///
+/// 用于 OpenAI、Claude 等 API Key 认证的 Provider
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ApiKeyEntry {
+    /// 凭证 ID
+    pub id: String,
+    /// API Key
+    pub api_key: String,
+    /// 自定义 Base URL
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// 是否禁用
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+/// 默认 auth_dir 路径
+fn default_auth_dir() -> String {
+    "~/.proxycast/auth".to_string()
+}
+
 /// 主配置结构
 ///
 /// 支持两种格式：
@@ -35,6 +95,12 @@ pub struct Config {
     /// 参数注入配置
     #[serde(default)]
     pub injection: InjectionSettings,
+    /// 认证目录路径（存储 OAuth Token 文件，支持 ~ 展开）
+    #[serde(default = "default_auth_dir")]
+    pub auth_dir: String,
+    /// 凭证池配置
+    #[serde(default)]
+    pub credential_pool: CredentialPoolConfig,
 }
 
 /// 服务器配置
@@ -372,6 +438,8 @@ impl Default for Config {
             retry: RetrySettings::default(),
             logging: LoggingConfig::default(),
             injection: InjectionSettings::default(),
+            auth_dir: default_auth_dir(),
+            credential_pool: CredentialPoolConfig::default(),
         }
     }
 }
@@ -394,6 +462,99 @@ mod unit_tests {
         assert!(config.logging.enabled);
         assert!(!config.injection.enabled);
         assert!(config.injection.rules.is_empty());
+        // 新增字段测试
+        assert_eq!(config.auth_dir, "~/.proxycast/auth");
+        assert!(config.credential_pool.kiro.is_empty());
+        assert!(config.credential_pool.openai.is_empty());
+    }
+
+    #[test]
+    fn test_credential_pool_config_default() {
+        let pool = CredentialPoolConfig::default();
+        assert!(pool.kiro.is_empty());
+        assert!(pool.gemini.is_empty());
+        assert!(pool.qwen.is_empty());
+        assert!(pool.openai.is_empty());
+        assert!(pool.claude.is_empty());
+    }
+
+    #[test]
+    fn test_credential_entry_serialization() {
+        let entry = CredentialEntry {
+            id: "kiro-main".to_string(),
+            token_file: "kiro/main-token.json".to_string(),
+            disabled: false,
+        };
+        let yaml = serde_yaml::to_string(&entry).unwrap();
+        assert!(yaml.contains("id: kiro-main"));
+        assert!(yaml.contains("token_file: kiro/main-token.json"));
+
+        let parsed: CredentialEntry = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, entry);
+    }
+
+    #[test]
+    fn test_api_key_entry_serialization() {
+        let entry = ApiKeyEntry {
+            id: "openai-main".to_string(),
+            api_key: "sk-test-key".to_string(),
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            disabled: false,
+        };
+        let yaml = serde_yaml::to_string(&entry).unwrap();
+        assert!(yaml.contains("id: openai-main"));
+        assert!(yaml.contains("api_key: sk-test-key"));
+
+        let parsed: ApiKeyEntry = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, entry);
+    }
+
+    #[test]
+    fn test_api_key_entry_without_base_url() {
+        let entry = ApiKeyEntry {
+            id: "claude-main".to_string(),
+            api_key: "sk-ant-test".to_string(),
+            base_url: None,
+            disabled: true,
+        };
+        let yaml = serde_yaml::to_string(&entry).unwrap();
+        // base_url should be skipped when None
+        assert!(!yaml.contains("base_url"));
+        assert!(yaml.contains("disabled: true"));
+
+        let parsed: ApiKeyEntry = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, entry);
+    }
+
+    #[test]
+    fn test_credential_pool_config_serialization() {
+        let pool = CredentialPoolConfig {
+            kiro: vec![CredentialEntry {
+                id: "kiro-1".to_string(),
+                token_file: "kiro/token-1.json".to_string(),
+                disabled: false,
+            }],
+            gemini: vec![],
+            qwen: vec![],
+            openai: vec![ApiKeyEntry {
+                id: "openai-1".to_string(),
+                api_key: "sk-xxx".to_string(),
+                base_url: None,
+                disabled: false,
+            }],
+            claude: vec![],
+        };
+
+        let yaml = serde_yaml::to_string(&pool).unwrap();
+        // Empty vecs should be skipped
+        assert!(!yaml.contains("gemini"));
+        assert!(!yaml.contains("qwen"));
+        assert!(!yaml.contains("claude"));
+        assert!(yaml.contains("kiro"));
+        assert!(yaml.contains("openai"));
+
+        let parsed: CredentialPoolConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, pool);
     }
 
     #[test]

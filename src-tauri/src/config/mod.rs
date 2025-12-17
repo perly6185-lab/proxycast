@@ -3,19 +3,31 @@
 //! 提供 YAML 配置文件支持、热重载和配置导入导出功能
 //! 同时保持与旧版 JSON 配置的向后兼容性
 
+mod export;
 mod hot_reload;
+mod import;
+mod path_utils;
 mod types;
 mod yaml;
 
+pub use export::{
+    base64_decode, base64_encode, ExportBundle, ExportError, ExportOptions, ExportService,
+    REDACTED_PLACEHOLDER,
+};
 pub use hot_reload::{
     ConfigChangeEvent, ConfigChangeKind, FileWatcher, HotReloadError, HotReloadManager,
     HotReloadStatus, ReloadResult,
 };
+pub use import::{ImportError, ImportOptions, ImportResult, ImportService, ValidationResult};
+pub use path_utils::{collapse_tilde, contains_tilde, expand_tilde};
 pub use types::{
-    Config, CustomProviderConfig, InjectionRuleConfig, InjectionSettings, LoggingConfig,
-    ProviderConfig, ProvidersConfig, RetrySettings, RoutingConfig, RoutingRuleConfig, ServerConfig,
+    ApiKeyEntry, Config, CredentialEntry, CredentialPoolConfig, CustomProviderConfig,
+    InjectionRuleConfig, InjectionSettings, LoggingConfig, ProviderConfig, ProvidersConfig,
+    RetrySettings, RoutingConfig, RoutingRuleConfig, ServerConfig,
 };
-pub use yaml::{load_config, save_config, save_config_yaml, ConfigError, ConfigManager};
+pub use yaml::{
+    load_config, save_config, save_config_yaml, ConfigError, ConfigManager, YamlService,
+};
 
 #[cfg(test)]
 mod tests;

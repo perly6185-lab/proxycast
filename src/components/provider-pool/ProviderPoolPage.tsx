@@ -87,7 +87,8 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
       setDeleteConfirm(null);
       setDeletingCredentials((prev) => new Set(prev).add(uuid));
       try {
-        await deleteCredential(uuid);
+        // Pass activeTab (provider_type) to enable YAML config sync
+        await deleteCredential(uuid, activeTab);
       } catch (e) {
         showError(e instanceof Error ? e.message : String(e), "delete", uuid);
       } finally {

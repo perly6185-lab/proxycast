@@ -184,6 +184,11 @@ impl Injector {
         self.rules.iter().filter(|r| r.matches(model)).collect()
     }
 
+    /// 清空所有规则
+    pub fn clear(&mut self) {
+        self.rules.clear();
+    }
+
     /// 注入参数到请求
     ///
     /// 按规则优先级顺序应用注入：

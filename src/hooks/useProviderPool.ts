@@ -85,8 +85,11 @@ export function useProviderPool() {
   };
 
   // Delete credential
-  const deleteCredential = async (uuid: string) => {
-    await providerPoolApi.deleteCredential(uuid);
+  const deleteCredential = async (
+    uuid: string,
+    providerType?: PoolProviderType,
+  ) => {
+    await providerPoolApi.deleteCredential(uuid, providerType);
     await fetchOverview();
   };
 

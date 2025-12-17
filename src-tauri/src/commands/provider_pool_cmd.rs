@@ -1,10 +1,11 @@
 //! Provider Pool Tauri 命令
 
+use crate::credential::CredentialSyncService;
 use crate::database::dao::provider_pool::ProviderPoolDao;
 use crate::database::DbConnection;
 use crate::models::provider_pool_model::{
     AddCredentialRequest, CredentialData, CredentialDisplay, HealthCheckResult, OAuthStatus,
-    ProviderCredential, ProviderPoolOverview, UpdateCredentialRequest,
+    PoolProviderType, ProviderCredential, ProviderPoolOverview, UpdateCredentialRequest,
 };
 use crate::services::provider_pool_service::ProviderPoolService;
 use chrono::Utc;
@@ -15,6 +16,9 @@ use tauri::State;
 use uuid::Uuid;
 
 pub struct ProviderPoolServiceState(pub Arc<ProviderPoolService>);
+
+/// 凭证同步服务状态封装
+pub struct CredentialSyncServiceState(pub Option<Arc<CredentialSyncService>>);
 
 /// 展开路径中的 ~ 为用户主目录
 fn expand_tilde(path: &str) -> String {
@@ -121,32 +125,52 @@ pub fn get_provider_pool_credentials(
 }
 
 /// 添加凭证
+///
+/// 添加凭证到数据库，并同步到 YAML 配置文件
+/// Requirements: 1.1, 1.2
 #[tauri::command]
 pub fn add_provider_pool_credential(
     db: State<'_, DbConnection>,
     pool_service: State<'_, ProviderPoolServiceState>,
+    sync_service: State<'_, CredentialSyncServiceState>,
     request: AddCredentialRequest,
 ) -> Result<ProviderCredential, String> {
-    pool_service.0.add_credential(
+    // 添加到数据库
+    let credential = pool_service.0.add_credential(
         &db,
         &request.provider_type,
         request.credential,
         request.name,
         request.check_health,
         request.check_model_name,
-    )
+    )?;
+
+    // 同步到 YAML 配置（如果同步服务可用）
+    if let Some(ref sync) = sync_service.0 {
+        if let Err(e) = sync.add_credential(&credential) {
+            // 记录警告但不中断操作
+            tracing::warn!("同步凭证到 YAML 失败: {}", e);
+        }
+    }
+
+    Ok(credential)
 }
 
 /// 更新凭证
+/// 更新凭证
+///
+/// 更新数据库中的凭证，并同步到 YAML 配置文件
+/// Requirements: 1.1, 1.2
 #[tauri::command]
 pub fn update_provider_pool_credential(
     db: State<'_, DbConnection>,
     pool_service: State<'_, ProviderPoolServiceState>,
+    sync_service: State<'_, CredentialSyncServiceState>,
     uuid: String,
     request: UpdateCredentialRequest,
 ) -> Result<ProviderCredential, String> {
     // 如果需要重新上传文件，先处理文件上传
-    if let Some(new_file_path) = request.new_creds_file_path {
+    let credential = if let Some(new_file_path) = request.new_creds_file_path {
         // 获取当前凭证以确定类型
         let conn = db.lock().map_err(|e| e.to_string())?;
         let current_credential = ProviderPoolDao::get_by_uuid(&conn, &uuid)
@@ -238,7 +262,7 @@ pub fn update_provider_pool_credential(
         // 保存到数据库
         ProviderPoolDao::update(&conn, &updated_cred).map_err(|e| e.to_string())?;
 
-        Ok(updated_cred)
+        updated_cred
     } else {
         // 常规更新，不涉及文件
         pool_service.0.update_credential(
@@ -249,18 +273,49 @@ pub fn update_provider_pool_credential(
             request.check_health,
             request.check_model_name,
             request.not_supported_models,
-        )
+        )?
+    };
+
+    // 同步到 YAML 配置（如果同步服务可用）
+    if let Some(ref sync) = sync_service.0 {
+        if let Err(e) = sync.update_credential(&credential) {
+            // 记录警告但不中断操作
+            tracing::warn!("同步凭证更新到 YAML 失败: {}", e);
+        }
     }
+
+    Ok(credential)
 }
 
 /// 删除凭证
+/// 删除凭证
+///
+/// 从数据库删除凭证，并同步到 YAML 配置文件
+/// Requirements: 1.1, 1.2
 #[tauri::command]
 pub fn delete_provider_pool_credential(
     db: State<'_, DbConnection>,
     pool_service: State<'_, ProviderPoolServiceState>,
+    sync_service: State<'_, CredentialSyncServiceState>,
     uuid: String,
+    provider_type: Option<String>,
 ) -> Result<bool, String> {
-    pool_service.0.delete_credential(&db, &uuid)
+    // 从数据库删除
+    let result = pool_service.0.delete_credential(&db, &uuid)?;
+
+    // 同步到 YAML 配置（如果同步服务可用且提供了 provider_type）
+    if let Some(ref sync) = sync_service.0 {
+        if let Some(pt) = provider_type {
+            if let Ok(pool_type) = pt.parse::<PoolProviderType>() {
+                if let Err(e) = sync.remove_credential(pool_type, &uuid) {
+                    // 记录警告但不中断操作
+                    tracing::warn!("从 YAML 删除凭证失败: {}", e);
+                }
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 /// 切换凭证启用/禁用状态

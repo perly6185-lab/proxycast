@@ -8,26 +8,58 @@ use crate::telemetry::{
 };
 use crate::ProviderType;
 use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// 遥测服务状态
+///
+/// 支持两种模式：
+/// 1. 独立模式：使用自己的 StatsAggregator 和 TokenTracker 实例
+/// 2. 共享模式：使用外部传入的共享实例（与 RequestProcessor 共享）
 pub struct TelemetryState {
     pub logger: Arc<RequestLogger>,
-    pub stats: Arc<StatsAggregator>,
-    pub tokens: Arc<TokenTracker>,
+    /// 统计聚合器（使用 RwLock 以支持与 RequestProcessor 共享）
+    pub stats: Arc<RwLock<StatsAggregator>>,
+    /// Token 追踪器（使用 RwLock 以支持与 RequestProcessor 共享）
+    pub tokens: Arc<RwLock<TokenTracker>>,
 }
 
 impl TelemetryState {
+    /// 创建独立的遥测状态（使用自己的实例）
     pub fn new() -> Result<Self, String> {
         let logger = RequestLogger::with_defaults()
             .map_err(|e| format!("Failed to create logger: {}", e))?;
 
         Ok(Self {
             logger: Arc::new(logger),
-            stats: Arc::new(StatsAggregator::with_defaults()),
-            tokens: Arc::new(TokenTracker::with_defaults()),
+            stats: Arc::new(RwLock::new(StatsAggregator::with_defaults())),
+            tokens: Arc::new(RwLock::new(TokenTracker::with_defaults())),
+        })
+    }
+
+    /// 创建共享的遥测状态（使用外部传入的实例）
+    ///
+    /// 这允许 TelemetryState 与 RequestProcessor 共享同一个 StatsAggregator、TokenTracker 和 RequestLogger，
+    /// 使得请求处理过程中记录的统计数据能够在前端监控页面中显示。
+    pub fn with_shared(
+        stats: Arc<RwLock<StatsAggregator>>,
+        tokens: Arc<RwLock<TokenTracker>>,
+        logger: Option<Arc<RequestLogger>>,
+    ) -> Result<Self, String> {
+        let logger = match logger {
+            Some(l) => l,
+            None => Arc::new(
+                RequestLogger::with_defaults()
+                    .map_err(|e| format!("Failed to create logger: {}", e))?,
+            ),
+        };
+
+        Ok(Self {
+            logger,
+            stats,
+            tokens,
         })
     }
 }
@@ -150,7 +182,8 @@ pub async fn get_stats_summary(
     time_range: Option<TimeRangeParam>,
 ) -> Result<StatsSummary, String> {
     let range = time_range.map(|r| r.to_time_range()).transpose()?.flatten();
-    Ok(state.stats.summary(range))
+    let stats = state.stats.read();
+    Ok(stats.summary(range))
 }
 
 /// 按 Provider 分组统计
@@ -160,7 +193,8 @@ pub async fn get_stats_by_provider(
     time_range: Option<TimeRangeParam>,
 ) -> Result<HashMap<String, ProviderStats>, String> {
     let range = time_range.map(|r| r.to_time_range()).transpose()?.flatten();
-    let stats = state.stats.by_provider(range);
+    let stats_guard = state.stats.read();
+    let stats = stats_guard.by_provider(range);
 
     // 转换 key 为 String
     Ok(stats.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
@@ -173,7 +207,8 @@ pub async fn get_stats_by_model(
     time_range: Option<TimeRangeParam>,
 ) -> Result<HashMap<String, ModelStats>, String> {
     let range = time_range.map(|r| r.to_time_range()).transpose()?.flatten();
-    Ok(state.stats.by_model(range))
+    let stats = state.stats.read();
+    Ok(stats.by_model(range))
 }
 
 // ========== Token 统计命令 ==========
@@ -194,7 +229,8 @@ pub async fn get_token_summary(
         }
         None => (None, None),
     };
-    Ok(state.tokens.summary(start, end))
+    let tokens = state.tokens.read();
+    Ok(tokens.summary(start, end))
 }
 
 /// 按 Provider 分组 Token 统计
@@ -213,7 +249,8 @@ pub async fn get_token_stats_by_provider(
         }
         None => (None, None),
     };
-    let stats = state.tokens.by_provider(start, end);
+    let tokens = state.tokens.read();
+    let stats = tokens.by_provider(start, end);
 
     Ok(stats.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
@@ -234,7 +271,8 @@ pub async fn get_token_stats_by_model(
         }
         None => (None, None),
     };
-    Ok(state.tokens.by_model(start, end))
+    let tokens = state.tokens.read();
+    Ok(tokens.by_model(start, end))
 }
 
 /// 按天汇总 Token 统计
@@ -243,7 +281,8 @@ pub async fn get_token_stats_by_day(
     state: tauri::State<'_, TelemetryState>,
     days: Option<i64>,
 ) -> Result<Vec<crate::telemetry::PeriodTokenStats>, String> {
-    Ok(state.tokens.by_day(days.unwrap_or(7)))
+    let tokens = state.tokens.read();
+    Ok(tokens.by_day(days.unwrap_or(7)))
 }
 
 // ========== 仪表盘数据命令 ==========
@@ -269,18 +308,21 @@ pub async fn get_dashboard_data(
     // 获取最近 24 小时的统计
     let range = Some(TimeRange::last_hours(24));
 
-    let stats = state.stats.summary(range);
-    let tokens = state.tokens.summary(
-        Some(Utc::now() - chrono::Duration::hours(24)),
-        Some(Utc::now()),
-    );
-
-    let by_provider: HashMap<String, ProviderStats> = state
-        .stats
+    let stats_guard = state.stats.read();
+    let stats = stats_guard.summary(range);
+    let by_provider: HashMap<String, ProviderStats> = stats_guard
         .by_provider(range)
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
+    drop(stats_guard);
+
+    let tokens_guard = state.tokens.read();
+    let tokens = tokens_guard.summary(
+        Some(Utc::now() - chrono::Duration::hours(24)),
+        Some(Utc::now()),
+    );
+    drop(tokens_guard);
 
     // 获取最近 20 条日志
     let mut recent_logs = state.logger.get_all();

@@ -1,8 +1,10 @@
 //! YAML 配置文件支持
 //!
 //! 提供 YAML 配置的加载、保存和管理功能
+//! 支持保留注释的配置保存
 
 use super::types::Config;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// 配置错误类型
@@ -50,6 +52,14 @@ impl ConfigManager {
     pub fn new(config_path: PathBuf) -> Self {
         Self {
             config: Config::default(),
+            config_path,
+        }
+    }
+
+    /// 使用指定配置创建配置管理器
+    pub fn with_config(config: Config, config_path: PathBuf) -> Self {
+        Self {
+            config,
             config_path,
         }
     }
@@ -235,6 +245,401 @@ use super::types::{LoggingConfig, RetrySettings, ServerConfig};
 impl Default for ConfigManager {
     fn default() -> Self {
         Self::new(Self::default_config_path())
+    }
+}
+
+// ============ YAML 注释保留功能 ============
+
+/// YAML 服务 - 提供保留注释的 YAML 操作
+pub struct YamlService;
+
+/// 注释信息
+#[derive(Debug, Clone)]
+struct CommentInfo {
+    /// 行号（0-indexed）
+    line: usize,
+    /// 注释内容（包含 # 符号）
+    content: String,
+    /// 是否是行尾注释
+    is_inline: bool,
+    /// 关联的键路径（如果有）
+    key_path: Option<String>,
+}
+
+impl YamlService {
+    /// 保存配置到 YAML，保留原文件中的注释和格式
+    ///
+    /// # Arguments
+    /// * `path` - 配置文件路径
+    /// * `config` - 要保存的配置
+    ///
+    /// # Returns
+    /// * `Ok(())` - 保存成功
+    /// * `Err(ConfigError)` - 保存失败
+    pub fn save_preserve_comments(path: &Path, config: &Config) -> Result<(), ConfigError> {
+        // 读取原文件内容（如果存在）
+        let original_content = if path.exists() {
+            std::fs::read_to_string(path).ok()
+        } else {
+            None
+        };
+
+        // 序列化新配置
+        let new_yaml = ConfigManager::to_yaml(config)?;
+
+        // 如果原文件存在，尝试保留注释
+        let final_content = if let Some(original) = original_content {
+            Self::merge_comments(&original, &new_yaml)
+        } else {
+            new_yaml
+        };
+
+        // 确保父目录存在
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| ConfigError::WriteError(e.to_string()))?;
+        }
+
+        // 写入文件
+        std::fs::write(path, final_content).map_err(|e| ConfigError::WriteError(e.to_string()))
+    }
+
+    /// 合并原文件的注释到新 YAML 内容中
+    ///
+    /// 策略：
+    /// 1. 提取原文件中的所有注释（独立行注释和行尾注释）
+    /// 2. 尝试将注释与键路径关联
+    /// 3. 在新 YAML 中找到对应位置插入注释
+    /// 4. 无法关联的注释放在文件头部
+    fn merge_comments(original: &str, new_yaml: &str) -> String {
+        let original_lines: Vec<&str> = original.lines().collect();
+        let new_lines: Vec<&str> = new_yaml.lines().collect();
+
+        // 提取原文件中的注释
+        let comments = Self::extract_comments(&original_lines);
+
+        // 如果没有注释，直接返回新内容
+        if comments.is_empty() {
+            return new_yaml.to_string();
+        }
+
+        // 构建新 YAML 的键位置映射
+        let new_key_positions = Self::build_key_positions(&new_lines);
+
+        // 合并注释到新内容
+        Self::insert_comments(&new_lines, &comments, &new_key_positions)
+    }
+
+    /// 提取所有独立行注释（不尝试关联键路径）
+    pub fn extract_all_comments(yaml: &str) -> Vec<String> {
+        yaml.lines()
+            .filter(|line| line.trim().starts_with('#'))
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// 从 YAML 行中提取注释
+    fn extract_comments(lines: &[&str]) -> Vec<CommentInfo> {
+        let mut comments = Vec::new();
+        let mut current_key_path: Vec<String> = Vec::new();
+        let mut indent_stack: Vec<usize> = vec![0];
+
+        for (line_num, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+
+            // 跳过空行
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            // 计算当前行的缩进
+            let indent = line.len() - line.trim_start().len();
+
+            // 检查是否是纯注释行
+            if trimmed.starts_with('#') {
+                // 确定注释关联的键路径
+                let key_path = if current_key_path.is_empty() {
+                    None
+                } else {
+                    Some(current_key_path.join("."))
+                };
+
+                comments.push(CommentInfo {
+                    line: line_num,
+                    content: line.to_string(),
+                    is_inline: false,
+                    key_path,
+                });
+                continue;
+            }
+
+            // 检查是否有行尾注释
+            if let Some(comment_pos) = Self::find_comment_position(line) {
+                let comment_content = line[comment_pos..].to_string();
+
+                // 更新键路径
+                Self::update_key_path(line, indent, &mut current_key_path, &mut indent_stack);
+
+                comments.push(CommentInfo {
+                    line: line_num,
+                    content: comment_content,
+                    is_inline: true,
+                    key_path: Some(current_key_path.join(".")),
+                });
+            } else {
+                // 普通键值行，更新键路径
+                Self::update_key_path(line, indent, &mut current_key_path, &mut indent_stack);
+            }
+        }
+
+        comments
+    }
+
+    /// 查找行中注释的位置（考虑字符串内的 # 符号）
+    fn find_comment_position(line: &str) -> Option<usize> {
+        let mut in_single_quote = false;
+        let mut in_double_quote = false;
+        let mut prev_char = ' ';
+
+        for (i, c) in line.char_indices() {
+            match c {
+                '\'' if !in_double_quote && prev_char != '\\' => {
+                    in_single_quote = !in_single_quote;
+                }
+                '"' if !in_single_quote && prev_char != '\\' => {
+                    in_double_quote = !in_double_quote;
+                }
+                '#' if !in_single_quote && !in_double_quote => {
+                    // 确保 # 前面有空格（YAML 注释规则）
+                    if i == 0
+                        || line
+                            .chars()
+                            .nth(i - 1)
+                            .map(|c| c.is_whitespace())
+                            .unwrap_or(false)
+                    {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            prev_char = c;
+        }
+        None
+    }
+
+    /// 更新当前键路径
+    fn update_key_path(
+        line: &str,
+        indent: usize,
+        current_key_path: &mut Vec<String>,
+        indent_stack: &mut Vec<usize>,
+    ) {
+        let trimmed = line.trim();
+
+        // 提取键名
+        if let Some(colon_pos) = trimmed.find(':') {
+            let key = trimmed[..colon_pos].trim();
+
+            // 跳过列表项
+            if key.starts_with('-') {
+                return;
+            }
+
+            // 根据缩进调整键路径
+            while indent_stack.len() > 1 && indent <= indent_stack[indent_stack.len() - 1] {
+                indent_stack.pop();
+                current_key_path.pop();
+            }
+
+            // 添加新键
+            current_key_path.push(key.to_string());
+            indent_stack.push(indent);
+        }
+    }
+
+    /// 构建新 YAML 的键位置映射
+    fn build_key_positions(lines: &[&str]) -> HashMap<String, usize> {
+        let mut positions = HashMap::new();
+        let mut current_key_path: Vec<String> = Vec::new();
+        let mut indent_stack: Vec<usize> = vec![0];
+
+        for (line_num, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            let indent = line.len() - line.trim_start().len();
+
+            if let Some(colon_pos) = trimmed.find(':') {
+                let key = trimmed[..colon_pos].trim();
+
+                if key.starts_with('-') {
+                    continue;
+                }
+
+                // 根据缩进调整键路径
+                while indent_stack.len() > 1 && indent <= indent_stack[indent_stack.len() - 1] {
+                    indent_stack.pop();
+                    current_key_path.pop();
+                }
+
+                current_key_path.push(key.to_string());
+                indent_stack.push(indent);
+
+                // 记录位置
+                positions.insert(current_key_path.join("."), line_num);
+            }
+        }
+
+        positions
+    }
+
+    /// 将注释插入到新 YAML 内容中
+    fn insert_comments(
+        new_lines: &[&str],
+        comments: &[CommentInfo],
+        key_positions: &HashMap<String, usize>,
+    ) -> String {
+        let mut result_lines: Vec<String> = new_lines.iter().map(|s| s.to_string()).collect();
+        let mut insertions: Vec<(usize, String)> = Vec::new();
+        let mut unmatched_comments: Vec<String> = Vec::new();
+
+        for comment in comments {
+            if comment.is_inline {
+                // 行尾注释：找到对应的键并追加
+                if let Some(key_path) = &comment.key_path {
+                    if let Some(&line_num) = key_positions.get(key_path) {
+                        if line_num < result_lines.len() {
+                            // 追加行尾注释
+                            let existing = &result_lines[line_num];
+                            if !existing.contains('#') {
+                                result_lines[line_num] =
+                                    format!("{}  {}", existing, comment.content);
+                            }
+                        }
+                    } else {
+                        // 无法匹配的行尾注释，作为独立注释保留
+                        unmatched_comments.push(comment.content.clone());
+                    }
+                }
+            } else {
+                // 独立行注释：尝试在对应位置插入
+                if let Some(key_path) = &comment.key_path {
+                    // 找到下一个键的位置
+                    if let Some(&next_line) = key_positions.get(key_path) {
+                        insertions.push((next_line, comment.content.clone()));
+                    } else {
+                        // 无法匹配的注释，放到头部
+                        unmatched_comments.push(comment.content.clone());
+                    }
+                } else {
+                    // 文件头部注释
+                    insertions.push((0, comment.content.clone()));
+                }
+            }
+        }
+
+        // 按位置倒序插入，避免索引偏移
+        insertions.sort_by(|a, b| b.0.cmp(&a.0));
+        for (pos, content) in insertions {
+            if pos <= result_lines.len() {
+                result_lines.insert(pos, content);
+            }
+        }
+
+        // 将无法匹配的注释放在文件头部
+        if !unmatched_comments.is_empty() {
+            let mut final_lines = unmatched_comments;
+            final_lines.extend(result_lines);
+            return final_lines.join("\n");
+        }
+
+        result_lines.join("\n")
+    }
+
+    /// 更新 YAML 中的特定字段
+    ///
+    /// # Arguments
+    /// * `path` - 配置文件路径
+    /// * `field_path` - 字段路径，如 ["server", "port"]
+    /// * `value` - 新值（YAML 格式的字符串）
+    ///
+    /// # Returns
+    /// * `Ok(())` - 更新成功
+    /// * `Err(ConfigError)` - 更新失败
+    pub fn update_field(path: &Path, field_path: &[&str], value: &str) -> Result<(), ConfigError> {
+        // 读取原文件
+        let content =
+            std::fs::read_to_string(path).map_err(|e| ConfigError::ReadError(e.to_string()))?;
+
+        let lines: Vec<&str> = content.lines().collect();
+        let mut result_lines: Vec<String> = Vec::new();
+
+        let target_key = field_path.last().copied().unwrap_or("");
+        let parent_path = &field_path[..field_path.len().saturating_sub(1)];
+
+        let mut current_path: Vec<String> = Vec::new();
+        let mut indent_stack: Vec<usize> = vec![0];
+        let mut found = false;
+
+        for line in lines {
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                result_lines.push(line.to_string());
+                continue;
+            }
+
+            let indent = line.len() - line.trim_start().len();
+
+            if let Some(colon_pos) = trimmed.find(':') {
+                let key = trimmed[..colon_pos].trim();
+
+                if !key.starts_with('-') {
+                    // 根据缩进调整路径
+                    while indent_stack.len() > 1 && indent <= indent_stack[indent_stack.len() - 1] {
+                        indent_stack.pop();
+                        current_path.pop();
+                    }
+
+                    // 检查是否匹配目标字段
+                    let parent_matches = current_path.len() == parent_path.len()
+                        && current_path
+                            .iter()
+                            .zip(parent_path.iter())
+                            .all(|(a, b)| a == *b);
+
+                    if parent_matches && key == target_key {
+                        // 找到目标字段，替换值
+                        let new_line = format!("{}{}: {}", " ".repeat(indent), key, value);
+                        result_lines.push(new_line);
+                        found = true;
+
+                        current_path.push(key.to_string());
+                        indent_stack.push(indent);
+                        continue;
+                    }
+
+                    current_path.push(key.to_string());
+                    indent_stack.push(indent);
+                }
+            }
+
+            result_lines.push(line.to_string());
+        }
+
+        if !found {
+            return Err(ConfigError::ValidationError(format!(
+                "字段 {} 未找到",
+                field_path.join(".")
+            )));
+        }
+
+        // 写入文件
+        std::fs::write(path, result_lines.join("\n"))
+            .map_err(|e| ConfigError::WriteError(e.to_string()))
     }
 }
 

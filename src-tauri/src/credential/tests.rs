@@ -664,3 +664,365 @@ proptest! {
         );
     }
 }
+
+// ============ 凭证同步服务属性测试 ============
+
+use crate::config::{Config, ConfigManager};
+use crate::credential::CredentialSyncService;
+use crate::models::provider_pool_model::{
+    CredentialData as PoolCredentialData, PoolProviderType, ProviderCredential,
+};
+use std::sync::RwLock;
+use tempfile::TempDir;
+
+/// 创建临时测试环境
+fn create_test_env() -> (TempDir, Arc<RwLock<ConfigManager>>) {
+    let temp_dir = TempDir::new().expect("创建临时目录失败");
+    let config_path = temp_dir.path().join("config.yaml");
+
+    // 创建配置管理器
+    let mut config = Config::default();
+    config.auth_dir = temp_dir.path().join("auth").to_string_lossy().to_string();
+
+    let mut manager = ConfigManager::new(config_path);
+    manager.set_config(config);
+    manager.save().expect("保存配置失败");
+
+    (temp_dir, Arc::new(RwLock::new(manager)))
+}
+
+/// 生成随机的 PoolProviderType（仅支持同步的类型）
+fn arb_sync_provider_type() -> impl Strategy<Value = PoolProviderType> {
+    prop_oneof![
+        Just(PoolProviderType::Kiro),
+        Just(PoolProviderType::Gemini),
+        Just(PoolProviderType::Qwen),
+        Just(PoolProviderType::OpenAI),
+        Just(PoolProviderType::Claude),
+    ]
+}
+
+/// 生成随机的 API Key 凭证数据
+fn arb_api_key_credential() -> impl Strategy<Value = (PoolProviderType, PoolCredentialData)> {
+    prop_oneof![
+        (
+            "[a-zA-Z0-9]{20,50}",
+            prop::option::of("https://[a-z]+\\.[a-z]+/v1")
+        )
+            .prop_map(|(api_key, base_url)| {
+                (
+                    PoolProviderType::OpenAI,
+                    PoolCredentialData::OpenAIKey { api_key, base_url },
+                )
+            }),
+        (
+            "[a-zA-Z0-9]{20,50}",
+            prop::option::of("https://[a-z]+\\.[a-z]+")
+        )
+            .prop_map(|(api_key, base_url)| {
+                (
+                    PoolProviderType::Claude,
+                    PoolCredentialData::ClaudeKey { api_key, base_url },
+                )
+            }),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Feature: config-credential-export, Property 1: Credential Sync Round Trip**
+    /// *For any* credential added to the credential pool, saving to YAML and then loading
+    /// from YAML should produce an equivalent credential configuration.
+    /// **Validates: Requirements 1.1, 1.2, 1.5**
+    #[test]
+    fn prop_credential_sync_round_trip(
+        (provider_type, cred_data) in arb_api_key_credential(),
+        is_disabled in proptest::bool::ANY
+    ) {
+        let (_temp_dir, config_manager) = create_test_env();
+        let sync_service = CredentialSyncService::new(config_manager.clone());
+
+        // 创建凭证
+        let mut credential = ProviderCredential::new(provider_type, cred_data.clone());
+        credential.is_disabled = is_disabled;
+        let original_uuid = credential.uuid.clone();
+
+        // 添加凭证
+        let add_result = sync_service.add_credential(&credential);
+        prop_assert!(add_result.is_ok(), "添加凭证应该成功: {:?}", add_result);
+
+        // 从配置加载凭证
+        let loaded = sync_service.load_from_config();
+        prop_assert!(loaded.is_ok(), "加载凭证应该成功: {:?}", loaded);
+
+        let loaded_creds = loaded.unwrap();
+
+        // 查找对应的凭证
+        let found = loaded_creds.iter().find(|c| c.uuid == original_uuid);
+        prop_assert!(found.is_some(), "应该能找到添加的凭证");
+
+        let loaded_cred = found.unwrap();
+
+        // 验证凭证属性
+        prop_assert_eq!(
+            &loaded_cred.uuid,
+            &original_uuid,
+            "UUID 应该一致"
+        );
+        prop_assert_eq!(
+            loaded_cred.provider_type,
+            provider_type,
+            "Provider 类型应该一致"
+        );
+        prop_assert_eq!(
+            loaded_cred.is_disabled,
+            is_disabled,
+            "禁用状态应该一致"
+        );
+
+        // 验证凭证数据
+        match (&loaded_cred.credential, &cred_data) {
+            (
+                PoolCredentialData::OpenAIKey { api_key: loaded_key, base_url: loaded_url },
+                PoolCredentialData::OpenAIKey { api_key: orig_key, base_url: orig_url },
+            ) => {
+                prop_assert_eq!(loaded_key, orig_key, "API Key 应该一致");
+                prop_assert_eq!(loaded_url, orig_url, "Base URL 应该一致");
+            }
+            (
+                PoolCredentialData::ClaudeKey { api_key: loaded_key, base_url: loaded_url },
+                PoolCredentialData::ClaudeKey { api_key: orig_key, base_url: orig_url },
+            ) => {
+                prop_assert_eq!(loaded_key, orig_key, "API Key 应该一致");
+                prop_assert_eq!(loaded_url, orig_url, "Base URL 应该一致");
+            }
+            _ => {
+                prop_assert!(false, "凭证类型不匹配");
+            }
+        }
+    }
+
+    /// **Feature: config-credential-export, Property 1: Credential Sync Round Trip (Multiple)**
+    /// *For any* set of credentials, adding them all and then loading should preserve all.
+    /// **Validates: Requirements 1.1, 1.2, 1.5**
+    #[test]
+    fn prop_credential_sync_round_trip_multiple(
+        cred_count in 1usize..=5usize
+    ) {
+        let (_temp_dir, config_manager) = create_test_env();
+        let sync_service = CredentialSyncService::new(config_manager.clone());
+
+        // 创建多个凭证
+        let mut original_uuids = Vec::new();
+        for i in 0..cred_count {
+            let cred_data = if i % 2 == 0 {
+                PoolCredentialData::OpenAIKey {
+                    api_key: format!("sk-test-key-{}", i),
+                    base_url: Some("https://api.openai.com/v1".to_string()),
+                }
+            } else {
+                PoolCredentialData::ClaudeKey {
+                    api_key: format!("sk-ant-test-key-{}", i),
+                    base_url: None,
+                }
+            };
+
+            let provider_type = if i % 2 == 0 {
+                PoolProviderType::OpenAI
+            } else {
+                PoolProviderType::Claude
+            };
+
+            let credential = ProviderCredential::new(provider_type, cred_data);
+            original_uuids.push(credential.uuid.clone());
+
+            let add_result = sync_service.add_credential(&credential);
+            prop_assert!(add_result.is_ok(), "添加凭证 {} 应该成功", i);
+        }
+
+        // 从配置加载凭证
+        let loaded = sync_service.load_from_config().unwrap();
+
+        // 验证所有凭证都被加载
+        prop_assert_eq!(
+            loaded.len(),
+            cred_count,
+            "加载的凭证数量应该与添加的一致"
+        );
+
+        // 验证每个 UUID 都存在
+        for uuid in &original_uuids {
+            let found = loaded.iter().any(|c| &c.uuid == uuid);
+            prop_assert!(found, "应该能找到 UUID 为 {} 的凭证", uuid);
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Feature: config-credential-export, Property 9: OAuth Token File Handling**
+    /// *For any* OAuth credential, the token file should be stored in auth-dir on add,
+    /// included in export bundles, and restored to auth-dir on import.
+    /// **Validates: Requirements 2.1, 2.4, 3.3, 4.4**
+    #[test]
+    fn prop_oauth_token_file_handling(
+        token_content in "[a-zA-Z0-9]{50,200}",
+        provider_idx in 0usize..3usize
+    ) {
+        let (temp_dir, config_manager) = create_test_env();
+        let sync_service = CredentialSyncService::new(config_manager.clone());
+
+        // 创建源 token 文件
+        let source_token_dir = temp_dir.path().join("source_tokens");
+        std::fs::create_dir_all(&source_token_dir).expect("创建源目录失败");
+
+        let source_token_path = source_token_dir.join("token.json");
+        let token_json = format!(r#"{{"access_token": "{}", "refresh_token": "refresh-{}", "expires_at": "2025-12-31T23:59:59Z"}}"#, token_content, token_content);
+        std::fs::write(&source_token_path, &token_json).expect("写入源 token 文件失败");
+
+        // 根据索引选择 provider 类型
+        let (provider_type, cred_data) = match provider_idx {
+            0 => (
+                PoolProviderType::Kiro,
+                PoolCredentialData::KiroOAuth {
+                    creds_file_path: source_token_path.to_string_lossy().to_string(),
+                },
+            ),
+            1 => (
+                PoolProviderType::Gemini,
+                PoolCredentialData::GeminiOAuth {
+                    creds_file_path: source_token_path.to_string_lossy().to_string(),
+                    project_id: None,
+                },
+            ),
+            _ => (
+                PoolProviderType::Qwen,
+                PoolCredentialData::QwenOAuth {
+                    creds_file_path: source_token_path.to_string_lossy().to_string(),
+                },
+            ),
+        };
+
+        // 创建凭证
+        let credential = ProviderCredential::new(provider_type, cred_data);
+        let original_uuid = credential.uuid.clone();
+
+        // 添加凭证（应该复制 token 文件到 auth_dir）
+        let add_result = sync_service.add_credential(&credential);
+        prop_assert!(add_result.is_ok(), "添加 OAuth 凭证应该成功: {:?}", add_result);
+
+        // 验证 token 文件已复制到 auth_dir
+        let auth_dir = sync_service.get_auth_dir().expect("获取 auth_dir 失败");
+        let provider_name = match provider_type {
+            PoolProviderType::Kiro => "kiro",
+            PoolProviderType::Gemini => "gemini",
+            PoolProviderType::Qwen => "qwen",
+            _ => "unknown",
+        };
+        let expected_token_path = auth_dir.join(provider_name).join(format!("{}.json", original_uuid));
+
+        prop_assert!(
+            expected_token_path.exists(),
+            "Token 文件应该存在于 auth_dir: {:?}",
+            expected_token_path
+        );
+
+        // 验证 token 文件内容一致
+        let copied_content = std::fs::read_to_string(&expected_token_path)
+            .expect("读取复制的 token 文件失败");
+        prop_assert_eq!(
+            copied_content,
+            token_json,
+            "Token 文件内容应该一致"
+        );
+
+        // 从配置加载凭证
+        let loaded = sync_service.load_from_config().expect("加载凭证失败");
+        let loaded_cred = loaded.iter().find(|c| c.uuid == original_uuid);
+        prop_assert!(loaded_cred.is_some(), "应该能找到加载的凭证");
+
+        // 验证加载的凭证指向正确的 token 文件路径
+        let loaded_cred = loaded_cred.unwrap();
+        let loaded_path = match &loaded_cred.credential {
+            PoolCredentialData::KiroOAuth { creds_file_path } => creds_file_path.clone(),
+            PoolCredentialData::GeminiOAuth { creds_file_path, .. } => creds_file_path.clone(),
+            PoolCredentialData::QwenOAuth { creds_file_path } => creds_file_path.clone(),
+            _ => String::new(),
+        };
+
+        prop_assert_eq!(
+            loaded_path,
+            expected_token_path.to_string_lossy().to_string(),
+            "加载的凭证应该指向 auth_dir 中的 token 文件"
+        );
+
+        // 删除凭证（应该删除 token 文件）
+        let remove_result = sync_service.remove_credential(provider_type, &original_uuid);
+        prop_assert!(remove_result.is_ok(), "删除凭证应该成功: {:?}", remove_result);
+
+        // 验证 token 文件已被删除
+        prop_assert!(
+            !expected_token_path.exists(),
+            "删除凭证后 token 文件应该被删除"
+        );
+    }
+
+    /// **Feature: config-credential-export, Property 9: OAuth Token File Update**
+    /// *For any* OAuth credential update, the token file should be updated in auth-dir.
+    /// **Validates: Requirements 2.1, 2.4**
+    #[test]
+    fn prop_oauth_token_file_update(
+        initial_content in "[a-zA-Z0-9]{50,100}",
+        updated_content in "[a-zA-Z0-9]{50,100}"
+    ) {
+        let (temp_dir, config_manager) = create_test_env();
+        let sync_service = CredentialSyncService::new(config_manager.clone());
+
+        // 创建初始 token 文件
+        let source_token_dir = temp_dir.path().join("source_tokens");
+        std::fs::create_dir_all(&source_token_dir).expect("创建源目录失败");
+
+        let source_token_path = source_token_dir.join("token.json");
+        let initial_json = format!(r#"{{"access_token": "{}"}}"#, initial_content);
+        std::fs::write(&source_token_path, &initial_json).expect("写入初始 token 文件失败");
+
+        // 创建凭证
+        let credential = ProviderCredential::new(
+            PoolProviderType::Kiro,
+            PoolCredentialData::KiroOAuth {
+                creds_file_path: source_token_path.to_string_lossy().to_string(),
+            },
+        );
+        let original_uuid = credential.uuid.clone();
+
+        // 添加凭证
+        sync_service.add_credential(&credential).expect("添加凭证失败");
+
+        // 更新源 token 文件内容
+        let updated_json = format!(r#"{{"access_token": "{}"}}"#, updated_content);
+        std::fs::write(&source_token_path, &updated_json).expect("更新源 token 文件失败");
+
+        // 更新凭证
+        let mut updated_credential = credential.clone();
+        updated_credential.credential = PoolCredentialData::KiroOAuth {
+            creds_file_path: source_token_path.to_string_lossy().to_string(),
+        };
+
+        let update_result = sync_service.update_credential(&updated_credential);
+        prop_assert!(update_result.is_ok(), "更新凭证应该成功: {:?}", update_result);
+
+        // 验证 auth_dir 中的 token 文件已更新
+        let auth_dir = sync_service.get_auth_dir().expect("获取 auth_dir 失败");
+        let token_path = auth_dir.join("kiro").join(format!("{}.json", original_uuid));
+
+        let stored_content = std::fs::read_to_string(&token_path)
+            .expect("读取存储的 token 文件失败");
+        prop_assert_eq!(
+            stored_content,
+            updated_json,
+            "存储的 token 文件内容应该已更新"
+        );
+    }
+}

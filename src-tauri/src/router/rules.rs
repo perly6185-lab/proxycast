@@ -168,6 +168,16 @@ impl Router {
         self.default_provider
     }
 
+    /// 清空所有路由规则
+    pub fn clear_rules(&mut self) {
+        self.rules.clear();
+    }
+
+    /// 清空所有排除规则
+    pub fn clear_exclusions(&mut self) {
+        self.exclusions.clear();
+    }
+
     /// 添加排除模式
     pub fn add_exclusion(&mut self, provider: ProviderType, pattern: &str) {
         self.exclusions

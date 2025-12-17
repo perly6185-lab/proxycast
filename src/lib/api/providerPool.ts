@@ -195,8 +195,11 @@ export const providerPoolApi = {
   },
 
   // Delete a credential
-  async deleteCredential(uuid: string): Promise<boolean> {
-    return invoke("delete_provider_pool_credential", { uuid });
+  async deleteCredential(
+    uuid: string,
+    providerType?: PoolProviderType,
+  ): Promise<boolean> {
+    return invoke("delete_provider_pool_credential", { uuid, providerType });
   },
 
   // Toggle credential enabled/disabled

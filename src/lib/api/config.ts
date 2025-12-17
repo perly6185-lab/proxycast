@@ -55,6 +55,28 @@ export interface LoggingConfig {
   include_request_body: boolean;
 }
 
+// Credential pool types
+export interface CredentialEntry {
+  id: string;
+  token_file: string;
+  disabled: boolean;
+}
+
+export interface ApiKeyEntry {
+  id: string;
+  api_key: string;
+  base_url?: string;
+  disabled: boolean;
+}
+
+export interface CredentialPoolConfig {
+  kiro: CredentialEntry[];
+  gemini: CredentialEntry[];
+  qwen: CredentialEntry[];
+  openai: ApiKeyEntry[];
+  claude: ApiKeyEntry[];
+}
+
 export interface Config {
   server: ServerConfig;
   providers: ProvidersConfig;
@@ -62,12 +84,41 @@ export interface Config {
   routing: RoutingConfig;
   retry: RetrySettings;
   logging: LoggingConfig;
+  auth_dir: string;
+  credential_pool: CredentialPoolConfig;
 }
 
 // Export result
 export interface ExportResult {
   content: string;
   suggested_filename: string;
+}
+
+// Unified export options
+export interface UnifiedExportOptions {
+  include_config: boolean;
+  include_credentials: boolean;
+  redact_secrets: boolean;
+}
+
+// Unified export result
+export interface UnifiedExportResult {
+  content: string;
+  suggested_filename: string;
+  redacted: boolean;
+  has_config: boolean;
+  has_credentials: boolean;
+}
+
+// Validation result
+export interface ValidationResult {
+  valid: boolean;
+  version: string | null;
+  redacted: boolean;
+  has_config: boolean;
+  has_credentials: boolean;
+  errors: string[];
+  warnings: string[];
 }
 
 // Import result
@@ -94,6 +145,19 @@ export const configApi = {
     return invoke("export_config", { config, redactSecrets });
   },
 
+  // Export bundle (config + credentials)
+  async exportBundle(
+    config: Config,
+    options: UnifiedExportOptions,
+  ): Promise<UnifiedExportResult> {
+    return invoke("export_bundle", { config, options });
+  },
+
+  // Validate import content (JSON bundle or YAML config)
+  async validateImport(content: string): Promise<ValidationResult> {
+    return invoke("validate_import", { content });
+  },
+
   // Validate YAML config
   async validateConfigYaml(yamlContent: string): Promise<Config> {
     return invoke("validate_config_yaml", { yamlContent });
@@ -106,6 +170,15 @@ export const configApi = {
     merge: boolean,
   ): Promise<ImportResult> {
     return invoke("import_config", { currentConfig, yamlContent, merge });
+  },
+
+  // Import bundle (JSON bundle or YAML config)
+  async importBundle(
+    currentConfig: Config,
+    content: string,
+    merge: boolean,
+  ): Promise<ImportResult> {
+    return invoke("import_bundle", { currentConfig, content, merge });
   },
 
   // Get config file paths

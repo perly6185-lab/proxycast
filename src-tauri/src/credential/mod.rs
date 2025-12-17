@@ -5,11 +5,13 @@
 mod balancer;
 mod health;
 mod pool;
+mod sync;
 mod types;
 
 pub use balancer::{BalanceStrategy, CooldownInfo, LoadBalancer};
 pub use health::{HealthCheckConfig, HealthCheckResult, HealthChecker, HealthStatus};
 pub use pool::{CredentialPool, PoolError, PoolStatus};
+pub use sync::{CredentialSyncService, SyncError};
 pub use types::{Credential, CredentialData, CredentialStats, CredentialStatus};
 
 #[cfg(test)]

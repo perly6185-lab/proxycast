@@ -29,6 +29,15 @@ export interface ExclusionPattern {
   pattern: string;
 }
 
+// Recommended preset
+export interface RecommendedPreset {
+  id: string;
+  name: string;
+  description: string;
+  aliases: ModelAlias[];
+  rules: RoutingRule[];
+}
+
 // Router configuration
 export interface RouterConfig {
   default_provider: ProviderType;
@@ -92,5 +101,21 @@ export const routerApi = {
   // Default provider
   async setDefaultProvider(provider: ProviderType): Promise<void> {
     return invoke("set_router_default_provider", { provider });
+  },
+
+  // Recommended presets
+  async getRecommendedPresets(): Promise<RecommendedPreset[]> {
+    return invoke("get_recommended_presets");
+  },
+
+  async applyRecommendedPreset(
+    presetId: string,
+    merge: boolean = false,
+  ): Promise<void> {
+    return invoke("apply_recommended_preset", { presetId, merge });
+  },
+
+  async clearAllRoutingConfig(): Promise<void> {
+    return invoke("clear_all_routing_config");
   },
 };

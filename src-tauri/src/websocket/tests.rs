@@ -460,3 +460,169 @@ proptest! {
         }
     }
 }
+
+// ============ SSE 到 WebSocket 转换属性测试 ============
+
+use super::stream::StreamForwarder;
+
+/// 生成任意的 SSE 数据内容（非空且不全是空格）
+fn arb_sse_data() -> impl Strategy<Value = String> {
+    prop_oneof![
+        // JSON 对象
+        Just(r#"{"content": "hello"}"#.to_string()),
+        Just(r#"{"delta": {"content": "world"}}"#.to_string()),
+        Just(r#"{"choices": [{"delta": {"content": "test"}}]}"#.to_string()),
+        // 简单文本（确保至少有一个非空格字符）
+        "[a-zA-Z0-9]{1,50}".prop_map(|s| s),
+    ]
+}
+
+/// 生成任意的 SSE 行
+fn arb_sse_line() -> impl Strategy<Value = String> {
+    arb_sse_data().prop_map(|data| format!("data: {}", data))
+}
+
+/// 生成任意的 SSE 响应体（多行）
+fn arb_sse_body() -> impl Strategy<Value = (Vec<String>, String)> {
+    prop::collection::vec(arb_sse_data(), 1..10).prop_map(|data_items| {
+        let lines: Vec<String> = data_items.clone();
+        let body = data_items
+            .iter()
+            .map(|d| format!("data: {}\n\n", d))
+            .collect::<Vec<_>>()
+            .join("");
+        (lines, body)
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Feature: module-integration, Property 4: SSE 到 WebSocket 转换完整性**
+    /// *对于任意* SSE 流式响应，转换为 WebSocket 消息后数据内容应保持不变
+    /// **Validates: Requirements 6.3**
+    #[test]
+    fn prop_sse_to_ws_conversion_integrity(
+        request_id in "[a-zA-Z0-9-]{8,16}",
+        (original_data, sse_body) in arb_sse_body()
+    ) {
+        let forwarder = StreamForwarder::new(request_id.clone());
+
+        // 转换 SSE 响应体为 WebSocket 消息
+        let messages = forwarder.process_sse_body(&sse_body);
+
+        // 验证消息数量：应该有 N 个数据块 + 1 个结束消息
+        let expected_chunks = original_data.len();
+        prop_assert_eq!(
+            messages.len(),
+            expected_chunks + 1,
+            "消息数量应为数据块数 + 1 (结束消息)"
+        );
+
+        // 验证每个数据块的内容
+        for (i, msg) in messages.iter().take(expected_chunks).enumerate() {
+            match msg {
+                WsMessage::StreamChunk(chunk) => {
+                    // 验证 request_id
+                    prop_assert_eq!(
+                        &chunk.request_id,
+                        &request_id,
+                        "StreamChunk 的 request_id 应与原始一致"
+                    );
+
+                    // 验证索引
+                    prop_assert_eq!(
+                        chunk.index as usize,
+                        i,
+                        "StreamChunk 的索引应正确"
+                    );
+
+                    // 验证数据内容
+                    prop_assert_eq!(
+                        &chunk.data,
+                        &original_data[i],
+                        "StreamChunk 的数据应与原始 SSE 数据一致"
+                    );
+                }
+                _ => prop_assert!(false, "期望 StreamChunk 消息，但得到其他类型"),
+            }
+        }
+
+        // 验证结束消息
+        match messages.last() {
+            Some(WsMessage::StreamEnd(end)) => {
+                prop_assert_eq!(
+                    &end.request_id,
+                    &request_id,
+                    "StreamEnd 的 request_id 应与原始一致"
+                );
+                prop_assert_eq!(
+                    end.total_chunks as usize,
+                    expected_chunks,
+                    "StreamEnd 的 total_chunks 应等于数据块数"
+                );
+            }
+            _ => prop_assert!(false, "最后一条消息应为 StreamEnd"),
+        }
+    }
+
+    /// **Feature: module-integration, Property 4: SSE 到 WebSocket 转换完整性（单行）**
+    /// *对于任意* 单个 SSE 数据行，转换后应保持数据内容不变
+    /// **Validates: Requirements 6.3**
+    #[test]
+    fn prop_sse_line_conversion_integrity(
+        request_id in "[a-zA-Z0-9-]{8,16}",
+        data in arb_sse_data(),
+        index in 0u32..1000u32
+    ) {
+        let forwarder = StreamForwarder::new(request_id.clone());
+        let sse_line = format!("data: {}", data);
+
+        // 转换单行 SSE
+        let result = forwarder.convert_sse_line(&sse_line, index);
+
+        // 验证转换结果
+        match result {
+            Some(WsMessage::StreamChunk(chunk)) => {
+                prop_assert_eq!(
+                    &chunk.request_id,
+                    &request_id,
+                    "request_id 应保持不变"
+                );
+                prop_assert_eq!(
+                    chunk.index,
+                    index,
+                    "index 应保持不变"
+                );
+                prop_assert_eq!(
+                    &chunk.data,
+                    &data,
+                    "数据内容应保持不变"
+                );
+            }
+            _ => prop_assert!(false, "应返回 StreamChunk 消息"),
+        }
+    }
+
+    /// **Feature: module-integration, Property 4: SSE 到 WebSocket 转换完整性（特殊行处理）**
+    /// *对于任意* 空行、注释行或 [DONE] 标记，转换应返回 None
+    /// **Validates: Requirements 6.3**
+    #[test]
+    fn prop_sse_special_lines_filtered(
+        request_id in "[a-zA-Z0-9-]{8,16}",
+        index in 0u32..1000u32
+    ) {
+        let forwarder = StreamForwarder::new(request_id);
+
+        // 空行应返回 None
+        prop_assert!(forwarder.convert_sse_line("", index).is_none());
+        prop_assert!(forwarder.convert_sse_line("   ", index).is_none());
+
+        // 注释行应返回 None
+        prop_assert!(forwarder.convert_sse_line(": comment", index).is_none());
+        prop_assert!(forwarder.convert_sse_line(":ping", index).is_none());
+
+        // [DONE] 标记应返回 None
+        prop_assert!(forwarder.convert_sse_line("data: [DONE]", index).is_none());
+    }
+}

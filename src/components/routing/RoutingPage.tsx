@@ -1,5 +1,5 @@
 import { useState, useEffect, forwardRef, useImperativeHandle } from "react";
-import { RefreshCw, Route } from "lucide-react";
+import { RefreshCw, Route, Sparkles, Check, Trash2 } from "lucide-react";
 import { ModelMapping } from "./ModelMapping";
 import { RoutingRules } from "./RoutingRules";
 import { ExclusionList } from "./ExclusionList";
@@ -7,7 +7,12 @@ import { InjectionRules } from "./InjectionRules";
 import { HelpTip } from "@/components/HelpTip";
 import { routerApi } from "@/lib/api/router";
 import { injectionApi } from "@/lib/api/injection";
-import type { ModelAlias, RoutingRule, ProviderType } from "@/lib/api/router";
+import type {
+  ModelAlias,
+  RoutingRule,
+  ProviderType,
+  RecommendedPreset,
+} from "@/lib/api/router";
 import type { InjectionRule } from "@/lib/api/injection";
 
 export interface RoutingPageRef {
@@ -30,26 +35,64 @@ export const RoutingPage = forwardRef<RoutingPageRef>((_props, ref) => {
   const [injectionRules, setInjectionRules] = useState<InjectionRule[]>([]);
   const [injectionEnabled, setInjectionEnabled] = useState(false);
 
+  // Presets state
+  const [presets, setPresets] = useState<RecommendedPreset[]>([]);
+  const [showPresets, setShowPresets] = useState(false);
+  const [applyingPreset, setApplyingPreset] = useState<string | null>(null);
+
   const refresh = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [aliasesData, rulesData, exclusionsData, injectionConfig] =
-        await Promise.all([
-          routerApi.getModelAliases(),
-          routerApi.getRoutingRules(),
-          routerApi.getExclusions(),
-          injectionApi.getInjectionConfig(),
-        ]);
+      const [
+        aliasesData,
+        rulesData,
+        exclusionsData,
+        injectionConfig,
+        presetsData,
+      ] = await Promise.all([
+        routerApi.getModelAliases(),
+        routerApi.getRoutingRules(),
+        routerApi.getExclusions(),
+        injectionApi.getInjectionConfig(),
+        routerApi.getRecommendedPresets(),
+      ]);
       setAliases(aliasesData);
       setRules(rulesData);
       setExclusions(exclusionsData);
       setInjectionRules(injectionConfig.rules);
       setInjectionEnabled(injectionConfig.enabled);
+      setPresets(presetsData);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleApplyPreset = async (
+    presetId: string,
+    merge: boolean = false,
+  ) => {
+    setApplyingPreset(presetId);
+    try {
+      await routerApi.applyRecommendedPreset(presetId, merge);
+      await refresh();
+      setShowPresets(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplyingPreset(null);
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (!confirm("确定要清空所有路由配置吗？此操作不可撤销。")) return;
+    try {
+      await routerApi.clearAllRoutingConfig();
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -149,15 +192,102 @@ export const RoutingPage = forwardRef<RoutingPageRef>((_props, ref) => {
             配置模型映射、路由规则和排除列表
           </p>
         </div>
-        <button
-          onClick={refresh}
-          disabled={loading}
-          className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-          刷新
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowPresets(true)}
+            className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90"
+          >
+            <Sparkles className="h-4 w-4" />
+            推荐配置
+          </button>
+          <button
+            onClick={handleClearAll}
+            disabled={loading || (aliases.length === 0 && rules.length === 0)}
+            className="flex items-center gap-2 rounded-lg border border-red-300 px-3 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30"
+          >
+            <Trash2 className="h-4 w-4" />
+            清空
+          </button>
+          <button
+            onClick={refresh}
+            disabled={loading}
+            className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            刷新
+          </button>
+        </div>
       </div>
+
+      {/* Presets Modal */}
+      {showPresets && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-2xl rounded-lg bg-background p-6 shadow-xl max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-primary" />
+                推荐配置
+              </h3>
+              <button
+                onClick={() => setShowPresets(false)}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-sm text-muted-foreground mb-4">
+              选择一个预设配置快速设置路由规则和模型别名
+            </p>
+            <div className="space-y-3">
+              {presets.map((preset) => (
+                <div
+                  key={preset.id}
+                  className="rounded-lg border p-4 hover:border-primary/50 transition-colors"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <h4 className="font-medium">{preset.name}</h4>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        {preset.description}
+                      </p>
+                      <div className="flex gap-4 mt-2 text-xs text-muted-foreground">
+                        <span>{preset.aliases.length} 个别名</span>
+                        <span>{preset.rules.length} 条规则</span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 ml-4">
+                      <button
+                        onClick={() => handleApplyPreset(preset.id, true)}
+                        disabled={applyingPreset !== null}
+                        className="flex items-center gap-1 rounded px-3 py-1.5 text-sm border hover:bg-muted disabled:opacity-50"
+                      >
+                        {applyingPreset === preset.id ? (
+                          <RefreshCw className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Check className="h-3 w-3" />
+                        )}
+                        合并
+                      </button>
+                      <button
+                        onClick={() => handleApplyPreset(preset.id, false)}
+                        disabled={applyingPreset !== null}
+                        className="flex items-center gap-1 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                      >
+                        {applyingPreset === preset.id ? (
+                          <RefreshCw className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Check className="h-3 w-3" />
+                        )}
+                        应用
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <HelpTip title="智能路由说明" variant="blue">
         <ul className="list-disc list-inside space-y-1 text-sm text-blue-700 dark:text-blue-400">

@@ -7,9 +7,10 @@ pub mod injection;
 mod logger;
 mod models;
 pub mod plugin;
+pub mod processor;
 mod providers;
 pub mod resilience;
-mod router;
+pub mod router;
 mod server;
 mod services;
 pub mod telemetry;
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use commands::provider_pool_cmd::ProviderPoolServiceState;
+use commands::provider_pool_cmd::{CredentialSyncServiceState, ProviderPoolServiceState};
 use commands::resilience_cmd::ResilienceConfigState;
 use commands::router_cmd::RouterConfigState;
 use commands::skill_cmd::SkillServiceState;
@@ -1310,6 +1311,11 @@ pub fn run() {
     let provider_pool_service = ProviderPoolService::new();
     let provider_pool_service_state = ProviderPoolServiceState(Arc::new(provider_pool_service));
 
+    // Initialize CredentialSyncService (optional - only if config manager is available)
+    // For now, we initialize it as None since ConfigManager requires async setup
+    // This can be enhanced later to properly initialize with ConfigManager
+    let credential_sync_service_state = CredentialSyncServiceState(None);
+
     // Initialize TokenCacheService
     let token_cache_service = TokenCacheService::new();
     let token_cache_service_state = TokenCacheServiceState(Arc::new(token_cache_service));
@@ -1320,8 +1326,25 @@ pub fn run() {
     // Initialize ResilienceConfigState
     let resilience_config_state = ResilienceConfigState::default();
 
-    // Initialize TelemetryState
-    let telemetry_state = commands::telemetry_cmd::TelemetryState::default();
+    // Initialize shared telemetry instances for both TelemetryState and RequestProcessor
+    // This allows the frontend monitoring page to display data recorded by the request processor
+    let shared_stats = Arc::new(parking_lot::RwLock::new(
+        telemetry::StatsAggregator::with_defaults(),
+    ));
+    let shared_tokens = Arc::new(parking_lot::RwLock::new(
+        telemetry::TokenTracker::with_defaults(),
+    ));
+    let shared_logger = Arc::new(
+        telemetry::RequestLogger::with_defaults().expect("Failed to create RequestLogger"),
+    );
+
+    // Initialize TelemetryState with shared instances
+    let telemetry_state = commands::telemetry_cmd::TelemetryState::with_shared(
+        shared_stats.clone(),
+        shared_tokens.clone(),
+        Some(shared_logger.clone()),
+    )
+    .expect("Failed to create TelemetryState");
 
     // Initialize default skill repos
     {
@@ -1336,6 +1359,9 @@ pub fn run() {
     let db_clone = db.clone();
     let pool_service_clone = provider_pool_service_state.0.clone();
     let token_cache_clone = token_cache_service_state.0.clone();
+    let shared_stats_clone = shared_stats.clone();
+    let shared_tokens_clone = shared_tokens.clone();
+    let shared_logger_clone = shared_logger.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -1349,6 +1375,7 @@ pub fn run() {
         .manage(db)
         .manage(skill_service_state)
         .manage(provider_pool_service_state)
+        .manage(credential_sync_service_state)
         .manage(token_cache_service_state)
         .manage(router_config_state)
         .manage(resilience_config_state)
@@ -1360,6 +1387,9 @@ pub fn run() {
             let db = db_clone.clone();
             let pool_service = pool_service_clone.clone();
             let token_cache = token_cache_clone.clone();
+            let shared_stats = shared_stats_clone.clone();
+            let shared_tokens = shared_tokens_clone.clone();
+            let shared_logger = shared_logger_clone.clone();
             tauri::async_runtime::spawn(async move {
                 // 先加载凭证
                 {
@@ -1372,14 +1402,22 @@ pub fn run() {
                         logs.write().await.add("info", "[启动] Kiro 凭证已加载");
                     }
                 }
-                // 启动服务器
+                // 启动服务器（使用共享的遥测实例）
                 {
                     let mut s = state.write().await;
                     logs.write()
                         .await
                         .add("info", "[启动] 正在自动启动服务器...");
                     match s
-                        .start(logs.clone(), pool_service, token_cache, Some(db))
+                        .start_with_telemetry(
+                            logs.clone(),
+                            pool_service,
+                            token_cache,
+                            Some(db),
+                            Some(shared_stats),
+                            Some(shared_tokens),
+                            Some(shared_logger),
+                        )
                         .await
                     {
                         Ok(_) => {
@@ -1470,6 +1508,14 @@ pub fn run() {
             commands::config_cmd::validate_config_yaml,
             commands::config_cmd::import_config,
             commands::config_cmd::get_config_paths,
+            // Enhanced export/import commands (using ExportService/ImportService)
+            commands::config_cmd::export_bundle,
+            commands::config_cmd::export_config_yaml,
+            commands::config_cmd::validate_import,
+            commands::config_cmd::import_bundle,
+            // Path utility commands
+            commands::config_cmd::expand_path,
+            commands::config_cmd::open_auth_dir,
             // MCP commands
             commands::mcp_cmd::get_mcp_servers,
             commands::mcp_cmd::add_mcp_server,
@@ -1535,6 +1581,9 @@ pub fn run() {
             commands::router_cmd::add_exclusion,
             commands::router_cmd::remove_exclusion,
             commands::router_cmd::set_router_default_provider,
+            commands::router_cmd::get_recommended_presets,
+            commands::router_cmd::apply_recommended_preset,
+            commands::router_cmd::clear_all_routing_config,
             // Resilience config commands
             commands::resilience_cmd::get_retry_config,
             commands::resilience_cmd::update_retry_config,

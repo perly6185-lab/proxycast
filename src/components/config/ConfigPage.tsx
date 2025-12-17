@@ -1,7 +1,13 @@
-import { useState, useEffect, forwardRef, useImperativeHandle } from "react";
-import { FileCode, RefreshCw, FolderOpen } from "lucide-react";
+import React, {
+  useState,
+  useEffect,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
+import { FileCode, RefreshCw, FolderOpen, Settings } from "lucide-react";
 import { ConfigEditor } from "./ConfigEditor";
 import { ImportExport } from "./ImportExport";
+import { AuthDirSettings } from "./AuthDirSettings";
 import { Config, configApi, ConfigPathInfo } from "@/lib/api/config";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -9,7 +15,7 @@ export interface ConfigPageRef {
   refresh: () => void;
 }
 
-type TabType = "editor" | "import-export";
+type TabType = "editor" | "import-export" | "settings";
 
 export const ConfigPage = forwardRef<ConfigPageRef>((_props, ref) => {
   const [activeTab, setActiveTab] = useState<TabType>("editor");
@@ -62,9 +68,10 @@ export const ConfigPage = forwardRef<ConfigPageRef>((_props, ref) => {
     }
   };
 
-  const tabs: { id: TabType; label: string }[] = [
+  const tabs: { id: TabType; label: string; icon?: React.ReactNode }[] = [
     { id: "editor", label: "YAML 编辑器" },
     { id: "import-export", label: "导入/导出" },
+    { id: "settings", label: "设置", icon: <Settings className="h-4 w-4" /> },
   ];
 
   if (isLoading) {
@@ -135,12 +142,13 @@ export const ConfigPage = forwardRef<ConfigPageRef>((_props, ref) => {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+            className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
               activeTab === tab.id
                 ? "border-primary text-primary"
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
+            {tab.icon}
             {tab.label}
           </button>
         ))}
@@ -153,6 +161,12 @@ export const ConfigPage = forwardRef<ConfigPageRef>((_props, ref) => {
         )}
         {activeTab === "import-export" && (
           <ImportExport config={config} onConfigImported={handleConfigChange} />
+        )}
+        {activeTab === "settings" && (
+          <AuthDirSettings
+            config={config}
+            onConfigChange={handleConfigChange}
+          />
         )}
       </div>
     </div>
