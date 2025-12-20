@@ -518,6 +518,7 @@ impl TokenCacheService {
     }
 
     /// 刷新 iFlow Cookie Token
+    /// 与 CLIProxyAPI 的 refreshCookieBased 对齐
     async fn refresh_iflow_cookie(&self, creds_path: &str) -> Result<CachedTokenInfo, String> {
         use crate::providers::iflow::IFlowProvider;
 
@@ -527,8 +528,46 @@ impl TokenCacheService {
             .await
             .map_err(|e| format!("加载 iFlow Cookie 凭证失败: {}", e))?;
 
-        // iFlow Cookie 凭证使用 API Key，不需要刷新 OAuth Token
-        // 直接从凭证中获取 API Key
+        // 检查是否需要刷新 API Key（距离过期 2 天内）
+        if provider.should_refresh_api_key() {
+            tracing::info!("[IFLOW] Cookie API Key 需要刷新");
+
+            // 通过 Cookie 刷新 API Key
+            let api_key = provider
+                .refresh_api_key_with_cookie()
+                .await
+                .map_err(|e| format!("刷新 iFlow Cookie API Key 失败: {}", e))?;
+
+            // 解析新的过期时间
+            let expiry_time = provider
+                .credentials
+                .expire
+                .as_ref()
+                .and_then(|s| {
+                    // 尝试解析 "2006-01-02 15:04" 格式
+                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M")
+                        .ok()
+                        .map(|dt| dt.and_utc())
+                        .or_else(|| {
+                            // 尝试解析 RFC3339 格式
+                            chrono::DateTime::parse_from_rfc3339(s)
+                                .ok()
+                                .map(|dt| dt.with_timezone(&Utc))
+                        })
+                })
+                .unwrap_or_else(|| Utc::now() + chrono::Duration::days(30));
+
+            return Ok(CachedTokenInfo {
+                access_token: Some(api_key),
+                refresh_token: None,
+                expiry_time: Some(expiry_time),
+                last_refresh: Some(Utc::now()),
+                refresh_error_count: 0,
+                last_refresh_error: None,
+            });
+        }
+
+        // 不需要刷新，直接返回现有的 API Key
         let api_key = provider
             .credentials
             .api_key
@@ -540,9 +579,19 @@ impl TokenCacheService {
             .credentials
             .expire
             .as_ref()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|| Utc::now() + chrono::Duration::days(30)); // Cookie 通常有效期较长
+            .and_then(|s| {
+                // 尝试解析 "2006-01-02 15:04" 格式
+                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M")
+                    .ok()
+                    .map(|dt| dt.and_utc())
+                    .or_else(|| {
+                        // 尝试解析 RFC3339 格式
+                        chrono::DateTime::parse_from_rfc3339(s)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&Utc))
+                    })
+            })
+            .unwrap_or_else(|| Utc::now() + chrono::Duration::days(30));
 
         Ok(CachedTokenInfo {
             access_token: Some(api_key),

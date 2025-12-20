@@ -17,7 +17,7 @@ const defaultCredsPath: Record<string, string> = {
   antigravity: "~/.antigravity/oauth_creds.json",
   codex: "~/.codex/oauth.json",
   claude_oauth: "~/.claude/oauth.json",
-  iflow: "~/.iflow/oauth.json",
+  iflow: "~/.iflow/oauth_creds.json",
 };
 
 export function AddCredentialModal({
@@ -207,7 +207,8 @@ export function AddCredentialModal({
                   {providerType === "codex" && "默认路径: ~/.codex/oauth.json"}
                   {providerType === "claude_oauth" &&
                     "默认路径: ~/.claude/oauth.json"}
-                  {providerType === "iflow" && "默认路径: ~/.iflow/oauth.json"}
+                  {providerType === "iflow" &&
+                    "默认路径: ~/.iflow/oauth_creds.json"}
                 </p>
               </div>
 

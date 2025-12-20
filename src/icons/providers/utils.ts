@@ -11,7 +11,7 @@ const providerTypeToIcon: Record<string, string> = {
   anthropic: "anthropic",
   codex: "openai",
   claude_oauth: "claude",
-  iflow: "openai",
+  iflow: "alibaba",
   amp: "amp",
   google: "google",
   alibaba: "alibaba",

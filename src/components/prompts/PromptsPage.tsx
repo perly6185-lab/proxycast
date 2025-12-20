@@ -12,11 +12,22 @@ import { usePrompts } from "@/hooks/usePrompts";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { HelpTip } from "@/components/HelpTip";
+import { ProviderIcon } from "@/icons/providers";
 
-const apps: { id: AppType; label: string; filename: string }[] = [
-  { id: "claude", label: "Claude Code", filename: "CLAUDE.md" },
-  { id: "codex", label: "Codex", filename: "AGENTS.md" },
-  { id: "gemini", label: "Gemini", filename: "GEMINI.md" },
+const apps: {
+  id: AppType;
+  label: string;
+  filename: string;
+  iconType: string;
+}[] = [
+  {
+    id: "claude",
+    label: "Claude Code",
+    filename: "CLAUDE.md",
+    iconType: "claude",
+  },
+  { id: "codex", label: "Codex", filename: "AGENTS.md", iconType: "openai" },
+  { id: "gemini", label: "Gemini", filename: "GEMINI.md", iconType: "gemini" },
 ];
 
 /** Toggle Switch Component */
@@ -212,12 +223,13 @@ export function PromptsPage({ hideHeader = false }: PromptsPageProps) {
             key={app.id}
             onClick={() => handleAppChange(app.id)}
             className={cn(
-              "px-4 py-2 rounded-t-lg text-sm font-medium transition-colors",
+              "flex items-center gap-2 px-4 py-2 rounded-t-lg text-sm font-medium transition-colors",
               activeApp === app.id
                 ? "bg-primary text-primary-foreground"
                 : "hover:bg-muted text-muted-foreground",
             )}
           >
+            <ProviderIcon providerType={app.iconType} size={16} />
             {app.label}
           </button>
         ))}

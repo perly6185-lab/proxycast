@@ -24,6 +24,7 @@ use std::sync::Arc;
 use tauri::{Manager, Runtime};
 use tokio::sync::RwLock;
 
+use commands::plugin_cmd::PluginManagerState;
 use commands::provider_pool_cmd::{CredentialSyncServiceState, ProviderPoolServiceState};
 use commands::resilience_cmd::ResilienceConfigState;
 use commands::router_cmd::RouterConfigState;
@@ -1373,6 +1374,10 @@ pub fn run() {
     // Initialize ResilienceConfigState
     let resilience_config_state = ResilienceConfigState::default();
 
+    // Initialize PluginManager
+    let plugin_manager = plugin::PluginManager::with_defaults();
+    let plugin_manager_state = PluginManagerState(Arc::new(RwLock::new(plugin_manager)));
+
     // Initialize shared telemetry instances for both TelemetryState and RequestProcessor
     // This allows the frontend monitoring page to display data recorded by the request processor
     let shared_stats = Arc::new(parking_lot::RwLock::new(
@@ -1427,6 +1432,7 @@ pub fn run() {
         .manage(router_config_state)
         .manage(resilience_config_state)
         .manage(telemetry_state)
+        .manage(plugin_manager_state)
         .setup(move |app| {
             // 初始化托盘管理器
             // Requirements 1.4: 应用启动时显示停止状态图标
@@ -1666,6 +1672,10 @@ pub fn run() {
             commands::provider_pool_cmd::add_antigravity_oauth_credential,
             commands::provider_pool_cmd::add_openai_key_credential,
             commands::provider_pool_cmd::add_claude_key_credential,
+            commands::provider_pool_cmd::add_codex_oauth_credential,
+            commands::provider_pool_cmd::add_claude_oauth_credential,
+            commands::provider_pool_cmd::add_iflow_oauth_credential,
+            commands::provider_pool_cmd::add_iflow_cookie_credential,
             commands::provider_pool_cmd::refresh_pool_credential_token,
             commands::provider_pool_cmd::get_pool_credential_oauth_status,
             commands::provider_pool_cmd::debug_kiro_credentials,
@@ -1724,6 +1734,17 @@ pub fn run() {
             commands::tray_cmd::get_tray_state,
             commands::tray_cmd::refresh_tray_menu,
             commands::tray_cmd::refresh_tray_with_stats,
+            // Plugin commands
+            commands::plugin_cmd::get_plugin_status,
+            commands::plugin_cmd::get_plugins,
+            commands::plugin_cmd::get_plugin_info,
+            commands::plugin_cmd::enable_plugin,
+            commands::plugin_cmd::disable_plugin,
+            commands::plugin_cmd::update_plugin_config,
+            commands::plugin_cmd::get_plugin_config,
+            commands::plugin_cmd::reload_plugins,
+            commands::plugin_cmd::unload_plugin,
+            commands::plugin_cmd::get_plugins_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

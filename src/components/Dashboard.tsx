@@ -25,6 +25,7 @@ import { useAllOAuthCredentials } from "@/hooks/useOAuthCredentials";
 import { StatsOverview } from "./monitoring/StatsOverview";
 import { LogViewer } from "./monitoring/LogViewer";
 import { TokenStats } from "./monitoring/TokenStats";
+import { ProviderIcon } from "@/icons/providers";
 import {
   getDashboardData,
   getRequestLogs,
@@ -376,12 +377,15 @@ function OverviewTab({
               key={cred.provider}
               className="flex items-center justify-between rounded-lg border bg-background p-3"
             >
-              <div>
-                <div className="font-medium">
-                  {getProviderName(cred.provider)}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {cred.has_access_token ? "Token 已加载" : "未配置"}
+              <div className="flex items-center gap-3">
+                <ProviderIcon providerType={cred.provider} size={20} />
+                <div>
+                  <div className="font-medium">
+                    {getProviderName(cred.provider)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {cred.has_access_token ? "Token 已加载" : "未配置"}
+                  </div>
                 </div>
               </div>
               <div

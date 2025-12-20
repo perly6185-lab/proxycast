@@ -104,6 +104,16 @@ impl Default for IFlowCredentials {
     }
 }
 
+/// iFlow API Key 数据
+/// 与 CLIProxyAPI 的 iFlowKeyData 对齐
+#[derive(Debug, Clone)]
+pub struct IFlowKeyData {
+    pub api_key: String,
+    pub expire_time: String,
+    pub name: String,
+    pub has_expired: bool,
+}
+
 /// Enum representation of iFlow credentials for type-safe handling
 #[derive(Debug, Clone)]
 pub enum IFlowCredentialsType {
@@ -800,6 +810,179 @@ impl IFlowProvider {
         } else {
             Err(create_auth_error("获取用户信息失败"))
         }
+    }
+
+    /// 检查 Cookie API Key 是否需要刷新（距离过期 2 天内）
+    /// 与 CLIProxyAPI 的 ShouldRefreshAPIKey 对齐
+    pub fn should_refresh_api_key(&self) -> bool {
+        if let Some(expire_str) = &self.credentials.expire {
+            // 尝试解析 "2006-01-02 15:04" 格式（iFlow 返回的格式）
+            if let Ok(expire) = chrono::NaiveDateTime::parse_from_str(expire_str, "%Y-%m-%d %H:%M")
+            {
+                let expire_utc = expire.and_utc();
+                let now = chrono::Utc::now();
+                let two_days_from_now = now + chrono::Duration::hours(48);
+                return expire_utc < two_days_from_now;
+            }
+            // 尝试解析 RFC3339 格式
+            if let Ok(expire) = chrono::DateTime::parse_from_rfc3339(expire_str) {
+                let now = chrono::Utc::now();
+                let two_days_from_now = now + chrono::Duration::hours(48);
+                return expire < two_days_from_now;
+            }
+        }
+        // 如果没有过期时间，默认需要刷新
+        true
+    }
+
+    /// 通过 Cookie 刷新 API Key
+    /// 与 CLIProxyAPI 的 RefreshAPIKey 对齐
+    pub async fn refresh_api_key_with_cookie(
+        &mut self,
+    ) -> Result<String, Box<dyn Error + Send + Sync>> {
+        let cookie = self
+            .credentials
+            .cookies
+            .as_ref()
+            .ok_or_else(|| create_config_error("没有可用的 Cookie"))?
+            .clone();
+
+        let email = self
+            .credentials
+            .email
+            .as_ref()
+            .ok_or_else(|| create_config_error("没有可用的用户标识（email）"))?
+            .clone();
+
+        tracing::info!("[IFLOW] 正在通过 Cookie 刷新 API Key，用户: {}", email);
+
+        // 首先获取当前 API Key 信息（GET 请求）
+        let key_info = self.fetch_api_key_info(&cookie).await?;
+
+        // 然后刷新 API Key（POST 请求）
+        let refreshed_key = self.refresh_api_key(&cookie, &key_info.name).await?;
+
+        // 更新凭证
+        self.credentials.api_key = Some(refreshed_key.api_key.clone());
+        self.credentials.expire = Some(refreshed_key.expire_time.clone());
+        self.credentials.last_refresh = Some(chrono::Utc::now().to_rfc3339());
+
+        // 保存凭证
+        self.save_credentials().await?;
+
+        tracing::info!(
+            "[IFLOW] Cookie API Key 刷新成功，新过期时间: {}",
+            refreshed_key.expire_time
+        );
+
+        Ok(refreshed_key.api_key)
+    }
+
+    /// 获取 API Key 信息（GET 请求）
+    async fn fetch_api_key_info(
+        &self,
+        cookie: &str,
+    ) -> Result<IFlowKeyData, Box<dyn Error + Send + Sync>> {
+        let resp = self
+            .client
+            .get(IFLOW_API_KEY_URL)
+            .header("Cookie", cookie)
+            .header("Accept", "application/json, text/plain, */*")
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            .send()
+            .await
+            .map_err(|e| Box::new(ProviderError::from(e)) as Box<dyn Error + Send + Sync>)?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!("[IFLOW] 获取 API Key 信息失败: {} - {}", status, body);
+            return Err(create_auth_error(&format!(
+                "获取 API Key 信息失败: {} - {}",
+                status, body
+            )));
+        }
+
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| Box::new(ProviderError::from(e)) as Box<dyn Error + Send + Sync>)?;
+
+        if !data["success"].as_bool().unwrap_or(false) {
+            let message = data["message"].as_str().unwrap_or("未知错误");
+            return Err(create_auth_error(&format!(
+                "获取 API Key 信息失败: {}",
+                message
+            )));
+        }
+
+        let key_data = &data["data"];
+        Ok(IFlowKeyData {
+            api_key: key_data["apiKey"]
+                .as_str()
+                .or_else(|| key_data["apiKeyMask"].as_str())
+                .unwrap_or("")
+                .to_string(),
+            expire_time: key_data["expireTime"].as_str().unwrap_or("").to_string(),
+            name: key_data["name"].as_str().unwrap_or("").to_string(),
+            has_expired: key_data["hasExpired"].as_bool().unwrap_or(false),
+        })
+    }
+
+    /// 刷新 API Key（POST 请求）
+    async fn refresh_api_key(
+        &self,
+        cookie: &str,
+        name: &str,
+    ) -> Result<IFlowKeyData, Box<dyn Error + Send + Sync>> {
+        let body = serde_json::json!({ "name": name });
+
+        let resp = self
+            .client
+            .post(IFLOW_API_KEY_URL)
+            .header("Cookie", cookie)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/plain, */*")
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            .header("Origin", "https://platform.iflow.cn")
+            .header("Referer", "https://platform.iflow.cn/")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Box::new(ProviderError::from(e)) as Box<dyn Error + Send + Sync>)?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!("[IFLOW] 刷新 API Key 失败: {} - {}", status, body);
+            return Err(create_auth_error(&format!(
+                "刷新 API Key 失败: {} - {}",
+                status, body
+            )));
+        }
+
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| Box::new(ProviderError::from(e)) as Box<dyn Error + Send + Sync>)?;
+
+        if !data["success"].as_bool().unwrap_or(false) {
+            let message = data["message"].as_str().unwrap_or("未知错误");
+            return Err(create_auth_error(&format!(
+                "刷新 API Key 失败: {}",
+                message
+            )));
+        }
+
+        let key_data = &data["data"];
+        Ok(IFlowKeyData {
+            api_key: key_data["apiKey"].as_str().unwrap_or("").to_string(),
+            expire_time: key_data["expireTime"].as_str().unwrap_or("").to_string(),
+            name: key_data["name"].as_str().unwrap_or("").to_string(),
+            has_expired: key_data["hasExpired"].as_bool().unwrap_or(false),
+        })
     }
 
     /// Refresh token with retry mechanism

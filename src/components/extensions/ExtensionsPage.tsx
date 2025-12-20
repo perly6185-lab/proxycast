@@ -1,16 +1,18 @@
 import { useState } from "react";
-import { Plug, MessageSquare, Boxes } from "lucide-react";
+import { Plug, MessageSquare, Boxes, Puzzle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { McpPage } from "../mcp/McpPage";
 import { PromptsPage } from "../prompts/PromptsPage";
 import { SkillsPage } from "../skills/SkillsPage";
+import { PluginManager } from "../plugins/PluginManager";
 
-type Tab = "mcp" | "prompts" | "skills";
+type Tab = "mcp" | "prompts" | "skills" | "plugins";
 
 const tabs = [
   { id: "mcp" as Tab, label: "MCP", icon: Plug },
   { id: "prompts" as Tab, label: "Prompts", icon: MessageSquare },
   { id: "skills" as Tab, label: "Skills", icon: Boxes },
+  { id: "plugins" as Tab, label: "Plugins", icon: Puzzle },
 ];
 
 export function ExtensionsPage() {
@@ -49,6 +51,7 @@ export function ExtensionsPage() {
         {activeTab === "mcp" && <McpPage hideHeader />}
         {activeTab === "prompts" && <PromptsPage hideHeader />}
         {activeTab === "skills" && <SkillsPage hideHeader />}
+        {activeTab === "plugins" && <PluginManager />}
       </div>
     </div>
   );

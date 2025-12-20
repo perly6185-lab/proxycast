@@ -736,6 +736,98 @@ pub fn add_claude_key_credential(
     )
 }
 
+/// 添加 Codex OAuth 凭证（通过文件路径）
+#[tauri::command]
+pub fn add_codex_oauth_credential(
+    db: State<'_, DbConnection>,
+    pool_service: State<'_, ProviderPoolServiceState>,
+    creds_file_path: String,
+    name: Option<String>,
+) -> Result<ProviderCredential, String> {
+    // 复制并重命名文件到应用存储目录
+    let stored_file_path = copy_and_rename_credential_file(&creds_file_path, "codex")?;
+
+    pool_service.0.add_credential(
+        &db,
+        "codex",
+        CredentialData::CodexOAuth {
+            creds_file_path: stored_file_path,
+        },
+        name,
+        Some(true),
+        None,
+    )
+}
+
+/// 添加 Claude OAuth 凭证（通过文件路径）
+#[tauri::command]
+pub fn add_claude_oauth_credential(
+    db: State<'_, DbConnection>,
+    pool_service: State<'_, ProviderPoolServiceState>,
+    creds_file_path: String,
+    name: Option<String>,
+) -> Result<ProviderCredential, String> {
+    // 复制并重命名文件到应用存储目录
+    let stored_file_path = copy_and_rename_credential_file(&creds_file_path, "claude_oauth")?;
+
+    pool_service.0.add_credential(
+        &db,
+        "claude_oauth",
+        CredentialData::ClaudeOAuth {
+            creds_file_path: stored_file_path,
+        },
+        name,
+        Some(true),
+        None,
+    )
+}
+
+/// 添加 iFlow OAuth 凭证（通过文件路径）
+#[tauri::command]
+pub fn add_iflow_oauth_credential(
+    db: State<'_, DbConnection>,
+    pool_service: State<'_, ProviderPoolServiceState>,
+    creds_file_path: String,
+    name: Option<String>,
+) -> Result<ProviderCredential, String> {
+    // 复制并重命名文件到应用存储目录
+    let stored_file_path = copy_and_rename_credential_file(&creds_file_path, "iflow")?;
+
+    pool_service.0.add_credential(
+        &db,
+        "iflow",
+        CredentialData::IFlowOAuth {
+            creds_file_path: stored_file_path,
+        },
+        name,
+        Some(true),
+        None,
+    )
+}
+
+/// 添加 iFlow Cookie 凭证（通过文件路径）
+#[tauri::command]
+pub fn add_iflow_cookie_credential(
+    db: State<'_, DbConnection>,
+    pool_service: State<'_, ProviderPoolServiceState>,
+    creds_file_path: String,
+    name: Option<String>,
+) -> Result<ProviderCredential, String> {
+    // 复制并重命名文件到应用存储目录
+    let stored_file_path = copy_and_rename_credential_file(&creds_file_path, "iflow_cookie")?;
+
+    pool_service.0.add_credential(
+        &db,
+        "iflow",
+        CredentialData::IFlowCookie {
+            creds_file_path: stored_file_path,
+        },
+        name,
+        Some(true),
+        None,
+    )
+}
+
 /// 刷新凭证的 OAuth Token
 #[tauri::command]
 pub async fn refresh_pool_credential_token(
