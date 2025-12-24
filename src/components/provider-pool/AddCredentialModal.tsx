@@ -354,6 +354,19 @@ export function AddCredentialModal({
       );
     }
 
+    // Claude OAuth Cookie 模式
+    if (providerType === "claude_oauth" && claudeOAuthForm.mode === "cookie") {
+      return (
+        <button
+          onClick={claudeOAuthForm.handleCookieSubmit}
+          disabled={loading}
+          className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        >
+          {loading ? "授权中..." : "Cookie 授权"}
+        </button>
+      );
+    }
+
     // Claude OAuth 登录模式
     if (providerType === "claude_oauth" && claudeOAuthForm.mode === "login") {
       if (!claudeOAuthForm.authUrl) {

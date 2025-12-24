@@ -1477,34 +1477,81 @@ pub struct ClaudeOAuthAuthUrlResponse {
 ///
 /// 启动服务器后通过事件发送授权 URL，然后等待回调
 /// 成功后返回凭证
+/// Claude OAuth 授权 URL 响应（新流程）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ClaudeOAuthParamsResponse {
+    pub auth_url: String,
+    pub code_verifier: String,
+    pub state: String,
+}
+
+/// 获取 Claude OAuth 授权 URL（新流程：手动输入授权码）
+///
+/// 生成授权 URL 和 PKCE 参数，用户需要：
+/// 1. 打开 auth_url 进行授权
+/// 2. 授权后从页面复制授权码
+/// 3. 调用 exchange_claude_oauth_code 交换 token
 #[tauri::command]
 pub async fn get_claude_oauth_auth_url_and_wait(
     app: tauri::AppHandle,
-    db: State<'_, DbConnection>,
-    pool_service: State<'_, ProviderPoolServiceState>,
-    name: Option<String>,
-) -> Result<ProviderCredential, String> {
+    _db: State<'_, DbConnection>,
+    _pool_service: State<'_, ProviderPoolServiceState>,
+    _name: Option<String>,
+) -> Result<ClaudeOAuthParamsResponse, String> {
     use crate::providers::claude_oauth;
 
-    tracing::info!("[Claude OAuth] 启动服务器并获取授权 URL");
+    tracing::info!("[Claude OAuth] 生成授权 URL（手动授权码流程）");
 
-    // 启动服务器并获取授权 URL
-    let (auth_url, wait_future) = claude_oauth::start_claude_oauth_server_and_get_url()
-        .await
-        .map_err(|e| format!("启动 OAuth 服务器失败: {}", e))?;
+    // 生成授权参数
+    let params = claude_oauth::generate_claude_oauth_params()
+        .map_err(|e| format!("生成授权参数失败: {}", e))?;
 
-    tracing::info!("[Claude OAuth] 授权 URL: {}", auth_url);
+    tracing::info!("[Claude OAuth] 授权 URL: {}", params.auth_url);
 
     // 通过事件发送授权 URL 给前端
     let _ = app.emit(
         "claude-oauth-auth-url",
         ClaudeOAuthAuthUrlResponse {
-            auth_url: auth_url.clone(),
+            auth_url: params.auth_url.clone(),
         },
     );
 
-    // 等待回调
-    let result = wait_future.await.map_err(|e| e.to_string())?;
+    // 打开浏览器
+    if let Err(e) = open::that(&params.auth_url) {
+        tracing::warn!("[Claude OAuth] 无法打开浏览器: {}. 请手动打开 URL.", e);
+    }
+
+    Ok(ClaudeOAuthParamsResponse {
+        auth_url: params.auth_url,
+        code_verifier: params.code_verifier,
+        state: params.state,
+    })
+}
+
+/// 使用授权码交换 Claude OAuth Token
+///
+/// 用户在浏览器中授权后，复制授权码，调用此命令交换 token
+#[tauri::command]
+pub async fn exchange_claude_oauth_code(
+    db: State<'_, DbConnection>,
+    pool_service: State<'_, ProviderPoolServiceState>,
+    authorization_code: String,
+    code_verifier: String,
+    state: String,
+    name: Option<String>,
+) -> Result<ProviderCredential, String> {
+    use crate::providers::claude_oauth;
+
+    tracing::info!("[Claude OAuth] 使用授权码交换 Token");
+
+    // 交换 Token
+    let result = claude_oauth::exchange_claude_authorization_code(
+        &authorization_code,
+        &code_verifier,
+        &state,
+    )
+    .await
+    .map_err(|e| format!("Claude OAuth Token 交换失败: {}", e))?;
 
     tracing::info!(
         "[Claude OAuth] 登录成功，凭证保存到: {}",
@@ -1528,26 +1575,71 @@ pub async fn get_claude_oauth_auth_url_and_wait(
     Ok(credential)
 }
 
-/// 启动 Claude OAuth 登录流程
+/// 启动 Claude OAuth 登录流程（兼容旧接口，现在返回授权参数）
 ///
-/// 打开浏览器让用户登录 Claude 账号，获取凭证
+/// 打开浏览器让用户登录 Claude 账号
+/// 注意：新流程需要用户手动复制授权码，然后调用 exchange_claude_oauth_code
 #[tauri::command]
 pub async fn start_claude_oauth_login(
+    _db: State<'_, DbConnection>,
+    _pool_service: State<'_, ProviderPoolServiceState>,
+    _name: Option<String>,
+) -> Result<ClaudeOAuthParamsResponse, String> {
+    use crate::providers::claude_oauth;
+
+    tracing::info!("[Claude OAuth] 开始 OAuth 登录流程（手动授权码模式）");
+
+    // 生成授权参数并打开浏览器
+    let params = claude_oauth::start_claude_oauth_login()
+        .await
+        .map_err(|e| format!("Claude OAuth 登录失败: {}", e))?;
+
+    Ok(ClaudeOAuthParamsResponse {
+        auth_url: params.auth_url,
+        code_verifier: params.code_verifier,
+        state: params.state,
+    })
+}
+
+/// Claude Cookie 自动授权响应
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ClaudeCookieOAuthResponse {
+    pub organization_uuid: Option<String>,
+    pub capabilities: Vec<String>,
+}
+
+/// 使用 Cookie (sessionKey) 自动完成 Claude OAuth 授权
+///
+/// 这是一个更便捷的授权方式，用户只需要提供从浏览器 Cookie 中获取的 sessionKey，
+/// 系统会自动完成整个 OAuth 流程，无需手动复制授权码。
+///
+/// # 参数
+/// - `session_key`: 从浏览器 Cookie 中获取的 sessionKey
+/// - `is_setup_token`: 是否为 Setup Token 模式（只需要推理权限，无 refresh_token）
+/// - `name`: 凭证名称（可选）
+#[tauri::command]
+pub async fn claude_oauth_with_cookie(
     db: State<'_, DbConnection>,
     pool_service: State<'_, ProviderPoolServiceState>,
+    session_key: String,
+    is_setup_token: Option<bool>,
     name: Option<String>,
 ) -> Result<ProviderCredential, String> {
     use crate::providers::claude_oauth;
 
-    tracing::info!("[Claude OAuth] 开始 OAuth 登录流程");
+    let is_setup = is_setup_token.unwrap_or(false);
+    tracing::info!(
+        "[Claude OAuth] 开始 Cookie 自动授权流程，is_setup_token: {}",
+        is_setup
+    );
 
-    // 启动 OAuth 登录
-    let result = claude_oauth::start_claude_oauth_login()
+    // 执行 Cookie 自动授权
+    let result = claude_oauth::oauth_with_cookie(&session_key, is_setup)
         .await
-        .map_err(|e| format!("Claude OAuth 登录失败: {}", e))?;
+        .map_err(|e| format!("Claude Cookie 授权失败: {}", e))?;
 
     tracing::info!(
-        "[Claude OAuth] 登录成功，凭证保存到: {}",
+        "[Claude OAuth] Cookie 授权成功，凭证保存到: {}",
         result.creds_file_path
     );
 
@@ -1563,7 +1655,11 @@ pub async fn start_claude_oauth_login(
         None,
     )?;
 
-    tracing::info!("[Claude OAuth] 凭证已添加到凭证池: {}", credential.uuid);
+    tracing::info!(
+        "[Claude OAuth] 凭证已添加到凭证池: {}, org_uuid: {:?}",
+        credential.uuid,
+        result.organization_uuid
+    );
 
     Ok(credential)
 }

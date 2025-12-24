@@ -1,18 +1,17 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  Activity,
   Server,
   Zap,
   Clock,
   Key,
   Monitor,
   Globe,
-  CheckCircle2,
   AlertCircle,
-  FileText,
   Coins,
   RefreshCw,
   LayoutDashboard,
+  Activity,
+  CheckCircle2,
 } from "lucide-react";
 import {
   getServerStatus,
@@ -22,38 +21,26 @@ import {
   getDefaultProvider,
 } from "@/hooks/useTauri";
 import { useAllOAuthCredentials } from "@/hooks/useOAuthCredentials";
-import { StatsOverview } from "./monitoring/StatsOverview";
-import { LogViewer } from "./monitoring/LogViewer";
+import { useProviderPool } from "@/hooks/useProviderPool";
 import { TokenStats } from "./monitoring/TokenStats";
-import { ProviderIcon } from "@/icons/providers";
 import {
-  getDashboardData,
-  getRequestLogs,
-  clearRequestLogs,
   getTokenStatsByDay,
   getTokenStatsByProvider,
-  type DashboardData,
-  type RequestLog,
   type PeriodTokenStats,
   type ProviderTokenStats,
-  type RequestStatus,
 } from "@/lib/api/telemetry";
 
-type TabType = "overview" | "stats" | "logs" | "tokens";
+type TabType = "overview" | "tokens";
 
 export function Dashboard() {
   const [activeTab, setActiveTab] = useState<TabType>("overview");
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
-  const [defaultProvider, setDefaultProvider] = useState<string>("kiro");
-  const { credentials: oauthCredentials, reload: reloadCredentials } =
-    useAllOAuthCredentials();
+  const [defaultProvider, setDefaultProvider] = useState<string>("");
+  const { reload: reloadCredentials } = useAllOAuthCredentials();
+  const { refresh: refreshProviderPool } = useProviderPool();
 
-  // 监控数据状态
-  const [dashboardData, setDashboardData] = useState<DashboardData | null>(
-    null,
-  );
-  const [logs, setLogs] = useState<RequestLog[]>([]);
+  // Token 数据状态
   const [tokensByDay, setTokensByDay] = useState<PeriodTokenStats[]>([]);
   const [tokensByProvider, setTokensByProvider] = useState<
     Record<string, ProviderTokenStats>
@@ -79,71 +66,44 @@ export function Dashboard() {
 
     fetchData();
     reloadCredentials();
+    refreshProviderPool();
 
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
-  }, [reloadCredentials]);
+  }, [reloadCredentials, refreshProviderPool]);
 
-  // 获取监控数据
+  // 获取Token数据
   const fetchMonitoringData = useCallback(async () => {
     try {
       setMonitoringLoading(true);
-      const [dashboard, logsData, dayStats, providerStats] = await Promise.all([
-        getDashboardData(),
-        getRequestLogs({ limit: 100 }),
+      const [dayStats, providerStats] = await Promise.all([
         getTokenStatsByDay(7),
         getTokenStatsByProvider({ preset: "7d" }),
       ]);
 
-      setDashboardData(dashboard);
-      setLogs(logsData);
       setTokensByDay(dayStats);
       setTokensByProvider(providerStats);
     } catch (e) {
-      console.error("Failed to fetch monitoring data:", e);
+      console.error("Failed to fetch token data:", e);
     } finally {
       setMonitoringLoading(false);
     }
   }, []);
 
-  // 切换到监控相关标签时加载数据
+  // 切换到Token标签时加载数据
   useEffect(() => {
-    if (activeTab !== "overview") {
+    if (activeTab === "tokens") {
       fetchMonitoringData();
     }
   }, [activeTab, fetchMonitoringData]);
 
-  // 定时刷新监控数据
+  // 定时刷新Token数据
   useEffect(() => {
-    if (activeTab !== "overview") {
+    if (activeTab === "tokens") {
       const interval = setInterval(fetchMonitoringData, 30000);
       return () => clearInterval(interval);
     }
   }, [activeTab, fetchMonitoringData]);
-
-  const handleClearLogs = async () => {
-    try {
-      await clearRequestLogs();
-      setLogs([]);
-    } catch (e) {
-      console.error("Failed to clear logs:", e);
-    }
-  };
-
-  const handleFilterLogs = async (filter: {
-    provider?: string;
-    status?: RequestStatus;
-  }) => {
-    try {
-      const filteredLogs = await getRequestLogs({
-        ...filter,
-        limit: 100,
-      });
-      setLogs(filteredLogs);
-    } catch (e) {
-      console.error("Failed to filter logs:", e);
-    }
-  };
 
   const formatUptime = (secs: number) => {
     const h = Math.floor(secs / 3600);
@@ -174,8 +134,6 @@ export function Dashboard() {
 
   const tabs: { id: TabType; label: string; icon: React.ElementType }[] = [
     { id: "overview", label: "概览", icon: LayoutDashboard },
-    { id: "stats", label: "统计", icon: Activity },
-    { id: "logs", label: "日志", icon: FileText },
     { id: "tokens", label: "Token", icon: Coins },
   ];
 
@@ -187,18 +145,20 @@ export function Dashboard() {
           <h2 className="text-2xl font-bold">仪表盘</h2>
           <p className="text-muted-foreground">系统状态与监控</p>
         </div>
-        {activeTab !== "overview" && (
-          <button
-            onClick={fetchMonitoringData}
-            disabled={monitoringLoading}
-            className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
-          >
-            <RefreshCw
-              className={`h-4 w-4 ${monitoringLoading ? "animate-spin" : ""}`}
-            />
-            刷新
-          </button>
-        )}
+        <div className="flex gap-2">
+          {activeTab === "tokens" && (
+            <button
+              onClick={fetchMonitoringData}
+              disabled={monitoringLoading}
+              className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`h-4 w-4 ${monitoringLoading ? "animate-spin" : ""}`}
+              />
+              刷新
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 标签页 */}
@@ -225,42 +185,37 @@ export function Dashboard() {
           status={status}
           config={config}
           defaultProvider={defaultProvider}
-          oauthCredentials={oauthCredentials}
           serverUrl={serverUrl}
           formatUptime={formatUptime}
           getProviderName={getProviderName}
         />
       )}
 
-      {activeTab === "stats" && dashboardData && (
-        <StatsOverview
-          stats={dashboardData.stats}
-          byProvider={dashboardData.by_provider}
-        />
-      )}
-
-      {activeTab === "logs" && (
-        <LogViewer
-          logs={logs}
-          onClear={handleClearLogs}
-          onFilter={handleFilterLogs}
-        />
-      )}
-
-      {activeTab === "tokens" && dashboardData && (
+      {activeTab === "tokens" && (
         <TokenStats
-          summary={dashboardData.tokens}
+          summary={{
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_tokens: 0,
+            record_count: 0,
+            actual_count: 0,
+            estimated_count: 0,
+            avg_input_tokens: 0,
+            avg_output_tokens: 0,
+          }}
           byProvider={tokensByProvider}
           byDay={tokensByDay}
         />
       )}
 
       {/* 加载状态 */}
-      {activeTab !== "overview" && monitoringLoading && !dashboardData && (
-        <div className="flex items-center justify-center py-12">
-          <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-        </div>
-      )}
+      {activeTab === "tokens" &&
+        monitoringLoading &&
+        Object.keys(tokensByProvider).length === 0 && (
+          <div className="flex items-center justify-center py-12">
+            <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        )}
     </div>
   );
 }
@@ -270,7 +225,6 @@ function OverviewTab({
   status,
   config,
   defaultProvider,
-  oauthCredentials,
   serverUrl,
   formatUptime,
   getProviderName,
@@ -278,12 +232,6 @@ function OverviewTab({
   status: ServerStatus | null;
   config: Config | null;
   defaultProvider: string;
-  oauthCredentials: Array<{
-    provider: string;
-    is_valid: boolean;
-    loaded: boolean;
-    has_access_token: boolean;
-  }>;
   serverUrl: string;
   formatUptime: (secs: number) => string;
   getProviderName: (id: string) => string;
@@ -331,7 +279,7 @@ function OverviewTab({
             <span className="text-sm text-muted-foreground">默认 Provider</span>
           </div>
           <div className="mt-2 font-medium">
-            {getProviderName(defaultProvider)}
+            {defaultProvider ? getProviderName(defaultProvider) : "加载中..."}
           </div>
         </div>
       </div>
@@ -342,12 +290,8 @@ function OverviewTab({
           icon={Key}
           title="凭证管理"
           description="管理 OAuth 凭证"
-          status={
-            oauthCredentials.filter((c) => c.is_valid).length > 0
-              ? "success"
-              : "warning"
-          }
-          statusText={`${oauthCredentials.filter((c) => c.is_valid).length}/${oauthCredentials.length} 有效`}
+          status="info"
+          statusText="Provider Pool 管理"
         />
         <QuickLinkCard
           icon={Monitor}
@@ -363,43 +307,6 @@ function OverviewTab({
           status={status?.running ? "success" : "warning"}
           statusText={status?.running ? "运行中" : "已停止"}
         />
-      </div>
-
-      {/* OAuth Credentials Overview */}
-      <div className="rounded-lg border bg-card p-6">
-        <h3 className="mb-4 font-semibold flex items-center gap-2">
-          <Key className="h-4 w-4" />
-          OAuth 凭证状态
-        </h3>
-        <div className="grid grid-cols-3 gap-4">
-          {oauthCredentials.map((cred) => (
-            <div
-              key={cred.provider}
-              className="flex items-center justify-between rounded-lg border bg-background p-3"
-            >
-              <div className="flex items-center gap-3">
-                <ProviderIcon providerType={cred.provider} size={20} />
-                <div>
-                  <div className="font-medium">
-                    {getProviderName(cred.provider)}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {cred.has_access_token ? "Token 已加载" : "未配置"}
-                  </div>
-                </div>
-              </div>
-              <div
-                className={`h-3 w-3 rounded-full ${
-                  cred.is_valid
-                    ? "bg-green-500"
-                    : cred.loaded
-                      ? "bg-yellow-500"
-                      : "bg-gray-400"
-                }`}
-              />
-            </div>
-          ))}
-        </div>
       </div>
 
       {/* Server Info */}

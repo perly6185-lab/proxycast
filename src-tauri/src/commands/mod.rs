@@ -1,3 +1,4 @@
+pub mod auto_fix_cmd;
 pub mod config_cmd;
 pub mod flow_monitor_cmd;
 pub mod injection_cmd;

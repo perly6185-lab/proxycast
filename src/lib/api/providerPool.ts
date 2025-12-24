@@ -420,6 +420,20 @@ export const providerPoolApi = {
     return invoke("get_claude_oauth_auth_url_and_wait", { name });
   },
 
+  // Claude Cookie 自动授权（使用 sessionKey 自动完成 OAuth 流程）
+  // 这是一个更便捷的授权方式，无需手动复制授权码
+  async claudeOAuthWithCookie(
+    sessionKey: string,
+    isSetupToken?: boolean,
+    name?: string,
+  ): Promise<ProviderCredential> {
+    return invoke("claude_oauth_with_cookie", {
+      sessionKey,
+      isSetupToken,
+      name,
+    });
+  },
+
   // Qwen Device Code Flow 登录（打开浏览器授权）
   async startQwenDeviceCodeLogin(name?: string): Promise<ProviderCredential> {
     return invoke("start_qwen_device_code_login", { name });

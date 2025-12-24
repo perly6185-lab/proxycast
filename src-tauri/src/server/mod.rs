@@ -206,6 +206,11 @@ impl ServerState {
         }
     }
 
+    /// 增加请求计数
+    pub fn increment_request_count(&mut self) {
+        self.requests = self.requests.saturating_add(1);
+    }
+
     pub async fn start(
         &mut self,
         logs: Arc<RwLock<LogStore>>,

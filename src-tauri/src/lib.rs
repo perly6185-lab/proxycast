@@ -246,9 +246,17 @@ async fn stop_server(
 #[tauri::command]
 async fn get_server_status(
     state: tauri::State<'_, AppState>,
+    telemetry_state: tauri::State<'_, commands::telemetry_cmd::TelemetryState>,
 ) -> Result<server::ServerStatus, String> {
     let s = state.read().await;
-    Ok(s.status())
+    let mut status = s.status();
+
+    // 从遥测系统获取真实的请求计数
+    let stats = telemetry_state.stats.read();
+    let summary = stats.summary(None);
+    status.requests = summary.total_requests;
+
+    Ok(status)
 }
 
 #[tauri::command]
@@ -1973,6 +1981,8 @@ pub fn run() {
             commands::provider_pool_cmd::start_codex_oauth_login,
             commands::provider_pool_cmd::get_claude_oauth_auth_url_and_wait,
             commands::provider_pool_cmd::start_claude_oauth_login,
+            commands::provider_pool_cmd::exchange_claude_oauth_code,
+            commands::provider_pool_cmd::claude_oauth_with_cookie,
             commands::provider_pool_cmd::get_qwen_device_code_and_wait,
             commands::provider_pool_cmd::start_qwen_device_code_login,
             commands::provider_pool_cmd::get_iflow_auth_url_and_wait,
@@ -2181,6 +2191,8 @@ pub fn run() {
             commands::window_cmd::set_window_size_by_option,
             commands::window_cmd::toggle_fullscreen,
             commands::window_cmd::is_fullscreen,
+            // Auto fix commands
+            commands::auto_fix_cmd::auto_fix_configuration,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,7 +1,18 @@
 //! Claude OAuth Provider
 //!
-//! 实现 Anthropic Claude OAuth 认证流程，与 CLIProxyAPI 对齐。
-//! 支持 Token 刷新、重试机制和统一凭证格式。
+//! 实现 Anthropic Claude OAuth 认证流程，与 claude-relay-service 对齐。
+//!
+//! ## 支持的授权方式
+//!
+//! 1. **标准 OAuth 流程** - 使用官方 redirect_uri，用户需手动复制授权码
+//! 2. **Cookie 自动授权** - 使用 sessionKey 自动完成整个 OAuth 流程
+//! 3. **Setup Token** - 只需推理权限，无 refresh_token
+//!
+//! ## 主要功能
+//!
+//! - Token 刷新和重试机制
+//! - 统一凭证格式
+//! - 组织信息获取
 
 use super::error::{
     create_auth_error, create_config_error, create_token_refresh_error, ProviderError,
@@ -11,11 +22,16 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::path::PathBuf;
 
-// OAuth 端点和凭证 - 与 CLIProxyAPI 完全一致
+// OAuth 端点和凭证 - 与 claude-relay-service 完全一致
 const CLAUDE_AUTH_URL: &str = "https://claude.ai/oauth/authorize";
 const CLAUDE_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const DEFAULT_CALLBACK_PORT: u16 = 54545;
+// 使用 Anthropic 官方 redirect_uri（用户需手动复制授权码）
+const CLAUDE_REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
+// OAuth scopes - 与 claude-relay-service 一致
+const CLAUDE_SCOPES: &str = "org:create_api_key user:profile user:inference";
+// Setup Token 只需要推理权限
+const CLAUDE_SCOPES_SETUP: &str = "user:inference";
 
 /// Claude OAuth 凭证存储
 ///
@@ -101,8 +117,6 @@ pub struct ClaudeOAuthProvider {
     pub client: Client,
     /// 凭证文件路径
     pub creds_path: Option<PathBuf>,
-    /// OAuth 回调端口
-    pub callback_port: u16,
 }
 
 impl Default for ClaudeOAuthProvider {
@@ -111,7 +125,6 @@ impl Default for ClaudeOAuthProvider {
             credentials: ClaudeOAuthCredentials::default(),
             client: Client::new(),
             creds_path: None,
-            callback_port: DEFAULT_CALLBACK_PORT,
         }
     }
 }
@@ -342,9 +355,14 @@ impl ClaudeOAuthProvider {
         CLAUDE_CLIENT_ID
     }
 
-    /// 获取回调 URI
-    pub fn get_redirect_uri(&self) -> String {
-        format!("http://localhost:{}/callback", self.callback_port)
+    /// 获取 redirect URI（官方 Anthropic 回调地址）
+    pub fn get_redirect_uri(&self) -> &'static str {
+        CLAUDE_REDIRECT_URI
+    }
+
+    /// 获取 OAuth scopes
+    pub fn get_scopes(&self) -> &'static str {
+        CLAUDE_SCOPES
     }
 }
 
@@ -352,8 +370,6 @@ impl ClaudeOAuthProvider {
 // OAuth 登录功能
 // ============================================================================
 
-use std::sync::Arc;
-use tokio::sync::oneshot;
 use uuid::Uuid;
 
 /// OAuth 登录成功后的凭证信息
@@ -363,15 +379,19 @@ pub struct ClaudeOAuthResult {
     pub creds_file_path: String,
 }
 
-/// 生成 Claude OAuth 授权 URL
-pub fn generate_claude_auth_url(port: u16, state: &str, code_challenge: &str) -> String {
-    let redirect_uri = format!("http://localhost:{}/oauth-callback", port);
-
+/// 生成 Claude OAuth 授权 URL（使用官方 redirect_uri）
+///
+/// 用户需要：
+/// 1. 打开此 URL 进行授权
+/// 2. 授权后从浏览器地址栏复制授权码
+/// 3. 将授权码粘贴回应用
+pub fn generate_claude_auth_url(state: &str, code_challenge: &str) -> String {
     let params = [
+        ("code", "true"),
         ("client_id", CLAUDE_CLIENT_ID),
         ("response_type", "code"),
-        ("redirect_uri", redirect_uri.as_str()),
-        ("scope", "user:inference user:profile"),
+        ("redirect_uri", CLAUDE_REDIRECT_URI),
+        ("scope", CLAUDE_SCOPES),
         ("state", state),
         ("code_challenge", code_challenge),
         ("code_challenge_method", "S256"),
@@ -386,25 +406,58 @@ pub fn generate_claude_auth_url(port: u16, state: &str, code_challenge: &str) ->
     format!("{}?{}", CLAUDE_AUTH_URL, query)
 }
 
-/// 用授权码交换 Token
+/// 生成 Setup Token 授权 URL（只需要推理权限）
+pub fn generate_claude_setup_token_auth_url(state: &str, code_challenge: &str) -> String {
+    let params = [
+        ("code", "true"),
+        ("client_id", CLAUDE_CLIENT_ID),
+        ("response_type", "code"),
+        ("redirect_uri", CLAUDE_REDIRECT_URI),
+        ("scope", CLAUDE_SCOPES_SETUP),
+        ("state", state),
+        ("code_challenge", code_challenge),
+        ("code_challenge_method", "S256"),
+    ];
+
+    let query = params
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, urlencoding::encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    format!("{}?{}", CLAUDE_AUTH_URL, query)
+}
+
+/// 用授权码交换 Token（使用官方 redirect_uri）
 pub async fn exchange_claude_code_for_token(
     client: &Client,
     code: &str,
     code_verifier: &str,
-    redirect_uri: &str,
+    state: &str,
 ) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
+    // 清理授权码，移除 URL 片段（与 claude-relay-service 一致）
+    let cleaned_code = code.split('#').next().unwrap_or(code);
+    let cleaned_code = cleaned_code.split('&').next().unwrap_or(cleaned_code);
+
     let body = serde_json::json!({
         "grant_type": "authorization_code",
         "client_id": CLAUDE_CLIENT_ID,
-        "code": code,
-        "redirect_uri": redirect_uri,
-        "code_verifier": code_verifier
+        "code": cleaned_code,
+        "redirect_uri": CLAUDE_REDIRECT_URI,
+        "code_verifier": code_verifier,
+        "state": state
     });
+
+    tracing::info!(
+        "[CLAUDE_OAUTH] 正在交换授权码，code 长度: {}",
+        cleaned_code.len()
+    );
 
     let resp = client
         .post(CLAUDE_TOKEN_URL)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
+        .header("User-Agent", "claude-cli/1.0.56 (external, cli)")
         .json(&body)
         .send()
         .await?;
@@ -412,300 +465,498 @@ pub async fn exchange_claude_code_for_token(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        tracing::error!("[CLAUDE_OAUTH] Token 交换失败: {} - {}", status, body);
         return Err(format!("Token 交换失败: {} - {}", status, body).into());
     }
 
     let data: serde_json::Value = resp.json().await?;
+    tracing::info!("[CLAUDE_OAUTH] Token 交换成功");
     Ok(data)
 }
 
-/// OAuth 成功页面 HTML
-const CLAUDE_OAUTH_SUCCESS_HTML: &str = r#"<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>授权成功</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: linear-gradient(135deg, #d97706 0%, #b45309 100%); }
-        .container { text-align: center; background: white; padding: 40px 60px; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
-        h1 { color: #d97706; margin-bottom: 16px; }
-        p { color: #666; margin-bottom: 8px; }
-        .email { color: #333; font-weight: 500; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>✓ 授权成功</h1>
-        <p>Claude 账号已添加到 ProxyCast</p>
-        <p class="email">EMAIL_PLACEHOLDER</p>
-        <p style="margin-top: 20px; color: #999;">可以关闭此页面</p>
-    </div>
-</body>
-</html>"#;
+/// OAuth 参数（用于手动授权码流程）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeOAuthParams {
+    /// 授权 URL
+    pub auth_url: String,
+    /// PKCE code_verifier（需要保存用于后续交换 token）
+    pub code_verifier: String,
+    /// state 参数
+    pub state: String,
+    /// code_challenge
+    pub code_challenge: String,
+}
 
-/// OAuth 失败页面 HTML
-const CLAUDE_OAUTH_ERROR_HTML: &str = r#"<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>授权失败</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
-        .container { text-align: center; background: white; padding: 40px 60px; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
-        h1 { color: #ef4444; margin-bottom: 16px; }
-        p { color: #666; }
-        .error { color: #ef4444; font-size: 14px; margin-top: 16px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>✗ 授权失败</h1>
-        <p>ERROR_PLACEHOLDER</p>
-        <p style="margin-top: 20px; color: #999;">请关闭此页面后重试</p>
-    </div>
-</body>
-</html>"#;
+/// 生成 OAuth 授权参数（不启动服务器）
+///
+/// 返回授权 URL 和 PKCE 参数，用户需要：
+/// 1. 打开 auth_url 进行授权
+/// 2. 授权后从页面复制授权码
+/// 3. 调用 exchange_claude_authorization_code 交换 token
+pub fn generate_claude_oauth_params() -> Result<ClaudeOAuthParams, Box<dyn Error + Send + Sync>> {
+    let pkce_codes = PKCECodes::generate()?;
+    let state = Uuid::new_v4().to_string();
 
-/// 启动 OAuth 服务器并返回授权 URL（不打开浏览器）
-pub async fn start_claude_oauth_server_and_get_url() -> Result<
-    (
-        String,
-        impl std::future::Future<Output = Result<ClaudeOAuthResult, Box<dyn Error + Send + Sync>>>,
-    ),
-    Box<dyn Error + Send + Sync>,
-> {
-    use axum::{extract::Query, response::Html, routing::get, Router};
-    use std::collections::HashMap;
-    use tokio::net::TcpListener;
+    let auth_url = generate_claude_auth_url(&state, &pkce_codes.code_challenge);
 
+    tracing::info!(
+        "[CLAUDE_OAUTH] 生成授权参数，state: {}, auth_url: {}",
+        state,
+        auth_url
+    );
+
+    Ok(ClaudeOAuthParams {
+        auth_url,
+        code_verifier: pkce_codes.code_verifier,
+        state,
+        code_challenge: pkce_codes.code_challenge,
+    })
+}
+
+/// 生成 Setup Token 授权参数
+pub fn generate_claude_setup_token_params(
+) -> Result<ClaudeOAuthParams, Box<dyn Error + Send + Sync>> {
+    let pkce_codes = PKCECodes::generate()?;
+    let state = Uuid::new_v4().to_string();
+
+    let auth_url = generate_claude_setup_token_auth_url(&state, &pkce_codes.code_challenge);
+
+    tracing::info!("[CLAUDE_OAUTH] 生成 Setup Token 授权参数，state: {}", state);
+
+    Ok(ClaudeOAuthParams {
+        auth_url,
+        code_verifier: pkce_codes.code_verifier,
+        state,
+        code_challenge: pkce_codes.code_challenge,
+    })
+}
+
+/// 解析授权码（支持完整 URL 或直接授权码）
+pub fn parse_claude_authorization_code(
+    input: &str,
+) -> Result<String, Box<dyn Error + Send + Sync>> {
+    let trimmed = input.trim();
+
+    // 情况1: 完整 URL
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        if let Ok(url) = url::Url::parse(trimmed) {
+            if let Some(code) = url
+                .query_pairs()
+                .find(|(k, _)| k == "code")
+                .map(|(_, v)| v.to_string())
+            {
+                return Ok(code);
+            }
+        }
+        return Err("回调 URL 中未找到授权码 (code 参数)".into());
+    }
+
+    // 情况2: 直接授权码（可能包含 URL fragments）
+    let cleaned = trimmed.split('#').next().unwrap_or(trimmed);
+    let cleaned = cleaned.split('&').next().unwrap_or(cleaned);
+
+    if cleaned.len() < 10 {
+        return Err("授权码格式无效，请确保复制了完整的授权码".into());
+    }
+
+    Ok(cleaned.to_string())
+}
+
+/// 使用授权码交换 Token 并保存凭证
+pub async fn exchange_claude_authorization_code(
+    authorization_code: &str,
+    code_verifier: &str,
+    state: &str,
+) -> Result<ClaudeOAuthResult, Box<dyn Error + Send + Sync>> {
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
-    // 生成 PKCE codes
-    let pkce_codes = PKCECodes::generate()?;
-    let code_verifier = pkce_codes.code_verifier.clone();
-    let code_challenge = pkce_codes.code_challenge.clone();
+    // 解析授权码
+    let code = parse_claude_authorization_code(authorization_code)?;
 
-    // 生成随机 state
-    let state = Uuid::new_v4().to_string();
-    let state_clone = state.clone();
+    // 交换 Token
+    let token_data = exchange_claude_code_for_token(&client, &code, code_verifier, state).await?;
 
-    // 创建 channel 用于接收回调结果
-    let (tx, rx) = oneshot::channel::<Result<ClaudeOAuthResult, String>>();
-    let tx = Arc::new(tokio::sync::Mutex::new(Some(tx)));
+    let access_token = token_data["access_token"].as_str().unwrap_or_default();
+    let refresh_token = token_data["refresh_token"].as_str().map(|s| s.to_string());
+    let expires_in = token_data["expires_in"].as_i64();
 
-    // 绑定到随机端口
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
+    // 从响应中提取用户邮箱
+    let email = token_data["account"]["email_address"]
+        .as_str()
+        .map(|s| s.to_string());
 
-    let redirect_uri = format!("http://localhost:{}/oauth-callback", port);
-    let redirect_uri_clone = redirect_uri.clone();
-
-    // 生成授权 URL
-    let auth_url = generate_claude_auth_url(port, &state, &code_challenge);
-
-    tracing::info!(
-        "[Claude OAuth] 服务器启动在端口 {}, 授权 URL: {}",
-        port,
-        auth_url
-    );
-
-    // 构建路由
-    let app = Router::new().route(
-        "/oauth-callback",
-        get(move |Query(params): Query<HashMap<String, String>>| {
-            let tx = tx.clone();
-            let client = client.clone();
-            let state_expected = state_clone.clone();
-            let redirect_uri = redirect_uri_clone.clone();
-            let code_verifier = code_verifier.clone();
-
-            async move {
-                let code = params.get("code");
-                let returned_state = params.get("state");
-                let error = params.get("error");
-
-                // 检查错误
-                if let Some(err) = error {
-                    let html = CLAUDE_OAUTH_ERROR_HTML.replace("ERROR_PLACEHOLDER", err);
-                    if let Some(sender) = tx.lock().await.take() {
-                        let _ = sender.send(Err(format!("OAuth 错误: {}", err)));
-                    }
-                    return Html(html);
-                }
-
-                // 检查 state
-                if returned_state.map(|s| s.as_str()) != Some(&state_expected) {
-                    let html =
-                        CLAUDE_OAUTH_ERROR_HTML.replace("ERROR_PLACEHOLDER", "State 验证失败");
-                    if let Some(sender) = tx.lock().await.take() {
-                        let _ = sender.send(Err("State 验证失败".to_string()));
-                    }
-                    return Html(html);
-                }
-
-                // 检查 code
-                let code = match code {
-                    Some(c) => c,
-                    None => {
-                        let html =
-                            CLAUDE_OAUTH_ERROR_HTML.replace("ERROR_PLACEHOLDER", "未收到授权码");
-                        if let Some(sender) = tx.lock().await.take() {
-                            let _ = sender.send(Err("未收到授权码".to_string()));
-                        }
-                        return Html(html);
-                    }
-                };
-
-                // 交换 Token
-                let token_result =
-                    exchange_claude_code_for_token(&client, code, &code_verifier, &redirect_uri)
-                        .await;
-                let token_data = match token_result {
-                    Ok(data) => data,
-                    Err(e) => {
-                        let html =
-                            CLAUDE_OAUTH_ERROR_HTML.replace("ERROR_PLACEHOLDER", &e.to_string());
-                        if let Some(sender) = tx.lock().await.take() {
-                            let _ = sender.send(Err(e.to_string()));
-                        }
-                        return Html(html);
-                    }
-                };
-
-                let access_token = token_data["access_token"].as_str().unwrap_or_default();
-                let refresh_token = token_data["refresh_token"].as_str().map(|s| s.to_string());
-                let expires_in = token_data["expires_in"].as_i64();
-
-                // 从响应中提取用户邮箱
-                let email = token_data["account"]["email_address"]
-                    .as_str()
-                    .map(|s| s.to_string());
-
-                // 构建凭证
-                let now = chrono::Utc::now();
-                let credentials = ClaudeOAuthCredentials {
-                    access_token: Some(access_token.to_string()),
-                    refresh_token,
-                    email: email.clone(),
-                    expire: expires_in.map(|e| (now + chrono::Duration::seconds(e)).to_rfc3339()),
-                    last_refresh: Some(now.to_rfc3339()),
-                    cred_type: "claude_oauth".to_string(),
-                };
-
-                // 保存凭证到应用数据目录
-                let creds_dir = dirs::data_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join("proxycast")
-                    .join("credentials")
-                    .join("claude_oauth");
-
-                if let Err(e) = std::fs::create_dir_all(&creds_dir) {
-                    let html = CLAUDE_OAUTH_ERROR_HTML
-                        .replace("ERROR_PLACEHOLDER", &format!("创建目录失败: {}", e));
-                    if let Some(sender) = tx.lock().await.take() {
-                        let _ = sender.send(Err(format!("创建目录失败: {}", e)));
-                    }
-                    return Html(html);
-                }
-
-                // 生成唯一文件名
-                let uuid = Uuid::new_v4().to_string();
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                let filename = format!("claude_oauth_{}_{}.json", &uuid[..8], timestamp);
-                let creds_file_path = creds_dir.join(&filename);
-
-                // 保存凭证
-                let creds_json = match serde_json::to_string_pretty(&credentials) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        let html = CLAUDE_OAUTH_ERROR_HTML
-                            .replace("ERROR_PLACEHOLDER", &format!("序列化凭证失败: {}", e));
-                        if let Some(sender) = tx.lock().await.take() {
-                            let _ = sender.send(Err(format!("序列化凭证失败: {}", e)));
-                        }
-                        return Html(html);
-                    }
-                };
-
-                if let Err(e) = std::fs::write(&creds_file_path, &creds_json) {
-                    let html = CLAUDE_OAUTH_ERROR_HTML
-                        .replace("ERROR_PLACEHOLDER", &format!("保存凭证失败: {}", e));
-                    if let Some(sender) = tx.lock().await.take() {
-                        let _ = sender.send(Err(format!("保存凭证失败: {}", e)));
-                    }
-                    return Html(html);
-                }
-
-                tracing::info!("[Claude OAuth] 凭证已保存到: {:?}", creds_file_path);
-
-                // 发送成功结果
-                let result = ClaudeOAuthResult {
-                    credentials,
-                    creds_file_path: creds_file_path.to_string_lossy().to_string(),
-                };
-
-                if let Some(sender) = tx.lock().await.take() {
-                    let _ = sender.send(Ok(result));
-                }
-
-                // 返回成功页面
-                let html = CLAUDE_OAUTH_SUCCESS_HTML.replace(
-                    "EMAIL_PLACEHOLDER",
-                    &email.unwrap_or_else(|| "未知邮箱".to_string()),
-                );
-                Html(html)
-            }
-        }),
-    );
-
-    // 启动服务器
-    let server = axum::serve(listener, app);
-
-    // 创建等待 future
-    let wait_future = async move {
-        // 设置超时（5 分钟）
-        let timeout = tokio::time::timeout(std::time::Duration::from_secs(300), async {
-            // 启动服务器（在后台运行）
-            tokio::spawn(async move {
-                if let Err(e) = server.await {
-                    tracing::error!("[Claude OAuth] 服务器错误: {}", e);
-                }
-            });
-
-            // 等待回调结果
-            match rx.await {
-                Ok(result) => result.map_err(|e| {
-                    Box::new(std::io::Error::other(e)) as Box<dyn Error + Send + Sync>
-                }),
-                Err(_) => Err("OAuth 回调通道关闭".into()),
-            }
-        });
-
-        match timeout.await {
-            Ok(result) => result,
-            Err(_) => Err("OAuth 登录超时（5分钟）".into()),
-        }
+    // 构建凭证
+    let now = chrono::Utc::now();
+    let credentials = ClaudeOAuthCredentials {
+        access_token: Some(access_token.to_string()),
+        refresh_token,
+        email: email.clone(),
+        expire: expires_in.map(|e| (now + chrono::Duration::seconds(e)).to_rfc3339()),
+        last_refresh: Some(now.to_rfc3339()),
+        cred_type: "claude_oauth".to_string(),
     };
 
-    Ok((auth_url, wait_future))
+    // 保存凭证到应用数据目录
+    let creds_dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("proxycast")
+        .join("credentials")
+        .join("claude_oauth");
+
+    std::fs::create_dir_all(&creds_dir)?;
+
+    // 生成唯一文件名
+    let uuid = Uuid::new_v4().to_string();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let filename = format!("claude_oauth_{}_{}.json", &uuid[..8], timestamp);
+    let creds_file_path = creds_dir.join(&filename);
+
+    // 保存凭证
+    let creds_json = serde_json::to_string_pretty(&credentials)?;
+    std::fs::write(&creds_file_path, &creds_json)?;
+
+    tracing::info!(
+        "[CLAUDE_OAUTH] 凭证已保存到: {:?}, email: {:?}",
+        creds_file_path,
+        email
+    );
+
+    Ok(ClaudeOAuthResult {
+        credentials,
+        creds_file_path: creds_file_path.to_string_lossy().to_string(),
+    })
 }
 
-/// 启动 Claude OAuth 登录流程（自动打开浏览器）
-pub async fn start_claude_oauth_login() -> Result<ClaudeOAuthResult, Box<dyn Error + Send + Sync>> {
-    let (auth_url, wait_future) = start_claude_oauth_server_and_get_url().await?;
+/// 启动 Claude OAuth 登录流程（打开浏览器，返回授权参数）
+///
+/// 新流程：
+/// 1. 生成授权参数
+/// 2. 打开浏览器
+/// 3. 返回参数供后续使用（用户需手动输入授权码）
+pub async fn start_claude_oauth_login() -> Result<ClaudeOAuthParams, Box<dyn Error + Send + Sync>> {
+    let params = generate_claude_oauth_params()?;
 
-    tracing::info!("[Claude OAuth] 打开浏览器进行授权: {}", auth_url);
+    tracing::info!("[CLAUDE_OAUTH] 打开浏览器进行授权: {}", params.auth_url);
 
     // 打开浏览器
-    if let Err(e) = open::that(&auth_url) {
-        tracing::warn!("[Claude OAuth] 无法打开浏览器: {}. 请手动打开 URL.", e);
+    if let Err(e) = open::that(&params.auth_url) {
+        tracing::warn!(
+            "[CLAUDE_OAUTH] 无法打开浏览器: {}. 请手动打开 URL: {}",
+            e,
+            params.auth_url
+        );
     }
 
-    // 等待回调
-    wait_future.await
+    Ok(params)
+}
+
+// ============================================================================
+// Cookie 自动授权功能（参考 claude-relay-service 实现）
+// ============================================================================
+
+/// Cookie 自动授权配置
+const CLAUDE_AI_URL: &str = "https://claude.ai";
+const CLAUDE_ORGANIZATIONS_URL: &str = "https://claude.ai/api/organizations";
+
+/// 组织信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrganizationInfo {
+    pub uuid: String,
+    pub capabilities: Vec<String>,
+}
+
+/// Cookie 自动授权结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CookieOAuthResult {
+    pub credentials: ClaudeOAuthCredentials,
+    pub creds_file_path: String,
+    pub organization_uuid: Option<String>,
+    pub capabilities: Vec<String>,
+}
+
+/// 构建带 Cookie 的请求头
+fn build_cookie_headers(session_key: &str) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("Accept", "application/json".parse().unwrap());
+    headers.insert("Accept-Language", "en-US,en;q=0.9".parse().unwrap());
+    headers.insert("Cache-Control", "no-cache".parse().unwrap());
+    headers.insert(
+        "Cookie",
+        format!("sessionKey={}", session_key).parse().unwrap(),
+    );
+    headers.insert("Origin", CLAUDE_AI_URL.parse().unwrap());
+    headers.insert("Referer", format!("{}/new", CLAUDE_AI_URL).parse().unwrap());
+    headers.insert(
+        "User-Agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            .parse()
+            .unwrap(),
+    );
+    headers
+}
+
+/// 使用 Cookie 获取组织信息
+async fn get_organization_info(
+    client: &Client,
+    session_key: &str,
+) -> Result<OrganizationInfo, Box<dyn Error + Send + Sync>> {
+    let headers = build_cookie_headers(session_key);
+
+    tracing::info!("[CLAUDE_OAUTH] 使用 Cookie 获取组织信息");
+
+    let resp = client
+        .get(CLAUDE_ORGANIZATIONS_URL)
+        .headers(headers)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        if status.as_u16() == 403 || status.as_u16() == 401 {
+            return Err("Cookie 授权失败：无效的 sessionKey 或已过期".into());
+        }
+        if status.as_u16() == 302 {
+            return Err("请求被 Cloudflare 拦截，请稍后重试".into());
+        }
+        return Err(format!("获取组织信息失败：HTTP {}", status).into());
+    }
+
+    let data: serde_json::Value = resp.json().await?;
+
+    if !data.is_array() {
+        return Err("获取组织信息失败：响应格式无效".into());
+    }
+
+    let orgs = data.as_array().unwrap();
+
+    // 找到具有 chat 能力且能力最多的组织
+    let mut best_org: Option<OrganizationInfo> = None;
+    let mut max_capabilities = 0;
+
+    for org in orgs {
+        let capabilities: Vec<String> = org["capabilities"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // 必须有 chat 能力
+        if !capabilities.contains(&"chat".to_string()) {
+            continue;
+        }
+
+        // 选择能力最多的组织
+        if capabilities.len() > max_capabilities {
+            if let Some(uuid) = org["uuid"].as_str() {
+                best_org = Some(OrganizationInfo {
+                    uuid: uuid.to_string(),
+                    capabilities: capabilities.clone(),
+                });
+                max_capabilities = capabilities.len();
+            }
+        }
+    }
+
+    best_org.ok_or_else(|| "未找到具有 chat 能力的组织".into())
+}
+
+/// 使用 Cookie 自动获取授权码
+async fn authorize_with_cookie(
+    client: &Client,
+    session_key: &str,
+    organization_uuid: &str,
+    scope: &str,
+) -> Result<(String, String, String), Box<dyn Error + Send + Sync>> {
+    // 生成 PKCE 参数
+    let pkce_codes = PKCECodes::generate()?;
+    let state = Uuid::new_v4().to_string();
+
+    // 构建授权 URL
+    let authorize_url = format!("https://claude.ai/v1/oauth/{}/authorize", organization_uuid);
+
+    // 构建请求 payload
+    let payload = serde_json::json!({
+        "response_type": "code",
+        "client_id": CLAUDE_CLIENT_ID,
+        "organization_uuid": organization_uuid,
+        "redirect_uri": CLAUDE_REDIRECT_URI,
+        "scope": scope,
+        "state": state,
+        "code_challenge": pkce_codes.code_challenge,
+        "code_challenge_method": "S256"
+    });
+
+    let mut headers = build_cookie_headers(session_key);
+    headers.insert("Content-Type", "application/json".parse().unwrap());
+
+    tracing::info!("[CLAUDE_OAUTH] 使用 Cookie 请求授权，scope: {}", scope);
+
+    let resp = client
+        .post(&authorize_url)
+        .headers(headers)
+        .json(&payload)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        if status.as_u16() == 403 || status.as_u16() == 401 {
+            return Err("Cookie 授权失败：无效的 sessionKey 或已过期".into());
+        }
+        if status.as_u16() == 302 {
+            return Err("请求被 Cloudflare 拦截，请稍后重试".into());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("授权请求失败：HTTP {} - {}", status, body).into());
+    }
+
+    let data: serde_json::Value = resp.json().await?;
+
+    // 从响应中获取 redirect_uri
+    let redirect_uri = data["redirect_uri"]
+        .as_str()
+        .ok_or("授权响应中未找到 redirect_uri")?;
+
+    tracing::info!(
+        "[CLAUDE_OAUTH] 获取到 redirect_uri: {}...",
+        &redirect_uri[..redirect_uri.len().min(80)]
+    );
+
+    // 解析 redirect_uri 获取授权码
+    let url = url::Url::parse(redirect_uri)?;
+    let authorization_code = url
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.to_string())
+        .ok_or("redirect_uri 中未找到授权码")?;
+
+    tracing::info!(
+        "[CLAUDE_OAUTH] 通过 Cookie 获取授权码成功，长度: {}",
+        authorization_code.len()
+    );
+
+    Ok((authorization_code, pkce_codes.code_verifier, state))
+}
+
+/// 完整的 Cookie 自动授权流程
+///
+/// 参考 claude-relay-service 的 oauthWithCookie 实现
+///
+/// # 参数
+/// - `session_key`: 从浏览器 Cookie 中获取的 sessionKey
+/// - `is_setup_token`: 是否为 Setup Token 模式（只需要推理权限）
+///
+/// # 返回
+/// - 成功时返回凭证信息和组织信息
+pub async fn oauth_with_cookie(
+    session_key: &str,
+    is_setup_token: bool,
+) -> Result<CookieOAuthResult, Box<dyn Error + Send + Sync>> {
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none()) // 禁止自动重定向
+        .build()?;
+
+    tracing::info!(
+        "[CLAUDE_OAUTH] 开始 Cookie 自动授权流程，is_setup_token: {}",
+        is_setup_token
+    );
+
+    // 步骤1：获取组织信息
+    tracing::info!("[CLAUDE_OAUTH] 步骤 1/3: 获取组织信息...");
+    let org_info = get_organization_info(&client, session_key).await?;
+    tracing::info!(
+        "[CLAUDE_OAUTH] 找到组织: uuid={}, capabilities={:?}",
+        org_info.uuid,
+        org_info.capabilities
+    );
+
+    // 步骤2：确定 scope 并获取授权码
+    let scope = if is_setup_token {
+        CLAUDE_SCOPES_SETUP
+    } else {
+        "user:profile user:inference"
+    };
+
+    tracing::info!("[CLAUDE_OAUTH] 步骤 2/3: 获取授权码...");
+    let (authorization_code, code_verifier, state) =
+        authorize_with_cookie(&client, session_key, &org_info.uuid, scope).await?;
+
+    // 步骤3：交换 Token
+    tracing::info!("[CLAUDE_OAUTH] 步骤 3/3: 交换 Token...");
+    let token_data =
+        exchange_claude_code_for_token(&client, &authorization_code, &code_verifier, &state)
+            .await?;
+
+    let access_token = token_data["access_token"].as_str().unwrap_or_default();
+    let refresh_token = if is_setup_token {
+        None // Setup Token 没有 refresh_token
+    } else {
+        token_data["refresh_token"].as_str().map(|s| s.to_string())
+    };
+    let expires_in = token_data["expires_in"].as_i64();
+
+    // 从响应中提取用户邮箱
+    let email = token_data["account"]["email_address"]
+        .as_str()
+        .map(|s| s.to_string());
+
+    // 构建凭证
+    let now = chrono::Utc::now();
+    let credentials = ClaudeOAuthCredentials {
+        access_token: Some(access_token.to_string()),
+        refresh_token,
+        email: email.clone(),
+        expire: expires_in.map(|e| (now + chrono::Duration::seconds(e)).to_rfc3339()),
+        last_refresh: Some(now.to_rfc3339()),
+        cred_type: if is_setup_token {
+            "claude_setup_token".to_string()
+        } else {
+            "claude_oauth".to_string()
+        },
+    };
+
+    // 保存凭证到应用数据目录
+    let creds_dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("proxycast")
+        .join("credentials")
+        .join("claude_oauth");
+
+    std::fs::create_dir_all(&creds_dir)?;
+
+    // 生成唯一文件名
+    let uuid = Uuid::new_v4().to_string();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token_type = if is_setup_token { "setup" } else { "oauth" };
+    let filename = format!("claude_{}_{}_{}.json", token_type, &uuid[..8], timestamp);
+    let creds_file_path = creds_dir.join(&filename);
+
+    // 保存凭证
+    let creds_json = serde_json::to_string_pretty(&credentials)?;
+    std::fs::write(&creds_file_path, &creds_json)?;
+
+    tracing::info!(
+        "[CLAUDE_OAUTH] Cookie 自动授权成功，凭证已保存到: {:?}, email: {:?}",
+        creds_file_path,
+        email
+    );
+
+    Ok(CookieOAuthResult {
+        credentials,
+        creds_file_path: creds_file_path.to_string_lossy().to_string(),
+        organization_uuid: Some(org_info.uuid),
+        capabilities: org_info.capabilities,
+    })
 }
