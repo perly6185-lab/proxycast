@@ -401,8 +401,8 @@ impl MachineIdService {
     #[cfg(not(target_os = "macos"))]
     async fn get_macos_machine_id(
         &self,
-        requires_admin: bool,
-        backup_exists: bool,
+        _requires_admin: bool,
+        _backup_exists: bool,
     ) -> Result<MachineIdInfo, String> {
         Err("macOS machine ID not supported on this platform".to_string())
     }
