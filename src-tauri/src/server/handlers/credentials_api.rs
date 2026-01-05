@@ -127,7 +127,7 @@ pub async fn credentials_select(
         }
     }
 
-    // 尝试从 API Key Provider 选择
+    // 尝试从 API Key Provider 选择（智能降级）
     if source_pref.is_none() || source_pref == Some("api_key") {
         if let Some(response) = try_select_api_key_credential(&state, db, &request).await? {
             return Ok(Json(response));
@@ -144,7 +144,7 @@ pub async fn credentials_select(
     // 没有找到可用凭证
     Err(CredentialApiError {
         error: "no_available_credentials".to_string(),
-        message: format!("没有可用的 {} 凭证", request.provider_type),
+        message: format!("没有可用的 {} 凭证。您可以在 API Key Provider 中配置 API Key 作为降级选项。", request.provider_type),
         status_code: 503,
     })
 }

@@ -394,7 +394,7 @@ pub struct AppState {
     pub endpoint_providers: Arc<RwLock<EndpointProvidersConfig>>,
     /// Kiro 事件服务
     pub kiro_event_service: Arc<KiroEventService>,
-    /// API Key Provider 服务
+    /// API Key Provider 服务（用于智能降级）
     pub api_key_service: Arc<crate::services::api_key_provider_service::ApiKeyProviderService>,
 }
 
@@ -1008,11 +1008,17 @@ async fn gemini_generate_content(
     // 获取默认 provider
     let default_provider = state.default_provider.read().await.clone();
 
-    // 尝试从凭证池中选择 Antigravity 凭证
+    // 尝试从凭证池中选择凭证（带智能降级）
     let credential = match &state.db {
         Some(db) => state
             .pool_service
-            .select_credential(db, &default_provider, Some(model))
+            .select_credential_with_fallback(
+                db,
+                &state.api_key_service,
+                &default_provider,
+                Some(model),
+                None, // provider_id_hint
+            )
             .ok()
             .flatten(),
         None => None,
@@ -1025,7 +1031,7 @@ async fn gemini_generate_content(
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({
                     "error": {
-                        "message": "没有可用的 Antigravity 凭证，请先添加凭证"
+                        "message": "没有可用的凭证。您可以在 API Key Provider 中配置 API Key 作为降级选项。"
                     }
                 })),
             )
@@ -1284,7 +1290,7 @@ async fn anthropic_messages_with_selector(
         ),
     );
 
-    // 尝试解析凭证
+    // 尝试解析凭证（带智能降级）
     let credential = match &state.db {
         Some(db) => {
             // 首先尝试按名称查找
@@ -1295,11 +1301,17 @@ async fn anthropic_messages_with_selector(
             else if let Ok(Some(cred)) = state.pool_service.get_by_uuid(db, &selector) {
                 Some(cred)
             }
-            // 最后尝试按 provider 类型轮询
+            // 最后尝试按 provider 类型轮询（带智能降级）
             else if let Ok(Some(cred)) =
                 state
                     .pool_service
-                    .select_credential(db, &selector, Some(&request.model))
+                    .select_credential_with_fallback(
+                        db,
+                        &state.api_key_service,
+                        &selector,
+                        Some(&request.model),
+                        None, // provider_id_hint
+                    )
             {
                 Some(cred)
             } else {
@@ -1363,7 +1375,7 @@ async fn chat_completions_with_selector(
         ),
     );
 
-    // 尝试解析凭证
+    // 尝试解析凭证（带智能降级）
     let credential = match &state.db {
         Some(db) => {
             if let Ok(Some(cred)) = state.pool_service.get_by_name(db, &selector) {
@@ -1373,7 +1385,13 @@ async fn chat_completions_with_selector(
             } else if let Ok(Some(cred)) =
                 state
                     .pool_service
-                    .select_credential(db, &selector, Some(&request.model))
+                    .select_credential_with_fallback(
+                        db,
+                        &state.api_key_service,
+                        &selector,
+                        Some(&request.model),
+                        None, // provider_id_hint
+                    )
             {
                 Some(cred)
             } else {
@@ -1456,14 +1474,20 @@ async fn amp_chat_completions(
         ),
     );
 
-    // 尝试根据 provider 名称选择凭证
+    // 尝试根据 provider 名称选择凭证（带智能降级）
     let credential = match &state.db {
         Some(db) => {
-            // 首先尝试按 provider 类型选择
+            // 首先尝试按 provider 类型选择（带智能降级）
             if let Ok(Some(cred)) =
                 state
                     .pool_service
-                    .select_credential(db, &provider, Some(&request.model))
+                    .select_credential_with_fallback(
+                        db,
+                        &state.api_key_service,
+                        &provider,
+                        Some(&request.model),
+                        Some(&provider), // provider_id_hint 使用路由中的 provider 名称
+                    )
             {
                 Some(cred)
             }
@@ -1552,14 +1576,20 @@ async fn amp_messages(
         ),
     );
 
-    // 尝试根据 provider 名称选择凭证
+    // 尝试根据 provider 名称选择凭证（带智能降级）
     let credential = match &state.db {
         Some(db) => {
-            // 首先尝试按 provider 类型选择
+            // 首先尝试按 provider 类型选择（带智能降级）
             if let Ok(Some(cred)) =
                 state
                     .pool_service
-                    .select_credential(db, &provider, Some(&request.model))
+                    .select_credential_with_fallback(
+                        db,
+                        &state.api_key_service,
+                        &provider,
+                        Some(&request.model),
+                        Some(&provider), // provider_id_hint 使用路由中的 provider 名称
+                    )
             {
                 Some(cred)
             }

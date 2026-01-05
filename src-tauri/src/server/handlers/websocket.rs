@@ -459,11 +459,17 @@ async fn handle_ws_chat_completions(
     // 获取默认 provider
     let default_provider = state.default_provider.read().await.clone();
 
-    // 尝试从凭证池中选择凭证
+    // 尝试从凭证池中选择凭证（带智能降级）
     let credential = match &state.db {
         Some(db) => state
             .pool_service
-            .select_credential(db, &default_provider, Some(&request.model))
+            .select_credential_with_fallback(
+                db,
+                &state.api_key_service,
+                &default_provider,
+                Some(&request.model),
+                None, // provider_id_hint
+            )
             .ok()
             .flatten(),
         None => None,
@@ -592,11 +598,17 @@ async fn handle_ws_anthropic_messages(
     // 获取默认 provider
     let default_provider = state.default_provider.read().await.clone();
 
-    // 尝试从凭证池中选择凭证
+    // 尝试从凭证池中选择凭证（带智能降级）
     let credential = match &state.db {
         Some(db) => state
             .pool_service
-            .select_credential(db, &default_provider, Some(&request.model))
+            .select_credential_with_fallback(
+                db,
+                &state.api_key_service,
+                &default_provider,
+                Some(&request.model),
+                None, // provider_id_hint
+            )
             .ok()
             .flatten(),
         None => None,

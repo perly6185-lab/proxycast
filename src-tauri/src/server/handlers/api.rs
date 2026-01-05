@@ -783,7 +783,7 @@ pub async fn chat_completions(
         }
     };
 
-    // 如果 Provider Pool 中没有找到凭证，尝试从 API Key Provider 获取
+    // 如果 Provider Pool 中没有找到凭证，尝试从 API Key Provider 获取（智能降级）
     let credential = if credential.is_none() {
         eprintln!("[CHAT_COMPLETIONS] Provider Pool 中未找到凭证，尝试 API Key Provider...");
 
@@ -1714,13 +1714,19 @@ pub async fn anthropic_messages(
         ),
     );
 
-    // 尝试从凭证池中选择凭证
+    // 尝试从凭证池中选择凭证（带智能降级）
     let credential = match &state.db {
         Some(db) => {
             // 根据选择的 Provider 配置选择凭证
             state
                 .pool_service
-                .select_credential(db, &selected_provider, Some(&request.model))
+                .select_credential_with_fallback(
+                    db,
+                    &state.api_key_service,
+                    &selected_provider,
+                    Some(&request.model),
+                    None, // provider_id_hint 可从路由或请求头提取
+                )
                 .ok()
                 .flatten()
         }

@@ -248,7 +248,7 @@ pub async fn select_credential(
                 status_code: 404,
             })?
     } else {
-        // 智能选择最优凭证
+        // 智能选择最优凭证（Kiro 是 OAuth-only，不支持降级到 API Key）
         state
             .pool_service
             .select_credential(db, "kiro", request.model.as_deref())
@@ -259,7 +259,7 @@ pub async fn select_credential(
             })?
             .ok_or_else(|| ApiError {
                 error: "no_available_credentials".to_string(),
-                message: "没有可用的kiro凭证".to_string(),
+                message: "没有可用的 Kiro 凭证。Kiro 仅支持 OAuth 认证，无法降级到 API Key。".to_string(),
                 status_code: 503,
             })?
     };

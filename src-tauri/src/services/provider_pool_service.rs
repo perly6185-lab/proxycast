@@ -6,6 +6,7 @@
 
 use crate::database::dao::provider_pool::ProviderPoolDao;
 use crate::database::DbConnection;
+use crate::services::api_key_provider_service::ApiKeyProviderService;
 use crate::models::provider_pool_model::{
     get_default_check_model, get_oauth_creds_path, CredentialData, CredentialDisplay,
     HealthCheckResult, OAuthStatus, PoolProviderType, PoolStats, ProviderCredential,
@@ -314,6 +315,63 @@ impl ProviderPoolService {
         let selected = self.select_best_credential_by_weight(&available);
 
         Ok(Some(selected))
+    }
+
+    /// 带智能降级的凭证选择
+    ///
+    /// 当 Provider Pool 无可用凭证时，自动从 API Key Provider 降级查找
+    ///
+    /// # 参数
+    /// - `db`: 数据库连接
+    /// - `api_key_service`: API Key Provider 服务
+    /// - `provider_type`: Provider 类型字符串，如 "claude", "openai", "qwen"
+    /// - `model`: 可选的模型名称
+    /// - `provider_id_hint`: 可选的 provider_id 提示，用于 60+ Provider 直接查找
+    ///
+    /// # 返回
+    /// - `Ok(Some(credential))`: 找到可用凭证（来自 Pool 或降级）
+    /// - `Ok(None)`: 没有找到任何可用凭证
+    /// - `Err(e)`: 查询过程中发生错误
+    pub fn select_credential_with_fallback(
+        &self,
+        db: &DbConnection,
+        api_key_service: &ApiKeyProviderService,
+        provider_type: &str,
+        model: Option<&str>,
+        provider_id_hint: Option<&str>,
+    ) -> Result<Option<ProviderCredential>, String> {
+        // Step 1: 尝试从 Provider Pool 选择 (OAuth + API Key)
+        if let Some(cred) = self.select_credential(db, provider_type, model)? {
+            tracing::debug!(
+                "[凭证选择] 从 Provider Pool 找到 '{}' 凭证: {:?}",
+                provider_type,
+                cred.name
+            );
+            return Ok(Some(cred));
+        }
+
+        // Step 2: 智能降级到 API Key Provider
+        let pt: PoolProviderType = provider_type
+            .parse()
+            .unwrap_or(PoolProviderType::OpenAI);
+
+        // 传入 provider_id_hint 支持 60+ Provider
+        if let Some(cred) = api_key_service.get_fallback_credential(db, &pt, provider_id_hint)? {
+            tracing::info!(
+                "[智能降级] Provider Pool 无 '{}' 凭证，使用 API Key Provider 降级 (provider_id: {:?})",
+                provider_type,
+                provider_id_hint
+            );
+            return Ok(Some(cred));
+        }
+
+        // Step 3: 都没有找到
+        tracing::warn!(
+            "[凭证选择] 未找到 '{}' 的任何可用凭证 (provider_id_hint: {:?})",
+            provider_type,
+            provider_id_hint
+        );
+        Ok(None)
     }
 
     /// 基于权重分数选择最优凭证
