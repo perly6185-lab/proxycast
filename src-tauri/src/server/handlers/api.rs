@@ -337,21 +337,39 @@ fn build_llm_response(status_code: u16, content: &str, usage: Option<(u32, u32)>
 ///
 /// **Validates: Requirements 1.3, 1.4, 3.4**
 ///
-/// 优先级：端点 Provider 配置 > 默认 Provider
+/// 优先级：X-Provider-Id 请求头 > 端点 Provider 配置 > 默认 Provider
 ///
 /// # 参数
-/// - `headers`: HTTP 请求头，用于提取 User-Agent
+/// - `headers`: HTTP 请求头，用于提取 User-Agent 和 X-Provider-Id
 /// - `state`: 应用状态，包含端点配置和默认 Provider
 ///
 /// # 返回
-/// 选择的 Provider 名称和检测到的客户端类型
-async fn select_provider_for_client(headers: &HeaderMap, state: &AppState) -> (String, ClientType) {
+/// (选择的 Provider 名称, 检测到的客户端类型, 可选的 Provider ID hint)
+async fn select_provider_for_client(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> (String, ClientType, Option<String>) {
     // 从 User-Agent 检测客户端类型
     let user_agent = headers
         .get("user-agent")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let client_type = ClientType::from_user_agent(user_agent);
+
+    // 检查 X-Provider-Id 请求头（最高优先级）
+    let provider_id_hint = headers
+        .get("x-provider-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    // 如果有 X-Provider-Id，直接使用它作为 provider
+    if let Some(ref provider_id) = provider_id_hint {
+        eprintln!(
+            "[SELECT_PROVIDER] 使用 X-Provider-Id 请求头: {}",
+            provider_id
+        );
+        return (provider_id.clone(), client_type, provider_id_hint);
+    }
 
     // 获取端点 Provider 配置
     let endpoint_providers = state.endpoint_providers.read().await;
@@ -366,7 +384,7 @@ async fn select_provider_for_client(headers: &HeaderMap, state: &AppState) -> (S
         None => default_provider,
     };
 
-    (selected_provider, client_type)
+    (selected_provider, client_type, provider_id_hint)
 }
 
 // ============================================================================
@@ -699,7 +717,7 @@ pub async fn chat_completions(
 
     // 根据客户端类型选择 Provider
     // **Validates: Requirements 3.1, 3.3, 3.4**
-    let (selected_provider, client_type) = select_provider_for_client(&headers, &state).await;
+    let (selected_provider, client_type, provider_id_hint) = select_provider_for_client(&headers, &state).await;
     eprintln!(
         "[CHAT_COMPLETIONS] 客户端类型: {}, 选择的Provider: {}",
         client_type, selected_provider
@@ -787,9 +805,97 @@ pub async fn chat_completions(
     let credential = if credential.is_none() {
         eprintln!("[CHAT_COMPLETIONS] Provider Pool 中未找到凭证，尝试 API Key Provider...");
 
-        // 根据 selected_provider 映射到 ApiProviderType
         use crate::database::dao::api_key_provider::ApiProviderType;
-        let api_provider_type = match selected_provider.to_lowercase().as_str() {
+
+        // 优先使用 provider_id_hint（来自 X-Provider-Id 请求头）按 provider_id 精确查找
+        let mut found_by_hint: Option<crate::models::provider_pool_model::ProviderCredential> = None;
+        if let (Some(db), Some(ref hint)) = (&state.db, &provider_id_hint) {
+            eprintln!(
+                "[CHAT_COMPLETIONS] 使用 provider_id_hint '{}' 精确查找 API Key",
+                hint
+            );
+
+            // 首先尝试按 provider_id 精确获取
+            match state.api_key_service.get_next_api_key_with_provider_info(db, hint) {
+                Ok(Some((api_key, provider_info))) => {
+                    eprintln!(
+                        "[CHAT_COMPLETIONS] 通过 provider_id '{}' 找到凭证: api_host={}",
+                        hint,
+                        provider_info.api_host
+                    );
+
+                    let base_url = if provider_info.api_host.is_empty() {
+                        None
+                    } else {
+                        Some(provider_info.api_host.clone())
+                    };
+
+                    let provider_type = match provider_info.provider_type {
+                        ApiProviderType::Anthropic => crate::ProviderType::Anthropic,
+                        ApiProviderType::Openai | ApiProviderType::OpenaiResponse => {
+                            crate::ProviderType::OpenAI
+                        }
+                        ApiProviderType::Gemini => crate::ProviderType::GeminiApiKey,
+                        _ => crate::ProviderType::OpenAI,
+                    };
+
+                    let credential_data = match provider_type {
+                        crate::ProviderType::Anthropic => {
+                            crate::models::provider_pool_model::CredentialData::AnthropicKey {
+                                api_key: api_key.clone(),
+                                base_url,
+                            }
+                        }
+                        crate::ProviderType::GeminiApiKey => {
+                            crate::models::provider_pool_model::CredentialData::GeminiApiKey {
+                                api_key: api_key.clone(),
+                                base_url,
+                                excluded_models: vec![],
+                            }
+                        }
+                        _ => crate::models::provider_pool_model::CredentialData::OpenAIKey {
+                            api_key: api_key.clone(),
+                            base_url,
+                        },
+                    };
+
+                    let mut cred = crate::models::provider_pool_model::ProviderCredential::new(
+                        provider_type,
+                        credential_data,
+                    );
+                    cred.name = Some(provider_info.name.clone());
+
+                    state.logs.write().await.add(
+                        "info",
+                        &format!(
+                            "[ROUTE] Using API Key Provider credential by provider_id: provider={}, type={:?}",
+                            provider_info.name, provider_info.provider_type
+                        ),
+                    );
+
+                    found_by_hint = Some(cred);
+                }
+                Ok(None) => {
+                    eprintln!(
+                        "[CHAT_COMPLETIONS] provider_id '{}' 没有可用的 API Key，回退到类型查找",
+                        hint
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[CHAT_COMPLETIONS] 通过 provider_id '{}' 获取凭证失败: {}，回退到类型查找",
+                        hint, e
+                    );
+                }
+            }
+        }
+
+        // 如果通过 provider_id_hint 找到了凭证，直接使用
+        if found_by_hint.is_some() {
+            found_by_hint
+        } else {
+            // 回退：根据 selected_provider 映射到 ApiProviderType
+            let api_provider_type = match selected_provider.to_lowercase().as_str() {
             "anthropic" | "claude" => Some(ApiProviderType::Anthropic),
             "openai" => Some(ApiProviderType::Openai),
             "gemini" => Some(ApiProviderType::Gemini),
@@ -882,6 +988,7 @@ pub async fn chat_completions(
         } else {
             None
         }
+        } // end of else block for found_by_hint
     } else {
         credential
     };
@@ -1694,7 +1801,7 @@ pub async fn anthropic_messages(
 
     // 根据客户端类型选择 Provider
     // **Validates: Requirements 3.1, 3.3, 3.4**
-    let (selected_provider, client_type) = select_provider_for_client(&headers, &state).await;
+    let (selected_provider, client_type, provider_id_hint) = select_provider_for_client(&headers, &state).await;
 
     // 记录客户端检测和 Provider 选择结果
     state.logs.write().await.add(

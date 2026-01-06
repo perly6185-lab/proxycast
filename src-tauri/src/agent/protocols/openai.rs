@@ -270,12 +270,14 @@ impl Protocol for OpenAIProtocol {
         config: &AgentConfig,
         tools: Option<&[Tool]>,
         tx: mpsc::Sender<StreamEvent>,
+        provider_id: Option<&str>,
     ) -> Result<StreamResult, String> {
         info!(
-            "[OpenAIProtocol] 发送流式请求: model={}, history_len={}, tools_count={}",
+            "[OpenAIProtocol] 发送流式请求: model={}, history_len={}, tools_count={}, provider_id={:?}",
             model,
             messages.len(),
-            tools.map(|t| t.len()).unwrap_or(0)
+            tools.map(|t| t.len()).unwrap_or(0),
+            provider_id
         );
 
         let chat_messages = Self::build_messages(messages, user_message, images, config);
@@ -299,14 +301,21 @@ impl Protocol for OpenAIProtocol {
         let url = format!("{}{}", base_url, self.endpoint());
 
         eprintln!(
-            "[OpenAIProtocol] 发送请求到: {} model={} stream={}",
-            url, model, request.stream
+            "[OpenAIProtocol] 发送请求到: {} model={} stream={} provider_id={:?}",
+            url, model, request.stream, provider_id
         );
 
-        let response = client
+        let mut req_builder = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        // 添加 X-Provider-Id header 用于精确路由
+        if let Some(pid) = provider_id {
+            req_builder = req_builder.header("X-Provider-Id", pid);
+        }
+
+        let response = req_builder
             .json(&request)
             .send()
             .await
@@ -341,12 +350,14 @@ impl Protocol for OpenAIProtocol {
         config: &AgentConfig,
         tools: Option<&[Tool]>,
         tx: mpsc::Sender<StreamEvent>,
+        provider_id: Option<&str>,
     ) -> Result<StreamResult, String> {
         debug!(
-            "[OpenAIProtocol] 继续流式对话: model={}, history_len={}, tools_count={}",
+            "[OpenAIProtocol] 继续流式对话: model={}, history_len={}, tools_count={}, provider_id={:?}",
             model,
             messages.len(),
-            tools.map(|t| t.len()).unwrap_or(0)
+            tools.map(|t| t.len()).unwrap_or(0),
+            provider_id
         );
 
         let chat_messages = Self::build_messages_from_history(messages, config);
@@ -369,10 +380,17 @@ impl Protocol for OpenAIProtocol {
 
         let url = format!("{}{}", base_url, self.endpoint());
 
-        let response = client
+        let mut req_builder = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        // 添加 X-Provider-Id header 用于精确路由
+        if let Some(pid) = provider_id {
+            req_builder = req_builder.header("X-Provider-Id", pid);
+        }
+
+        let response = req_builder
             .json(&request)
             .send()
             .await

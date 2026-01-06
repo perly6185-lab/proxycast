@@ -375,12 +375,14 @@ impl Protocol for AnthropicProtocol {
         config: &AgentConfig,
         tools: Option<&[Tool]>,
         tx: mpsc::Sender<StreamEvent>,
+        provider_id: Option<&str>,
     ) -> Result<StreamResult, String> {
         info!(
-            "[AnthropicProtocol] 发送流式请求: model={}, history_len={}, tools_count={}",
+            "[AnthropicProtocol] 发送流式请求: model={}, history_len={}, tools_count={}, provider_id={:?}",
             model,
             messages.len(),
-            tools.map(|t| t.len()).unwrap_or(0)
+            tools.map(|t| t.len()).unwrap_or(0),
+            provider_id
         );
 
         let (anthropic_messages, system) =
@@ -400,11 +402,18 @@ impl Protocol for AnthropicProtocol {
 
         let url = format!("{}{}", base_url, self.endpoint());
 
-        let response = client
+        let mut req_builder = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", "2023-06-01");
+
+        // 添加 X-Provider-Id header 用于精确路由
+        if let Some(pid) = provider_id {
+            req_builder = req_builder.header("X-Provider-Id", pid);
+        }
+
+        let response = req_builder
             .json(&request)
             .send()
             .await
@@ -435,12 +444,14 @@ impl Protocol for AnthropicProtocol {
         config: &AgentConfig,
         tools: Option<&[Tool]>,
         tx: mpsc::Sender<StreamEvent>,
+        provider_id: Option<&str>,
     ) -> Result<StreamResult, String> {
         debug!(
-            "[AnthropicProtocol] 继续流式对话: model={}, history_len={}, tools_count={}",
+            "[AnthropicProtocol] 继续流式对话: model={}, history_len={}, tools_count={}, provider_id={:?}",
             model,
             messages.len(),
-            tools.map(|t| t.len()).unwrap_or(0)
+            tools.map(|t| t.len()).unwrap_or(0),
+            provider_id
         );
 
         let (anthropic_messages, system) = Self::build_messages_from_history(messages, config);
@@ -459,11 +470,18 @@ impl Protocol for AnthropicProtocol {
 
         let url = format!("{}{}", base_url, self.endpoint());
 
-        let response = client
+        let mut req_builder = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", "2023-06-01");
+
+        // 添加 X-Provider-Id header 用于精确路由
+        if let Some(pid) = provider_id {
+            req_builder = req_builder.header("X-Provider-Id", pid);
+        }
+
+        let response = req_builder
             .json(&request)
             .send()
             .await

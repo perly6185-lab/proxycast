@@ -7,7 +7,7 @@ export function Toaster() {
       richColors
       theme="system"
       toastOptions={{
-        duration: 3000,
+        duration: 5000,
         classNames: {
           toast:
             "group rounded-md border bg-background text-foreground shadow-lg",

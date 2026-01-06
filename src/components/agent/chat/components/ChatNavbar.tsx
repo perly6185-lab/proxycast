@@ -31,17 +31,14 @@ const CREDENTIAL_TYPE_CONFIG: Record<
   gemini_api_key: { label: "Gemini", registryId: "google" },
 };
 
-// API Key Provider 类型到显示名称和 registry ID 的映射
-const API_KEY_PROVIDER_CONFIG: Record<
-  string,
-  { label: string; registryId: string }
-> = {
-  anthropic: { label: "Anthropic", registryId: "anthropic" },
-  openai: { label: "OpenAI", registryId: "openai" },
-  gemini: { label: "Gemini", registryId: "google" },
-  "azure-openai": { label: "Azure OpenAI", registryId: "openai" },
-  vertexai: { label: "VertexAI", registryId: "google" },
-  ollama: { label: "Ollama", registryId: "ollama" },
+// API Key Provider ID 到 registry provider_id 的映射（仅用于特殊情况）
+// 大多数 Provider 的 id 直接对应 model_registry 的 provider_id
+const API_KEY_PROVIDER_REGISTRY_OVERRIDE: Record<string, string> = {
+  // 云服务映射到原始厂商
+  "azure-openai": "openai",
+  vertexai: "google",
+  // Google 的特殊映射
+  gemini: "google",
 };
 
 /** 已配置的 Provider 信息 */
@@ -120,15 +117,19 @@ export const ChatNavbar: React.FC<ChatNavbarProps> = ({
     });
 
     // 从 API Key Provider 提取（只包含有 API Key 的）
+    // 使用 provider.id 而不是 provider.type，以支持 Deepseek 等自定义 Provider
     apiKeyProviders
       .filter((p) => p.api_key_count > 0 && p.enabled)
       .forEach((provider) => {
-        const config = API_KEY_PROVIDER_CONFIG[provider.type];
-        if (config && !providerMap.has(provider.type)) {
-          providerMap.set(provider.type, {
-            key: provider.type,
-            label: config.label,
-            registryId: config.registryId,
+        // 使用 provider.id 作为唯一标识
+        if (!providerMap.has(provider.id)) {
+          // 获取 registry ID：优先使用 override 映射，否则使用 provider.id
+          const registryId =
+            API_KEY_PROVIDER_REGISTRY_OVERRIDE[provider.id] || provider.id;
+          providerMap.set(provider.id, {
+            key: provider.id,
+            label: provider.name, // 使用 provider.name 作为显示名称
+            registryId: registryId,
           });
         }
       });

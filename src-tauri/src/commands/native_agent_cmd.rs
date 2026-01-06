@@ -49,7 +49,7 @@ pub async fn native_agent_init(
         provider_type
     );
 
-    agent_state.init(base_url.clone(), api_key, provider_type)?;
+    agent_state.init(base_url.clone(), api_key, provider_type, None)?;
 
     tracing::info!("[NativeAgent] Agent 初始化成功: {}", base_url);
 
@@ -115,7 +115,7 @@ pub async fn native_agent_chat(
         let api_key = api_key.ok_or_else(|| "未配置 API Key".to_string())?;
         let base_url = format!("http://127.0.0.1:{}", port);
         let provider_type = ProviderType::from_str(&default_provider);
-        agent_state.init(base_url, api_key, provider_type)?;
+        agent_state.init(base_url, api_key, provider_type, None)?;
     }
 
     let request = NativeChatRequest {
@@ -176,13 +176,16 @@ pub async fn native_agent_chat_stream(
     let api_key = api_key.ok_or_else(|| "未配置 API Key".to_string())?;
 
     // 使用前端传递的 provider，如果没有则使用默认值
-    let provider_str = provider.unwrap_or(default_provider);
+    // provider_str 即 provider_id，用于精确路由到指定 Provider
+    let provider_str = provider.clone().unwrap_or(default_provider);
     let provider_type = ProviderType::from_str(&provider_str);
+    let provider_id = provider.clone(); // 保留原始 provider_id 用于 X-Provider-Id header
 
     tracing::info!(
-        "[NativeAgent] 使用 provider: {:?} (原始值: {})",
+        "[NativeAgent] 使用 provider: {:?} (原始值: {}, provider_id: {:?})",
         provider_type,
-        provider_str
+        provider_str,
+        provider_id
     );
 
     // 如果 Agent 未初始化，或者 provider 发生变化，重新初始化
@@ -206,7 +209,8 @@ pub async fn native_agent_chat_stream(
 
     if need_reinit {
         let base_url = format!("http://127.0.0.1:{}", port);
-        agent_state.init(base_url, api_key, provider_type)?;
+        // 传递 provider_id 用于设置 X-Provider-Id header
+        agent_state.init(base_url, api_key, provider_type, provider_id)?;
     }
 
     // 获取工具注册表（用于创建 ToolLoopEngine）

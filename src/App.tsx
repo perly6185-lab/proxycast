@@ -19,7 +19,6 @@ import { ToolsPage } from "./components/tools/ToolsPage";
 import { AgentChatPage } from "./components/agent";
 import { PluginUIRenderer } from "./components/plugins/PluginUIRenderer";
 import { PluginsPage } from "./components/plugins/PluginsPage";
-import { Toaster } from "./components/ui/sonner";
 import { flowEventManager } from "./lib/flowEventManager";
 import { OnboardingWizard, useOnboardingState } from "./components/onboarding";
 import { ConnectConfirmDialog } from "./components/connect";
@@ -201,12 +200,7 @@ function App() {
 
   // 3. 需要引导时显示引导向导
   if (needsOnboarding) {
-    return (
-      <>
-        <OnboardingWizard onComplete={handleOnboardingComplete} />
-        <Toaster />
-      </>
-    );
+    return <OnboardingWizard onComplete={handleOnboardingComplete} />;
   }
 
   // 4. 正常主界面
@@ -214,7 +208,6 @@ function App() {
     <AppContainer>
       <AppSidebar currentPage={currentPage} onNavigate={setCurrentPage} />
       <MainContent>{renderPage()}</MainContent>
-      <Toaster />
       {/* ProxyCast Connect 确认弹窗 */}
       {/* _Requirements: 5.2_ */}
       <ConnectConfirmDialog

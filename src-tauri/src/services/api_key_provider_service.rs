@@ -472,6 +472,53 @@ impl ApiKeyProviderService {
             .map_err(|e| e.to_string())
     }
 
+    /// 获取下一个可用的 API Key 以及 Provider 信息（按 provider_id 精确查找）
+    /// 用于支持 X-Provider-Id 请求头指定具体的 Provider
+    pub fn get_next_api_key_with_provider_info(
+        &self,
+        db: &DbConnection,
+        provider_id: &str,
+    ) -> Result<Option<(String, ApiKeyProvider)>, String> {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+
+        // 获取 Provider 信息
+        let provider = match ApiKeyProviderDao::get_provider_by_id(&conn, provider_id)
+            .map_err(|e| e.to_string())?
+        {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // 检查 Provider 是否启用
+        if !provider.enabled {
+            return Ok(None);
+        }
+
+        // 获取该 Provider 的所有启用的 API Keys
+        let keys = ApiKeyProviderDao::get_enabled_api_keys_by_provider(&conn, provider_id)
+            .map_err(|e| e.to_string())?;
+
+        if keys.is_empty() {
+            return Ok(None);
+        }
+
+        // 获取或创建轮询索引
+        let index = {
+            let mut indices = self.round_robin_index.write().map_err(|e| e.to_string())?;
+            indices
+                .entry(provider_id.to_string())
+                .or_insert_with(|| AtomicUsize::new(0))
+                .fetch_add(1, Ordering::SeqCst)
+        };
+
+        // 选择 API Key
+        let selected_key = &keys[index % keys.len()];
+
+        // 解密并返回
+        let decrypted = self.encryption.decrypt(&selected_key.api_key_encrypted)?;
+        Ok(Some((decrypted, provider)))
+    }
+
     /// 按 Provider 类型获取下一个可用的 API Key（轮询负载均衡）
     /// 这个方法会查找所有该类型的 Provider（包括自定义 Provider）
     pub fn get_next_api_key_by_type(

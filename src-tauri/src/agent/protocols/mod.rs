@@ -36,6 +36,7 @@ pub trait Protocol: Send + Sync {
         config: &AgentConfig,
         tools: Option<&[Tool]>,
         tx: mpsc::Sender<StreamEvent>,
+        provider_id: Option<&str>,
     ) -> Result<StreamResult, String>;
 
     /// 继续流式对话（工具调用后）
@@ -51,6 +52,7 @@ pub trait Protocol: Send + Sync {
         config: &AgentConfig,
         tools: Option<&[Tool]>,
         tx: mpsc::Sender<StreamEvent>,
+        provider_id: Option<&str>,
     ) -> Result<StreamResult, String>;
 
     /// 获取 API 端点

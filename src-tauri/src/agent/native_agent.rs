@@ -44,6 +44,8 @@ pub struct NativeAgent {
     provider_type: ProviderType,
     /// 协议处理器
     protocol: Box<dyn Protocol>,
+    /// Provider ID (用于 X-Provider-Id header，精确路由到指定 Provider)
+    provider_id: Option<String>,
 }
 
 impl NativeAgent {
@@ -51,6 +53,7 @@ impl NativeAgent {
         base_url: String,
         api_key: String,
         provider_type: ProviderType,
+        provider_id: Option<String>,
     ) -> Result<Self, String> {
         let client = Client::builder()
             .timeout(Duration::from_secs(300))
@@ -62,9 +65,10 @@ impl NativeAgent {
         let protocol = create_protocol(provider_type);
 
         info!(
-            "[NativeAgent] 创建 Agent: base_url={}, provider={:?}, protocol_endpoint={}",
+            "[NativeAgent] 创建 Agent: base_url={}, provider={:?}, provider_id={:?}, protocol_endpoint={}",
             base_url,
             provider_type,
+            provider_id,
             protocol.endpoint()
         );
 
@@ -76,6 +80,7 @@ impl NativeAgent {
             config: AgentConfig::default(),
             provider_type,
             protocol,
+            provider_id,
         })
     }
 
@@ -254,6 +259,7 @@ impl NativeAgent {
                 &config,
                 tools,
                 tx,
+                self.provider_id.as_deref(),
             )
             .await?;
 
@@ -419,6 +425,7 @@ impl NativeAgent {
                 &config,
                 tools,
                 tx,
+                self.provider_id.as_deref(),
             )
             .await?;
 
@@ -676,8 +683,9 @@ impl NativeAgentState {
         base_url: String,
         api_key: String,
         provider_type: ProviderType,
+        provider_id: Option<String>,
     ) -> Result<(), String> {
-        let agent = NativeAgent::new(base_url, api_key, provider_type)?;
+        let agent = NativeAgent::new(base_url, api_key, provider_type, provider_id)?;
         *self.agent.write() = Some(agent);
         Ok(())
     }
@@ -724,6 +732,7 @@ impl NativeAgentState {
             config: agent.config.clone(),
             provider_type: agent.provider_type,
             protocol,
+            provider_id: agent.provider_id.clone(),
         })
     }
 
