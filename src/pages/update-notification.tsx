@@ -2,8 +2,7 @@
  * @file update-notification.tsx
  * @description 更新提醒独立窗口页面
  *
- * 独立于主应用的更新提醒悬浮窗口，显示版本信息和更新操作。
- * 参考 screenshot-chat.tsx 的实现模式。
+ * 独立于主应用的更新提醒悬浮窗口，采用轻量 toast 形态展示更新操作。
  *
  * input: URL 参数（current, latest, download_url）
  * output: 更新提醒 UI
@@ -14,7 +13,7 @@ import { useEffect, useState, useCallback, type MouseEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { safeInvoke } from "@/lib/dev-bridge";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
-import { Download, X, Clock, SkipForward, ExternalLink } from "lucide-react";
+import { Bell, Download, ExternalLink, SkipForward, X } from "lucide-react";
 import "./update-notification.css";
 
 interface UpdateParams {
@@ -39,13 +38,17 @@ export function UpdateNotificationPage() {
     downloadUrl: "",
   });
   const [downloading, setDownloading] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [closing, setClosing] = useState(false);
 
   useEffect(() => {
     setParams(getUpdateParamsFromUrl());
+    const timer = window.setTimeout(() => setVisible(true), 10);
+    return () => window.clearTimeout(timer);
   }, []);
 
-  // 关闭窗口
-  const handleClose = useCallback(async () => {
+  // 直接关闭窗口（无动画）
+  const closeWindow = useCallback(async () => {
     try {
       await safeInvoke("close_update_window");
     } catch (err) {
@@ -55,16 +58,36 @@ export function UpdateNotificationPage() {
     }
   }, []);
 
+  // 带动画关闭
+  const closeWithAnimation = useCallback(async () => {
+    if (closing) return;
+    setClosing(true);
+    await new Promise((resolve) => window.setTimeout(resolve, 160));
+    await closeWindow();
+  }, [closing, closeWindow]);
+
+  // 关闭并应用退避策略
+  const handleDismiss = useCallback(async () => {
+    try {
+      await safeInvoke("dismiss_update_notification", {
+        version: params.latestVersion || null,
+      });
+    } catch (error) {
+      console.error("记录关闭提醒失败:", error);
+    }
+    await closeWithAnimation();
+  }, [params.latestVersion, closeWithAnimation]);
+
   // ESC 关闭窗口
   useEffect(() => {
     const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        await handleClose();
+        await handleDismiss();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleClose]);
+  }, [handleDismiss]);
 
   // 开始拖动窗口
   const handleStartDrag = useCallback(async (e: MouseEvent) => {
@@ -80,6 +103,14 @@ export function UpdateNotificationPage() {
   const handleDownload = async () => {
     setDownloading(true);
     try {
+      await safeInvoke("record_update_notification_action", {
+        action: "update_now",
+      });
+    } catch (error) {
+      console.error("记录立即更新行为失败:", error);
+    }
+
+    try {
       await safeInvoke("download_update");
       // download_update 成功后会自动关闭窗口并启动安装程序
     } catch (error) {
@@ -88,7 +119,7 @@ export function UpdateNotificationPage() {
       if (params.downloadUrl) {
         try {
           await shellOpen(params.downloadUrl);
-          await handleClose();
+          await closeWithAnimation();
         } catch {
           window.open(params.downloadUrl, "_blank");
         }
@@ -99,8 +130,13 @@ export function UpdateNotificationPage() {
   };
 
   // 稍后提醒
-  const handleLater = async () => {
-    await handleClose();
+  const handleLater = async (hours: number) => {
+    try {
+      await safeInvoke("remind_update_later", { hours });
+    } catch (error) {
+      console.error("设置稍后提醒失败:", error);
+    }
+    await closeWithAnimation();
   };
 
   // 跳过此版本
@@ -110,7 +146,7 @@ export function UpdateNotificationPage() {
         await safeInvoke("skip_update_version", {
           version: params.latestVersion,
         });
-        await handleClose();
+        await closeWithAnimation();
       } catch (error) {
         console.error("跳过版本失败:", error);
       }
@@ -132,73 +168,79 @@ export function UpdateNotificationPage() {
 
   return (
     <div className="update-container">
-      <div className="update-card">
-        {/* 头部 - 可拖动区域 */}
-        <div className="update-header" onMouseDown={handleStartDrag}>
-          <div className="update-title">
-            <img src="/logo.png" alt="ProxyCast" className="update-logo" />
-            <span>发现新版本</span>
-          </div>
-          <button
-            onClick={handleClose}
-            className="update-close-btn"
-            title="关闭 (ESC)"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <X size={16} />
-          </button>
+      <div
+        className={`update-toast ${visible ? "is-visible" : ""} ${
+          closing ? "is-closing" : ""
+        }`}
+        onMouseDown={handleStartDrag}
+      >
+        <div className="update-toast-icon" aria-hidden>
+          <Bell size={14} />
         </div>
 
-        {/* 内容 */}
-        <div className="update-content">
-          <div className="update-version-row">
-            <span className="update-label">当前版本</span>
-            <span className="update-value">{params.currentVersion}</span>
-          </div>
-          <div className="update-version-row">
-            <span className="update-label">最新版本</span>
-            <span className="update-value update-new">
-              {params.latestVersion}
-            </span>
+        <div className="update-toast-main">
+          <div className="update-toast-message">
+            发现新版本 {params.latestVersion || ""}
+            {params.currentVersion ? (
+              <span className="update-toast-sub">
+                （当前 {params.currentVersion}）
+              </span>
+            ) : null}
           </div>
 
-          {/* 操作按钮 */}
-          <div className="update-actions">
+          <div
+            className="update-toast-actions"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => handleLater(24)}
+              className="update-btn update-btn-ghost"
+            >
+              1天后
+            </button>
+            <button
+              onClick={() => handleLater(72)}
+              className="update-btn update-btn-ghost"
+            >
+              3天后
+            </button>
+            <button
+              onClick={() => handleLater(168)}
+              className="update-btn update-btn-ghost"
+            >
+              下周
+            </button>
+            <button
+              onClick={handleDismiss}
+              className="update-btn update-btn-icon"
+              title="关闭提醒"
+            >
+              <X size={13} />
+            </button>
+            <button
+              onClick={handleSkipVersion}
+              className="update-btn update-btn-ghost"
+              title="跳过此版本"
+            >
+              <SkipForward size={13} />
+            </button>
             <button
               onClick={handleDownload}
               disabled={downloading}
               className="update-btn update-btn-primary"
             >
-              <Download
-                size={16}
-                className={downloading ? "animate-bounce" : ""}
-              />
-              {downloading ? "下载中..." : "立即更新"}
+              <Download size={14} className={downloading ? "animate-spin" : ""} />
+              {downloading ? "下载中" : "立即更新"}
             </button>
-
-            <div className="update-btn-row">
+            {params.downloadUrl ? (
               <button
-                onClick={handleLater}
-                className="update-btn update-btn-secondary"
+                onClick={handleOpenInBrowser}
+                className="update-btn update-btn-icon"
+                title="在浏览器中查看发布页"
               >
-                <Clock size={14} />
-                稍后提醒
+                <ExternalLink size={13} />
               </button>
-              <button
-                onClick={handleSkipVersion}
-                className="update-btn update-btn-secondary"
-              >
-                <SkipForward size={14} />
-                跳过此版本
-              </button>
-            </div>
-
-            {params.downloadUrl && (
-              <button onClick={handleOpenInBrowser} className="update-link">
-                <ExternalLink size={12} />
-                在浏览器中查看
-              </button>
-            )}
+            ) : null}
           </div>
         </div>
       </div>

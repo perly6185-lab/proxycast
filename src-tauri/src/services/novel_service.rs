@@ -479,6 +479,12 @@ pub struct NovelListRunsRequest {
     pub limit: Option<i64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct NovelDeleteCharacterRequest {
+    pub project_id: String,
+    pub character_id: String,
+}
+
 #[derive(Clone)]
 pub struct NovelService {
     db: DbConnection,
@@ -870,6 +876,45 @@ impl NovelService {
             .map_err(|e| format!("解析 run 失败: {e}"))?;
 
         Ok(rows)
+    }
+
+    pub fn delete_character(&self, request: NovelDeleteCharacterRequest) -> Result<bool, String> {
+        self.ensure_project_exists(&request.project_id)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut conn = lock_db(&self.db)?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("开启事务失败: {e}"))?;
+
+        let exists = tx
+            .query_row(
+                "SELECT 1 FROM novel_characters WHERE id = ?1 AND project_id = ?2 LIMIT 1",
+                params![&request.character_id, &request.project_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|e| format!("检查角色是否存在失败: {e}"))?
+            .is_some();
+
+        if !exists {
+            tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
+            return Ok(false);
+        }
+
+        tx.execute(
+            "DELETE FROM novel_characters WHERE id = ?1 AND project_id = ?2",
+            params![&request.character_id, &request.project_id],
+        )
+        .map_err(|e| format!("删除角色失败: {e}"))?;
+
+        tx.execute(
+            "UPDATE novel_projects SET updated_at = ?1 WHERE id = ?2",
+            params![now, &request.project_id],
+        )
+        .map_err(|e| format!("更新项目时间失败: {e}"))?;
+
+        tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
+        Ok(true)
     }
 
     fn list_characters(&self, project_id: &str) -> Result<Vec<NovelCharacterRecord>, String> {
@@ -1777,6 +1822,16 @@ fn looks_like_json_noise_line(line: &str) -> bool {
     if trimmed.is_empty() {
         return true;
     }
+    let lowered = trimmed.to_ascii_lowercase();
+    if trimmed.starts_with("```")
+        || trimmed.ends_with("```")
+        || matches!(
+            lowered.as_str(),
+            "```" | "```json" | "```yaml" | "```yml" | "json" | "yaml" | "yml"
+        )
+    {
+        return true;
+    }
     if matches!(trimmed, "{" | "}" | "[" | "]" | ",") {
         return true;
     }
@@ -2659,5 +2714,18 @@ mod tests {
 
         let cards = parse_character_cards(raw);
         assert!(cards.is_empty());
+    }
+
+    #[test]
+    fn parse_character_cards_should_ignore_markdown_fence_noise_in_fallback_lines() {
+        let raw = r#"
+```json
+林舟
+```
+"#;
+
+        let cards = parse_character_cards(raw);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["name"], Value::String("林舟".to_string()));
     }
 }

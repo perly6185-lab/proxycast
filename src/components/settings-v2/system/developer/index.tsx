@@ -18,6 +18,7 @@ import {
 } from "@/lib/crashDiagnostic";
 import { cn } from "@/lib/utils";
 import { ClipboardPermissionGuideCard } from "../shared/ClipboardPermissionGuideCard";
+import { WorkspaceRepairHistoryCard } from "../shared/WorkspaceRepairHistoryCard";
 
 export function DeveloperSettings() {
   const { enabled, setEnabled } = useComponentDebug();
@@ -263,6 +264,8 @@ export function DeveloperSettings() {
           </button>
         </div>
       </div>
+
+      <WorkspaceRepairHistoryCard description="仅用于开发排查，记录最近自动修复/迁移（不打断用户操作）" />
     </div>
   );
 }

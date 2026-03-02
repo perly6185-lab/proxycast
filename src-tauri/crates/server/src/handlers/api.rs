@@ -462,6 +462,48 @@ fn headers_to_string_map(headers: &axum::http::HeaderMap) -> HashMap<String, Str
         .collect()
 }
 
+fn set_request_id_header(response: &mut Response, request_id: &str) {
+    if let Ok(value) = header::HeaderValue::from_str(request_id) {
+        response.headers_mut().insert(
+            header::HeaderName::from_static("x-proxycast-request-id"),
+            value,
+        );
+    }
+}
+
+fn set_static_diag_header(response: &mut Response, name: &'static str, value: &'static str) {
+    response.headers_mut().insert(
+        header::HeaderName::from_static(name),
+        header::HeaderValue::from_static(value),
+    );
+}
+
+fn attach_route_debug_headers(
+    mut response: Response,
+    requested_provider: &str,
+    effective_provider: &str,
+    model: &str,
+) -> Response {
+    if let Ok(value) = header::HeaderValue::from_str(requested_provider) {
+        response.headers_mut().insert(
+            header::HeaderName::from_static("x-proxycast-requested-provider"),
+            value,
+        );
+    }
+    if let Ok(value) = header::HeaderValue::from_str(effective_provider) {
+        response.headers_mut().insert(
+            header::HeaderName::from_static("x-proxycast-effective-provider"),
+            value,
+        );
+    }
+    if let Ok(value) = header::HeaderValue::from_str(model) {
+        response
+            .headers_mut()
+            .insert(header::HeaderName::from_static("x-proxycast-model"), value);
+    }
+    response
+}
+
 fn build_cached_response(response: CachedHttpResponse) -> Response {
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::OK);
     let mut resp = Response::new(Body::from(response.body));
@@ -474,6 +516,8 @@ fn build_cached_response(response: CachedHttpResponse) -> Response {
             resp.headers_mut().insert(name, val);
         }
     }
+    set_static_diag_header(&mut resp, "x-proxycast-cache", "hit");
+    set_static_diag_header(&mut resp, "x-proxycast-source", "response-cache");
     resp
 }
 
@@ -524,10 +568,22 @@ async fn begin_request_dedup(
 
     match store.check_or_register(&key) {
         RequestDedupCheck::New => Ok(RequestDedupGuard::new(Some(key), is_stream, store)),
-        RequestDedupCheck::Completed { status, body } => Err(replay_response(status, body)),
+        RequestDedupCheck::Completed { status, body } => {
+            let mut response = replay_response(status, body);
+            set_request_id_header(&mut response, request_id);
+            set_static_diag_header(&mut response, "x-proxycast-dedup", "replay");
+            set_static_diag_header(&mut response, "x-proxycast-source", "request-dedup");
+            Err(response)
+        }
         RequestDedupCheck::InProgress { notify } => {
             match store.wait_for_completion(&key, notify).await {
-                Some(replay) => Err(replay_response(replay.status, replay.body)),
+                Some(replay) => {
+                    let mut response = replay_response(replay.status, replay.body);
+                    set_request_id_header(&mut response, request_id);
+                    set_static_diag_header(&mut response, "x-proxycast-dedup", "wait-replay");
+                    set_static_diag_header(&mut response, "x-proxycast-source", "request-dedup");
+                    Err(response)
+                }
                 None => {
                     tracing::warn!(
                         "[REQUEST_DEDUP] request_id={} endpoint={} wait timeout for key={}",
@@ -535,13 +591,16 @@ async fn begin_request_dedup(
                         endpoint,
                         key
                     );
-                    Err(build_error_response_with_meta(
+                    let mut response = build_error_response_with_meta(
                         StatusCode::CONFLICT.as_u16(),
                         "Equivalent request is still in progress, please retry later",
                         Some(request_id),
                         None,
                         Some(GatewayErrorCode::RequestConflict),
-                    ))
+                    );
+                    set_request_id_header(&mut response, request_id);
+                    set_static_diag_header(&mut response, "x-proxycast-dedup", "wait-timeout");
+                    Err(response)
                 }
             }
         }
@@ -549,6 +608,7 @@ async fn begin_request_dedup(
 }
 
 async fn begin_response_cache(
+    request_id: &str,
     endpoint: &str,
     request_payload: &serde_json::Value,
     headers: &HeaderMap,
@@ -571,19 +631,23 @@ async fn begin_response_cache(
     let key = format!("{endpoint}:{fingerprint}");
 
     if let Some(cached) = store.get(&key) {
-        return Err(build_cached_response(cached));
+        let mut response = build_cached_response(cached);
+        set_request_id_header(&mut response, request_id);
+        return Err(response);
     }
 
     Ok(ResponseCacheGuard::new(Some(key), is_stream, store))
 }
 
 async fn finalize_replayable_response(
-    response: Response,
+    mut response: Response,
     guard: &mut IdempotencyGuard,
     dedup_guard: &mut RequestDedupGuard,
     cache_guard: &mut ResponseCacheGuard,
     request_id: &str,
 ) -> Response {
+    set_request_id_header(&mut response, request_id);
+
     if !guard.is_enabled() && !dedup_guard.is_enabled() && !cache_guard.is_enabled() {
         return response;
     }
@@ -593,6 +657,15 @@ async fn finalize_replayable_response(
         guard.remove();
         dedup_guard.remove();
         cache_guard.skip();
+        if guard.is_enabled() {
+            set_static_diag_header(&mut response, "x-proxycast-idempotency", "removed-on-error");
+        }
+        if dedup_guard.is_enabled() {
+            set_static_diag_header(&mut response, "x-proxycast-dedup", "removed-on-error");
+        }
+        if cache_guard.is_enabled() {
+            set_static_diag_header(&mut response, "x-proxycast-cache", "skip-on-error");
+        }
         return response;
     }
 
@@ -608,7 +681,22 @@ async fn finalize_replayable_response(
             } else {
                 cache_guard.skip();
             }
-            Response::from_parts(parts, Body::from(bytes))
+            let mut response = Response::from_parts(parts, Body::from(bytes));
+            set_request_id_header(&mut response, request_id);
+            if guard.is_enabled() {
+                set_static_diag_header(&mut response, "x-proxycast-idempotency", "new");
+            }
+            if dedup_guard.is_enabled() {
+                set_static_diag_header(&mut response, "x-proxycast-dedup", "new");
+            }
+            if cache_guard.is_enabled() {
+                if cache_guard.should_cache_status(status) {
+                    set_static_diag_header(&mut response, "x-proxycast-cache", "store");
+                } else {
+                    set_static_diag_header(&mut response, "x-proxycast-cache", "skip-status");
+                }
+            }
+            response
         }
         Err(err) => {
             tracing::warn!(
@@ -619,13 +707,16 @@ async fn finalize_replayable_response(
             guard.remove();
             dedup_guard.remove();
             cache_guard.skip();
-            build_error_response_with_meta(
+            let mut response = build_error_response_with_meta(
                 StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                 "Failed to capture response for replay",
                 Some(request_id),
                 None,
                 Some(GatewayErrorCode::InternalError),
-            )
+            );
+            set_request_id_header(&mut response, request_id);
+            set_static_diag_header(&mut response, "x-proxycast-source", "replay-capture-error");
+            response
         }
     }
 }
@@ -1748,17 +1839,24 @@ pub async fn chat_completions(
         if let Some(ref key) = idempotency_key {
             match state.idempotency_store.check(key) {
                 crate::middleware::idempotency::IdempotencyCheck::InProgress => {
-                    return build_error_response_with_meta(
+                    let mut response = build_error_response_with_meta(
                         StatusCode::CONFLICT.as_u16(),
                         "Request already in progress",
                         Some(&ctx.request_id),
                         None,
                         Some(GatewayErrorCode::RequestConflict),
                     );
+                    set_request_id_header(&mut response, &ctx.request_id);
+                    set_static_diag_header(&mut response, "x-proxycast-idempotency", "in-progress");
+                    return response;
                 }
                 crate::middleware::idempotency::IdempotencyCheck::Completed { status, body } => {
                     let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
-                    return (status_code, body).into_response();
+                    let mut response = (status_code, body).into_response();
+                    set_request_id_header(&mut response, &ctx.request_id);
+                    set_static_diag_header(&mut response, "x-proxycast-idempotency", "replay");
+                    set_static_diag_header(&mut response, "x-proxycast-source", "idempotency");
+                    return response;
                 }
                 crate::middleware::idempotency::IdempotencyCheck::New => {}
             }
@@ -1922,6 +2020,7 @@ pub async fn chat_completions(
     if !request.stream {
         let request_payload = serde_json::to_value(&request).unwrap_or_default();
         match begin_response_cache(
+            &ctx.request_id,
             "chat_completions",
             &request_payload,
             &headers,
@@ -1932,7 +2031,14 @@ pub async fn chat_completions(
         .await
         {
             Ok(guard) => cache_guard = guard,
-            Err(resp) => return resp,
+            Err(resp) => {
+                return attach_route_debug_headers(
+                    resp,
+                    &selected_provider,
+                    &effective_provider,
+                    &ctx.resolved_model,
+                );
+            }
         }
         match begin_request_dedup(
             &ctx.request_id,
@@ -1945,7 +2051,14 @@ pub async fn chat_completions(
         .await
         {
             Ok(guard) => dedup_guard = guard,
-            Err(resp) => return resp,
+            Err(resp) => {
+                return attach_route_debug_headers(
+                    resp,
+                    &selected_provider,
+                    &effective_provider,
+                    &ctx.resolved_model,
+                );
+            }
         }
     }
 
@@ -2016,14 +2129,19 @@ pub async fn chat_completions(
 
         // 如果成功且需要 Flow 捕获，提取响应体内容和响应头
         // 注意：非流式响应需要读取 body，所以必须在这里处理
-        return finalize_replayable_response(
-            response,
-            &mut idempotency_guard,
-            &mut dedup_guard,
-            &mut cache_guard,
-            &ctx.request_id,
-        )
-        .await;
+        return attach_route_debug_headers(
+            finalize_replayable_response(
+                response,
+                &mut idempotency_guard,
+                &mut dedup_guard,
+                &mut cache_guard,
+                &ctx.request_id,
+            )
+            .await,
+            &selected_provider,
+            &effective_provider,
+            &ctx.resolved_model,
+        );
     }
 
     // 回退到旧的单凭证模式（仅当允许自动降级且选择的 Provider 是 Kiro 时）
@@ -2193,14 +2311,19 @@ pub async fn chat_completions(
                         // 完成 Flow 捕获并检查响应拦截
                         // **Validates: Requirements 2.1, 2.5**
                         let response = Json(response).into_response();
-                        return finalize_replayable_response(
-                            response,
-                            &mut idempotency_guard,
-                            &mut dedup_guard,
-                            &mut cache_guard,
-                            &ctx.request_id,
-                        )
-                        .await;
+                        return attach_route_debug_headers(
+                            finalize_replayable_response(
+                                response,
+                                &mut idempotency_guard,
+                                &mut dedup_guard,
+                                &mut cache_guard,
+                                &ctx.request_id,
+                            )
+                            .await,
+                            &selected_provider,
+                            &effective_provider,
+                            &ctx.resolved_model,
+                        );
                     }
                     Err(e) => {
                         // 记录失败请求统计
@@ -2301,14 +2424,19 @@ pub async fn chat_completions(
                                             // 完成 Flow 捕获并检查响应拦截（重试成功）
                                             // **Validates: Requirements 2.1, 2.5**
                                             let response = Json(response).into_response();
-                                            return finalize_replayable_response(
-                                                response,
-                                                &mut idempotency_guard,
-                                                &mut dedup_guard,
-                                                &mut cache_guard,
-                                                &ctx.request_id,
-                                            )
-                                            .await;
+                                            return attach_route_debug_headers(
+                                                finalize_replayable_response(
+                                                    response,
+                                                    &mut idempotency_guard,
+                                                    &mut dedup_guard,
+                                                    &mut cache_guard,
+                                                    &ctx.request_id,
+                                                )
+                                                .await,
+                                                &selected_provider,
+                                                &effective_provider,
+                                                &ctx.resolved_model,
+                                            );
                                         }
                                         Err(e) => {
                                             // 标记 Flow 失败
@@ -2436,17 +2564,24 @@ pub async fn anthropic_messages(
         if let Some(ref key) = idempotency_key {
             match state.idempotency_store.check(key) {
                 crate::middleware::idempotency::IdempotencyCheck::InProgress => {
-                    return build_error_response_with_meta(
+                    let mut response = build_error_response_with_meta(
                         StatusCode::CONFLICT.as_u16(),
                         "Request already in progress",
                         Some(&ctx.request_id),
                         None,
                         Some(GatewayErrorCode::RequestConflict),
                     );
+                    set_request_id_header(&mut response, &ctx.request_id);
+                    set_static_diag_header(&mut response, "x-proxycast-idempotency", "in-progress");
+                    return response;
                 }
                 crate::middleware::idempotency::IdempotencyCheck::Completed { status, body } => {
                     let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
-                    return (status_code, body).into_response();
+                    let mut response = (status_code, body).into_response();
+                    set_request_id_header(&mut response, &ctx.request_id);
+                    set_static_diag_header(&mut response, "x-proxycast-idempotency", "replay");
+                    set_static_diag_header(&mut response, "x-proxycast-source", "idempotency");
+                    return response;
                 }
                 crate::middleware::idempotency::IdempotencyCheck::New => {}
             }
@@ -2642,6 +2777,7 @@ pub async fn anthropic_messages(
     if !request.stream {
         let request_payload = serde_json::to_value(&request).unwrap_or_default();
         match begin_response_cache(
+            &ctx.request_id,
             "anthropic_messages",
             &request_payload,
             &headers,
@@ -2652,7 +2788,14 @@ pub async fn anthropic_messages(
         .await
         {
             Ok(guard) => cache_guard = guard,
-            Err(resp) => return resp,
+            Err(resp) => {
+                return attach_route_debug_headers(
+                    resp,
+                    &selected_provider,
+                    &effective_provider,
+                    &ctx.resolved_model,
+                );
+            }
         }
         match begin_request_dedup(
             &ctx.request_id,
@@ -2665,7 +2808,14 @@ pub async fn anthropic_messages(
         .await
         {
             Ok(guard) => dedup_guard = guard,
-            Err(resp) => return resp,
+            Err(resp) => {
+                return attach_route_debug_headers(
+                    resp,
+                    &selected_provider,
+                    &effective_provider,
+                    &ctx.resolved_model,
+                );
+            }
         }
     }
 
@@ -2751,14 +2901,19 @@ pub async fn anthropic_messages(
         // 完成 Flow 捕获并检查响应拦截
         // **Validates: Requirements 2.1, 2.5**
 
-        return finalize_replayable_response(
-            response,
-            &mut idempotency_guard,
-            &mut dedup_guard,
-            &mut cache_guard,
-            &ctx.request_id,
-        )
-        .await;
+        return attach_route_debug_headers(
+            finalize_replayable_response(
+                response,
+                &mut idempotency_guard,
+                &mut dedup_guard,
+                &mut cache_guard,
+                &ctx.request_id,
+            )
+            .await,
+            &selected_provider,
+            &effective_provider,
+            &ctx.resolved_model,
+        );
     }
 
     // 回退到旧的单凭证模式（仅当允许自动降级且选择的 Provider 是 Kiro 时）
@@ -2938,14 +3093,19 @@ pub async fn anthropic_messages(
 
                         // 非流式响应
                         let response = build_anthropic_response(&request.model, &parsed);
-                        return finalize_replayable_response(
-                            response,
-                            &mut idempotency_guard,
-                            &mut dedup_guard,
-                            &mut cache_guard,
-                            &ctx.request_id,
-                        )
-                        .await;
+                        return attach_route_debug_headers(
+                            finalize_replayable_response(
+                                response,
+                                &mut idempotency_guard,
+                                &mut dedup_guard,
+                                &mut cache_guard,
+                                &ctx.request_id,
+                            )
+                            .await,
+                            &selected_provider,
+                            &effective_provider,
+                            &ctx.resolved_model,
+                        );
                     }
                     Err(e) => {
                         state
@@ -3019,14 +3179,19 @@ pub async fn anthropic_messages(
                                             }
                                             let response =
                                                 build_anthropic_response(&request.model, &parsed);
-                                            return finalize_replayable_response(
-                                                response,
-                                                &mut idempotency_guard,
-                                                &mut dedup_guard,
-                                                &mut cache_guard,
-                                                &ctx.request_id,
-                                            )
-                                            .await;
+                                            return attach_route_debug_headers(
+                                                finalize_replayable_response(
+                                                    response,
+                                                    &mut idempotency_guard,
+                                                    &mut dedup_guard,
+                                                    &mut cache_guard,
+                                                    &ctx.request_id,
+                                                )
+                                                .await,
+                                                &selected_provider,
+                                                &effective_provider,
+                                                &ctx.resolved_model,
+                                            );
                                         }
                                         Err(e) => {
                                             state.logs.write().await.add(

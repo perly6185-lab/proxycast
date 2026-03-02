@@ -50,6 +50,38 @@ export function clearWorkspaceRepairHistory(): void {
   localStorage.removeItem(WORKSPACE_REPAIR_HISTORY_KEY);
 }
 
+export function buildWorkspaceRepairSummary(
+  record: WorkspaceRepairRecord,
+): string {
+  return [
+    "# ProxyCast Workspace 自愈记录",
+    `- 时间: ${record.timestamp}`,
+    `- Workspace ID: ${record.workspace_id}`,
+    `- 来源: ${record.source}`,
+    `- 修复后路径: ${record.root_path}`,
+  ].join("\n");
+}
+
+export function buildWorkspaceRepairBatchSummary(
+  records: WorkspaceRepairRecord[],
+): string {
+  if (records.length === 0) {
+    return "# ProxyCast Workspace 自愈记录\n- 暂无记录";
+  }
+
+  const lines: string[] = ["# ProxyCast Workspace 自愈记录（最近）"];
+  records.forEach((record, index) => {
+    lines.push(
+      `\n## 记录 ${index + 1}`,
+      `- 时间: ${record.timestamp}`,
+      `- Workspace ID: ${record.workspace_id}`,
+      `- 来源: ${record.source}`,
+      `- 修复后路径: ${record.root_path}`,
+    );
+  });
+  return lines.join("\n");
+}
+
 function readWorkspaceRepairHistory(): WorkspaceRepairRecord[] {
   if (typeof localStorage === "undefined") return [];
 

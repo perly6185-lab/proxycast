@@ -28,6 +28,8 @@ Tauri 后端核心代码，处理系统级功能和 API 服务。
 - `router/` - 请求路由（模型映射、规则匹配）
 - `server/` - HTTP 服务器（OpenAI/Claude 兼容 API）
 - `services/` - 业务服务层
+  - 包含更新提醒独立窗口（底部 Toast）管理能力
+  - 更新检查支持提醒频控（同版本 24h 一次、关闭退避）与埋点计数
 - `streaming/` - 流式响应处理
 - `telemetry/` - 遥测和统计
 - `terminal/` - 终端核心模块（PTY 管理、会话管理）

@@ -115,9 +115,12 @@ export function WorkbenchPage({
     handleCreationIntentValueChange,
     handleGoToIntentStep,
     handleCreateContent,
+    handleQuickCreateNovelEntry,
+    handleOpenProjectWriting,
     consumePendingInitialPrompt,
     handleQuickSaveCurrent,
     handleBackHome,
+    handleOpenCreateHome,
     handleBackToProjectManagement,
     handleEnterWorkspaceView,
     handleSwitchWorkspaceView,
@@ -144,6 +147,7 @@ export function WorkbenchPage({
             activeView={activeWorkspaceView}
             onViewChange={handleSwitchWorkspaceView}
             onBackHome={handleBackHome}
+            onOpenCreateHome={handleOpenCreateHome}
             onBackToProjectManagement={handleBackToProjectManagement}
             showBackToProjectManagement={workspaceMode === "workspace"}
           />
@@ -176,6 +180,7 @@ export function WorkbenchPage({
             filteredContents={filteredContents}
             onSelectContent={handleEnterWorkspace}
             onBackToCreateView={() => handleSwitchWorkspaceView("create")}
+            onOpenCreateHome={handleOpenCreateHome}
           />
         }
         main={
@@ -188,6 +193,8 @@ export function WorkbenchPage({
             onOpenCreateProjectDialog={handleOpenCreateProjectDialog}
             onOpenCreateContentDialog={handleOpenCreateContentDialog}
             onEnterWorkspaceView={handleEnterWorkspaceView}
+            onQuickCreateNovelEntry={handleQuickCreateNovelEntry}
+            onOpenProjectWriting={handleOpenProjectWriting}
             activeWorkspaceView={activeWorkspaceView}
             primaryWorkspaceRenderer={PrimaryWorkspaceRenderer}
             selectedContentId={selectedContentId}

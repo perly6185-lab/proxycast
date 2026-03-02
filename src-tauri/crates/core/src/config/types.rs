@@ -654,6 +654,36 @@ pub struct UpdateCheckConfig {
     /// 已跳过的版本（用户选择"跳过此版本"）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skipped_version: Option<String>,
+    /// 稍后提醒截止时间（Unix 时间戳，秒）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remind_later_until: Option<u64>,
+    /// 最近一次通知的版本号
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_notified_version: Option<String>,
+    /// 最近一次通知时间（Unix 时间戳，秒）
+    #[serde(default)]
+    pub last_notified_at: u64,
+    /// 下次允许通知时间（Unix 时间戳，秒）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_notify_after: Option<u64>,
+    /// 连续关闭提醒次数（用于退避）
+    #[serde(default)]
+    pub dismiss_streak: u32,
+    /// 更新提醒展示次数
+    #[serde(default)]
+    pub notification_shown_count: u64,
+    /// 点击“立即更新”次数
+    #[serde(default)]
+    pub action_update_now_count: u64,
+    /// 点击“稍后提醒”次数
+    #[serde(default)]
+    pub action_remind_later_count: u64,
+    /// 点击“跳过版本”次数
+    #[serde(default)]
+    pub action_skip_version_count: u64,
+    /// 关闭提醒次数（ESC/关闭按钮）
+    #[serde(default)]
+    pub action_dismiss_count: u64,
 }
 
 fn default_update_check_enabled() -> bool {
@@ -676,6 +706,16 @@ impl Default for UpdateCheckConfig {
             show_notification: default_show_notification(),
             last_check_timestamp: 0,
             skipped_version: None,
+            remind_later_until: None,
+            last_notified_version: None,
+            last_notified_at: 0,
+            next_notify_after: None,
+            dismiss_streak: 0,
+            notification_shown_count: 0,
+            action_update_now_count: 0,
+            action_remind_later_count: 0,
+            action_skip_version_count: 0,
+            action_dismiss_count: 0,
         }
     }
 }

@@ -79,6 +79,30 @@ pub async fn handle_command(
             Ok(status)
         }
 
+        "get_server_diagnostics" => {
+            let (host, port) = if let Ok(url) = reqwest::Url::parse(&state.base_url) {
+                (
+                    url.host_str().unwrap_or("127.0.0.1").to_string(),
+                    url.port_or_known_default().unwrap_or(3030),
+                )
+            } else {
+                ("127.0.0.1".to_string(), 3030)
+            };
+
+            let telemetry_summary = state.processor.stats.read().summary(None);
+            let diagnostics = proxycast_server::build_server_diagnostics(
+                true,
+                host,
+                port,
+                telemetry_summary,
+                state.capability_routing_metrics_store.snapshot(),
+                state.response_cache_store.as_ref(),
+                state.request_dedup_store.as_ref(),
+                state.idempotency_store.as_ref(),
+            );
+            Ok(serde_json::to_value(diagnostics)?)
+        }
+
         // ========== P1 - 日志相关 ==========
         "get_logs" => {
             let logs = state.logs.read().await;

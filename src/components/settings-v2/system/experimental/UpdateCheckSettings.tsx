@@ -20,6 +20,19 @@ interface UpdateCheckConfig {
   show_notification: boolean;
   last_check_timestamp: number;
   skipped_version: string | null;
+  remind_later_until: number | null;
+}
+
+interface UpdateNotificationMetrics {
+  shown_count: number;
+  update_now_count: number;
+  remind_later_count: number;
+  skip_version_count: number;
+  dismiss_count: number;
+  update_now_rate: number;
+  remind_later_rate: number;
+  skip_version_rate: number;
+  dismiss_rate: number;
 }
 
 /**
@@ -33,6 +46,18 @@ export function UpdateCheckSettings() {
     show_notification: true,
     last_check_timestamp: 0,
     skipped_version: null,
+    remind_later_until: null,
+  });
+  const [metrics, setMetrics] = useState<UpdateNotificationMetrics>({
+    shown_count: 0,
+    update_now_count: 0,
+    remind_later_count: 0,
+    skip_version_count: 0,
+    dismiss_count: 0,
+    update_now_rate: 0,
+    remind_later_rate: 0,
+    skip_version_rate: 0,
+    dismiss_rate: 0,
   });
   const [loading, setLoading] = useState(true);
 
@@ -42,10 +67,19 @@ export function UpdateCheckSettings() {
 
   const loadSettings = async () => {
     try {
-      const result = await safeInvoke<UpdateCheckConfig>(
+      const configResult = await safeInvoke<UpdateCheckConfig>(
         "get_update_check_settings",
       );
-      setSettings(result);
+      setSettings(configResult);
+
+      try {
+        const metricsResult = await safeInvoke<UpdateNotificationMetrics>(
+          "get_update_notification_metrics",
+        );
+        setMetrics(metricsResult);
+      } catch (metricsError) {
+        console.error("加载更新提醒指标失败:", metricsError);
+      }
     } catch (error) {
       console.error("加载更新检查设置失败:", error);
     } finally {
@@ -186,6 +220,31 @@ export function UpdateCheckSettings() {
             {new Date(settings.last_check_timestamp * 1000).toLocaleString()}
           </div>
         )}
+
+        {/* 稍后提醒状态 */}
+        {settings.remind_later_until &&
+          settings.remind_later_until > Date.now() / 1000 && (
+            <div className="text-xs text-muted-foreground">
+              已设置稍后提醒至:{" "}
+              {new Date(settings.remind_later_until * 1000).toLocaleString()}
+            </div>
+          )}
+
+        {/* 更新提醒埋点 */}
+        <div className="p-3 rounded-lg border bg-muted/20 space-y-1">
+          <div className="text-sm font-medium">提醒转化指标</div>
+          <div className="text-xs text-muted-foreground">
+            展示 {metrics.shown_count} 次，立即更新 {metrics.update_now_count} 次（
+            {metrics.update_now_rate}%）
+          </div>
+          <div className="text-xs text-muted-foreground">
+            稍后 {metrics.remind_later_count} 次（{metrics.remind_later_rate}%），跳过{" "}
+            {metrics.skip_version_count} 次（{metrics.skip_version_rate}%）
+          </div>
+          <div className="text-xs text-muted-foreground">
+            关闭 {metrics.dismiss_count} 次（{metrics.dismiss_rate}%）
+          </div>
+        </div>
 
         {/* 测试按钮（仅开发环境） */}
         {import.meta.env.DEV && (

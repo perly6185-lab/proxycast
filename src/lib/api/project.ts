@@ -259,6 +259,11 @@ export async function resolveProjectRootPath(name: string): Promise<string> {
 /** 获取项目列表 */
 export async function listProjects(): Promise<Project[]> {
   const projects = await invoke<RawProject[]>("workspace_list");
+  // 防御性编程：确保返回数组
+  if (!Array.isArray(projects)) {
+    console.warn("listProjects 返回非数组值:", projects);
+    return [];
+  }
   return projects.map((project) => normalizeProject(project));
 }
 
@@ -326,7 +331,13 @@ export async function listContents(
   projectId: string,
   query?: ListContentQuery,
 ): Promise<ContentListItem[]> {
-  return invoke("content_list", { projectId, query });
+  const contents = await invoke<ContentListItem[]>("content_list", { projectId, query });
+  // 防御性编程：确保返回数组
+  if (!Array.isArray(contents)) {
+    console.warn("listContents 返回非数组值:", contents);
+    return [];
+  }
+  return contents;
 }
 
 /** 更新内容 */

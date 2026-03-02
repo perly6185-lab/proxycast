@@ -33,11 +33,11 @@ pub enum UpdateWindowError {
 const UPDATE_WINDOW_LABEL: &str = "update-notification";
 
 /// 窗口尺寸
-const WINDOW_WIDTH: f64 = 340.0;
-const WINDOW_HEIGHT: f64 = 280.0;
+const WINDOW_WIDTH: f64 = 620.0;
+const WINDOW_HEIGHT: f64 = 132.0;
 
-/// 距离屏幕顶部的边距
-const TOP_MARGIN: f64 = 80.0;
+/// 距离屏幕底部的边距
+const BOTTOM_MARGIN: f64 = 24.0;
 
 /// 获取鼠标所在的显示器
 fn get_monitor_at_cursor(app: &AppHandle) -> Option<tauri::Monitor> {
@@ -86,7 +86,7 @@ fn get_monitor_at_cursor(app: &AppHandle) -> Option<tauri::Monitor> {
     None
 }
 
-/// 计算窗口位置（鼠标所在屏幕的顶部居中）
+/// 计算窗口位置（鼠标所在屏幕的底部居中）
 fn calculate_window_position(app: &AppHandle) -> (f64, f64) {
     // 优先获取鼠标所在的显示器，否则使用主显示器
     let monitor = get_monitor_at_cursor(app).or_else(|| app.primary_monitor().ok().flatten());
@@ -98,16 +98,17 @@ fn calculate_window_position(app: &AppHandle) -> (f64, f64) {
 
         // 物理像素转换为逻辑像素
         let screen_width = screen_size.width as f64 / scale_factor;
+        let screen_height = screen_size.height as f64 / scale_factor;
         let screen_x = screen_pos.x as f64 / scale_factor;
         let screen_y = screen_pos.y as f64 / scale_factor;
 
-        // 顶部居中定位
+        // 底部居中定位
         let x = screen_x + (screen_width - WINDOW_WIDTH) / 2.0;
-        let y = screen_y + TOP_MARGIN;
+        let y = screen_y + screen_height - WINDOW_HEIGHT - BOTTOM_MARGIN;
 
         debug!(
-            "更新窗口位置: 屏幕({}, {}), 尺寸: {}x?, 窗口位置: ({}, {})",
-            screen_x, screen_y, screen_width, x, y
+            "更新窗口位置: 屏幕({}, {}), 尺寸: {}x{}, 窗口位置: ({}, {})",
+            screen_x, screen_y, screen_width, screen_height, x, y
         );
         return (x, y);
     }

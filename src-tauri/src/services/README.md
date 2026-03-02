@@ -25,7 +25,7 @@
 - `sysinfo_service.rs` - Tauri 命令桥接（纯逻辑已迁移到 `crates/services/src/sysinfo_service.rs`）
 - `file_browser_service.rs` - Tauri 命令桥接（纯逻辑已迁移到 `crates/services/src/file_browser_service.rs`）
 - `update_check_service.rs` - 兼容导出层（纯逻辑已迁移到 `crates/services/src/update_check_service.rs`）
-- `update_window.rs` - 更新提醒独立窗口管理
+- `update_window.rs` - 更新提醒独立窗口管理（底部居中 Toast 窗口定位）
 - `general_chat/` - 通用对话服务模块（会话管理、消息存储）
 - `api_key_provider_service.rs` - API Key Provider 服务
 - `kiro_event_service.rs` - Kiro 事件服务

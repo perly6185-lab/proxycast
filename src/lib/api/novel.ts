@@ -159,6 +159,11 @@ export interface NovelListRunsRequest {
   limit?: number;
 }
 
+export interface NovelDeleteCharacterRequest {
+  project_id: string;
+  character_id: string;
+}
+
 export async function createNovelProject(
   request: CreateNovelProjectRequest,
 ): Promise<NovelProject> {
@@ -235,4 +240,10 @@ export async function listNovelRuns(
   request: NovelListRunsRequest,
 ): Promise<NovelGenerationRun[]> {
   return invoke("novel_list_runs", { request });
+}
+
+export async function deleteNovelCharacter(
+  request: NovelDeleteCharacterRequest,
+): Promise<boolean> {
+  return invoke("novel_delete_character", { request });
 }

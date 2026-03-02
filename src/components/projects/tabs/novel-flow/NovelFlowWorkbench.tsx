@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import {
   checkNovelConsistency,
   createNovelProject,
+  deleteNovelCharacter,
   generateNovelCharacters,
   generateNovelOutline,
   getNovelProjectSnapshot,
@@ -49,6 +50,7 @@ import {
   Loader2,
   RefreshCw,
   Sparkles,
+  Trash2,
   Users,
   X,
 } from "lucide-react";
@@ -324,6 +326,31 @@ function formatCharacterRole(roleType: string): string {
   return roleType || "配角";
 }
 
+function isSuspiciousCharacterName(name: string): boolean {
+  const normalized = name.trim();
+  if (!normalized) {
+    return true;
+  }
+
+  const lowered = normalized.toLowerCase();
+  if (
+    normalized.startsWith("```") ||
+    normalized.endsWith("```") ||
+    ["```", "```json", "```yaml", "```yml", "json", "yaml", "yml"].includes(lowered)
+  ) {
+    return true;
+  }
+
+  const isOnlyStructureChars = [...normalized].every((char) =>
+    "{}[],:".includes(char),
+  );
+  if (isOnlyStructureChars || normalized.includes('":')) {
+    return true;
+  }
+
+  return false;
+}
+
 function buildCharacterDisplay(
   character: NovelCharacterRecord,
   index: number,
@@ -479,6 +506,41 @@ export function NovelFlowWorkbench({
   const selectedChapter = useMemo(
     () => snapshot?.chapters.find((chapter) => chapter.id === selectedChapterId),
     [selectedChapterId, snapshot],
+  );
+
+  const characterEntries = useMemo(() => {
+    if (!snapshot) {
+      return [];
+    }
+    return snapshot.characters.map((character, index) => {
+      const display = buildCharacterDisplay(character, index);
+      return {
+        character,
+        display,
+        isSuspicious: isSuspiciousCharacterName(display.name),
+      };
+    });
+  }, [snapshot]);
+
+  const mainCharacterEntries = useMemo(
+    () =>
+      characterEntries.filter(
+        (item) => item.character.role_type.trim().toLowerCase() === "main",
+      ),
+    [characterEntries],
+  );
+
+  const sideCharacterEntries = useMemo(
+    () =>
+      characterEntries.filter(
+        (item) => item.character.role_type.trim().toLowerCase() !== "main",
+      ),
+    [characterEntries],
+  );
+
+  const suspiciousCharacterEntries = useMemo(
+    () => characterEntries.filter((item) => item.isSuspicious),
+    [characterEntries],
   );
 
   const pipelineState = useMemo(
@@ -800,6 +862,84 @@ export function NovelFlowWorkbench({
     runAction,
   ]);
 
+  const handleDeleteCharacter = useCallback(
+    async (characterId: string, characterName: string) => {
+      if (
+        !window.confirm(
+          `确定要删除角色“${characterName}”吗？\n\n删除后该角色将无法在后续章节生成中被引用。`,
+        )
+      ) {
+        return;
+      }
+
+      await runAction("characters", "角色已删除", async () => {
+        const removed = await deleteNovelCharacter({
+          project_id: projectId,
+          character_id: characterId,
+        });
+        if (!removed) {
+          throw new Error("角色不存在或已被删除");
+        }
+        await refreshNovelData();
+      });
+    },
+    [projectId, refreshNovelData, runAction],
+  );
+
+  const handleCleanupSuspiciousCharacters = useCallback(async () => {
+    if (suspiciousCharacterEntries.length === 0) {
+      toast.info("暂无异常角色");
+      return;
+    }
+
+    const previewNames = suspiciousCharacterEntries
+      .slice(0, 3)
+      .map((item) => item.display.name)
+      .join("、");
+    const previewText =
+      suspiciousCharacterEntries.length > 3
+        ? `${previewNames} 等 ${suspiciousCharacterEntries.length} 个角色`
+        : previewNames;
+
+    if (
+      !window.confirm(
+        `检测到异常角色：${previewText}\n\n是否继续清理这些异常角色？`,
+      )
+    ) {
+      return;
+    }
+
+    await runAction("characters", "异常角色清理完成", async () => {
+      let removedCount = 0;
+      let failedCount = 0;
+
+      for (const item of suspiciousCharacterEntries) {
+        try {
+          const removed = await deleteNovelCharacter({
+            project_id: projectId,
+            character_id: item.character.id,
+          });
+          if (removed) {
+            removedCount += 1;
+          } else {
+            failedCount += 1;
+          }
+        } catch {
+          failedCount += 1;
+        }
+      }
+
+      await refreshNovelData();
+
+      if (removedCount === 0) {
+        throw new Error("未清理任何异常角色");
+      }
+      if (failedCount > 0) {
+        toast.warning(`已清理 ${removedCount} 个异常角色，${failedCount} 个清理失败`);
+      }
+    });
+  }, [projectId, refreshNovelData, runAction, suspiciousCharacterEntries]);
+
   const handleGenerateNextChapter = useCallback(async () => {
     await runAction("chapter-cycle", "章节已生成", async () => {
       await ensureSettingsSavedForGeneration();
@@ -1050,52 +1190,46 @@ export function NovelFlowWorkbench({
 
   return (
     <div className="p-4 space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-medium">小说流水线工作台</h2>
-          <p className="text-sm text-muted-foreground">
-            设定 → 大纲 → 角色 → 章节循环 → 质检 → 发布
-          </p>
-          {preferredModel && (
-            <p className="text-xs text-muted-foreground mt-1">
-              默认模型:
-              <span className="font-mono"> {preferredModel}</span>
-              {preferredProvider && <span className="ml-2">Provider: {preferredProvider}</span>}
+      <div className="rounded-xl border bg-card p-4 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">小说流水线工作台</h2>
+            <p className="text-sm text-muted-foreground">
+              设定 → 大纲 → 角色 → 章节循环 → 质检 → 发布
             </p>
-          )}
-        </div>
+            {preferredModel && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                默认模型:
+                <span className="font-mono"> {preferredModel}</span>
+                {preferredProvider && <span className="ml-2">Provider: {preferredProvider}</span>}
+              </p>
+            )}
+          </div>
 
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            onClick={() => {
-              void refreshNovelData();
-            }}
-            disabled={loadingSnapshot || loadingRuns || generationLocked}
-          >
-            <RefreshCw
-              className={cn(
-                "h-4 w-4 mr-1",
-                (loadingSnapshot || loadingRuns) && "animate-spin",
-              )}
-            />
-            刷新
-          </Button>
-        </div>
-      </div>
-
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="space-y-1">
-              <CardTitle className="text-base flex items-center gap-2">
-                当前阶段：
-                {STAGE_METAS.find((item) => item.id === pipelineState.currentStage)?.title}
-              </CardTitle>
-              <CardDescription>
-                {STAGE_METAS.find((item) => item.id === pipelineState.currentStage)?.description}
-              </CardDescription>
-            </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                void refreshNovelData();
+              }}
+              disabled={loadingSnapshot || loadingRuns || generationLocked}
+            >
+              <RefreshCw
+                className={cn(
+                  "h-4 w-4 mr-1",
+                  (loadingSnapshot || loadingRuns) && "animate-spin",
+                )}
+              />
+              刷新
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setActiveStage(pipelineState.currentStage);
+              }}
+            >
+              回到推荐阶段
+            </Button>
             <Button
               onClick={() => {
                 void handlePrimaryAction();
@@ -1110,8 +1244,48 @@ export function NovelFlowWorkbench({
               {pipelineState.primaryAction.label}
             </Button>
           </div>
-        </CardHeader>
-      </Card>
+        </div>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+          {STAGE_METAS.map((stage) => {
+            const status = pipelineState.stageStatus[stage.id];
+            const selected = activeStage === stage.id;
+            const recommended = stage.id === pipelineState.currentStage;
+            return (
+              <button
+                key={`top-stage-${stage.id}`}
+                type="button"
+                onClick={() => {
+                  setActiveStage(stage.id);
+                }}
+                className={cn(
+                  "rounded-lg border p-2 text-left transition-all",
+                  selected
+                    ? "border-primary bg-primary/5 shadow-sm"
+                    : "border-border/70 hover:bg-muted/30",
+                )}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium">{stage.title}</span>
+                  <Badge variant={getStageStatusVariant(status)}>
+                    {getStageStatusLabel(status)}
+                  </Badge>
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <span className="line-clamp-1 text-xs text-muted-foreground">
+                    {stage.description}
+                  </span>
+                  {recommended && (
+                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                      推荐
+                    </span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       {lastActionError && (
         <Card className="border-destructive/40 bg-destructive/[0.04]">
@@ -1329,40 +1503,150 @@ export function NovelFlowWorkbench({
                 <CardTitle className="text-base">角色阶段</CardTitle>
                 <CardDescription>生成后可在后续章节中自动引用角色关系。</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <Button
-                  onClick={() => {
-                    void handleGenerateCharacters();
-                  }}
-                  disabled={generationLocked}
-                >
-                  <Users className="h-4 w-4 mr-1" />
-                  {snapshot.characters.length > 0 ? "更新角色阵列" : "生成角色阵列"}
-                </Button>
+              <CardContent className="space-y-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    onClick={() => {
+                      void handleGenerateCharacters();
+                    }}
+                    disabled={generationLocked}
+                  >
+                    <Users className="h-4 w-4 mr-1" />
+                    {characterEntries.length > 0 ? "更新角色阵列" : "生成角色阵列"}
+                  </Button>
+                  {suspiciousCharacterEntries.length > 0 && (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        void handleCleanupSuspiciousCharacters();
+                      }}
+                      disabled={generationLocked}
+                    >
+                      <Trash2 className="h-4 w-4 mr-1" />
+                      清理异常角色 ({suspiciousCharacterEntries.length})
+                    </Button>
+                  )}
+                </div>
 
-                {snapshot.characters.length === 0 ? (
+                {suspiciousCharacterEntries.length > 0 && (
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                    检测到 {suspiciousCharacterEntries.length} 个疑似异常角色（如 ```json），建议清理后再继续生成章节。
+                  </div>
+                )}
+
+                {characterEntries.length === 0 ? (
                   <div className="text-sm text-muted-foreground">暂无角色数据</div>
                 ) : (
-                  <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                    {snapshot.characters.map((character, index) => {
-                      const display = buildCharacterDisplay(character, index);
-                      return (
-                        <div key={character.id} className="rounded-md border p-3 space-y-2">
-                          <div className="text-sm font-medium break-words">{display.name}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {display.roleLabel} · 版本 {character.version}
-                          </div>
-                          <div className="space-y-1 text-sm">
-                            {display.details.map((item) => (
-                              <div key={item.label} className="leading-6 break-words">
-                                <span className="text-muted-foreground">{item.label}：</span>
-                                <span>{item.value}</span>
-                              </div>
-                            ))}
-                          </div>
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-medium">主要角色</h4>
+                        <span className="text-xs text-muted-foreground">
+                          {mainCharacterEntries.length}
+                        </span>
+                      </div>
+                      {mainCharacterEntries.length === 0 ? (
+                        <div className="rounded-md border bg-muted/10 px-3 py-2 text-sm text-muted-foreground">
+                          暂无主要角色
                         </div>
-                      );
-                    })}
+                      ) : (
+                        <div className="space-y-2">
+                          {mainCharacterEntries.map((item) => (
+                            <div key={item.character.id} className="rounded-md border p-3 space-y-2">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium break-words">{item.display.name}</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {item.display.roleLabel} · 版本 {item.character.version}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {item.isSuspicious && <Badge variant="destructive">异常</Badge>}
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                                    onClick={() => {
+                                      void handleDeleteCharacter(
+                                        item.character.id,
+                                        item.display.name,
+                                      );
+                                    }}
+                                    disabled={generationLocked}
+                                    aria-label={`删除角色 ${item.display.name}`}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </div>
+                              <div className="space-y-1 text-sm">
+                                {item.display.details.map((detail) => (
+                                  <div key={detail.label} className="leading-6 break-words">
+                                    <span className="text-muted-foreground">{detail.label}：</span>
+                                    <span>{detail.value}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-medium">次要角色</h4>
+                        <span className="text-xs text-muted-foreground">
+                          {sideCharacterEntries.length}
+                        </span>
+                      </div>
+                      {sideCharacterEntries.length === 0 ? (
+                        <div className="rounded-md border bg-muted/10 px-3 py-2 text-sm text-muted-foreground">
+                          暂无次要角色
+                        </div>
+                      ) : (
+                        <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                          {sideCharacterEntries.map((item) => (
+                            <div key={item.character.id} className="rounded-md border p-3 space-y-2">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium break-words">{item.display.name}</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {item.display.roleLabel} · 版本 {item.character.version}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {item.isSuspicious && <Badge variant="destructive">异常</Badge>}
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                                    onClick={() => {
+                                      void handleDeleteCharacter(
+                                        item.character.id,
+                                        item.display.name,
+                                      );
+                                    }}
+                                    disabled={generationLocked}
+                                    aria-label={`删除角色 ${item.display.name}`}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </div>
+                              <div className="space-y-1 text-sm">
+                                {item.display.details.map((detail) => (
+                                  <div key={detail.label} className="leading-6 break-words">
+                                    <span className="text-muted-foreground">{detail.label}：</span>
+                                    <span>{detail.value}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </CardContent>

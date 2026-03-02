@@ -15,6 +15,7 @@ export interface WorkspaceTopbarProps {
   activeView: ThemeWorkspaceView;
   onViewChange: (view: ThemeWorkspaceView) => void;
   onBackHome?: () => void;
+  onOpenCreateHome?: () => void;
   onBackToProjectManagement?: () => void;
   showBackToProjectManagement?: boolean;
 }
@@ -26,6 +27,7 @@ export function WorkspaceTopbar({
   activeView,
   onViewChange,
   onBackHome,
+  onOpenCreateHome,
   onBackToProjectManagement,
   showBackToProjectManagement = true,
 }: WorkspaceTopbarProps) {
@@ -44,6 +46,16 @@ export function WorkspaceTopbar({
             onClick={onBackToProjectManagement}
           >
             项目管理
+          </Button>
+        )}
+        {onOpenCreateHome && (
+          <Button
+            variant={activeView === "create" ? "default" : "outline"}
+            size="sm"
+            className="h-8"
+            onClick={onOpenCreateHome}
+          >
+            创作首页
           </Button>
         )}
         {projectName && (

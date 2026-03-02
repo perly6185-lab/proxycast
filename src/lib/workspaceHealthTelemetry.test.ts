@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildWorkspaceRepairBatchSummary,
+  buildWorkspaceRepairSummary,
   clearWorkspaceRepairHistory,
   getWorkspaceRepairHistory,
   recordWorkspaceRepair,
@@ -41,5 +43,42 @@ describe("workspaceHealthTelemetry", () => {
     expect(history.length).toBe(50);
     expect(history[0].workspace_id).toBe("ws-55");
     expect(history[49].workspace_id).toBe("ws-6");
+  });
+
+  it("应生成可复制的自愈摘要", () => {
+    const summary = buildWorkspaceRepairSummary({
+      timestamp: "2026-03-02T10:00:00.000Z",
+      workspace_id: "ws-99",
+      root_path: "/tmp/ws-99",
+      source: "agent_chat_page",
+    });
+
+    expect(summary).toContain("ProxyCast Workspace 自愈记录");
+    expect(summary).toContain("Workspace ID: ws-99");
+    expect(summary).toContain("来源: agent_chat_page");
+    expect(summary).toContain("修复后路径: /tmp/ws-99");
+  });
+
+  it("应生成批量自愈摘要", () => {
+    const summary = buildWorkspaceRepairBatchSummary([
+      {
+        timestamp: "2026-03-02T10:00:00.000Z",
+        workspace_id: "ws-1",
+        root_path: "/tmp/ws-1",
+        source: "app_startup",
+      },
+      {
+        timestamp: "2026-03-02T10:02:00.000Z",
+        workspace_id: "ws-2",
+        root_path: "/tmp/ws-2",
+        source: "agent_chat_page",
+      },
+    ]);
+
+    expect(summary).toContain("ProxyCast Workspace 自愈记录（最近）");
+    expect(summary).toContain("## 记录 1");
+    expect(summary).toContain("Workspace ID: ws-1");
+    expect(summary).toContain("## 记录 2");
+    expect(summary).toContain("Workspace ID: ws-2");
   });
 });

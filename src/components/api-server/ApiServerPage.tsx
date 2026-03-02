@@ -15,11 +15,13 @@ import {
   startServer,
   stopServer,
   getServerStatus,
+  getServerDiagnostics,
   getConfig,
   saveConfig,
   reloadCredentials,
   testApi,
   ServerStatus,
+  ServerDiagnostics,
   Config,
   TestResult,
   getDefaultProvider,
@@ -53,6 +55,7 @@ interface TestState {
   response?: string;
   time?: number;
   httpStatus?: number;
+  responseHeaders?: Record<string, string>;
 }
 
 type TabId = "server" | "logs";
@@ -151,6 +154,9 @@ interface AvailableProvider {
 
 export function ApiServerPage({ hideHeader = false }: ApiServerPageProps) {
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  const [diagnostics, setDiagnostics] = useState<ServerDiagnostics | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
   const [config, setConfig] = useState<Config | null>(null);
   const [loading, setLoading] = useState(false);
   const [_error, setError] = useState<string | null>(null);
@@ -197,6 +203,32 @@ export function ApiServerPage({ hideHeader = false }: ApiServerPageProps) {
     }
   };
 
+  const fetchDiagnostics = async () => {
+    setDiagnosticsLoading(true);
+    try {
+      const detail = await getServerDiagnostics();
+      setDiagnostics(detail);
+      setMessage({ type: "success", text: "诊断数据已刷新" });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setMessage({ type: "error", text: `诊断拉取失败: ${errMsg}` });
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  };
+
+  const copyDiagnostics = async () => {
+    if (!diagnostics) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+      setDiagnosticsCopied(true);
+      setTimeout(() => setDiagnosticsCopied(false), 1500);
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setMessage({ type: "error", text: `复制失败: ${errMsg}` });
+    }
+  };
+
   const fetchConfig = async () => {
     try {
       const c = await getConfig();
@@ -216,6 +248,7 @@ export function ApiServerPage({ hideHeader = false }: ApiServerPageProps) {
 
   useEffect(() => {
     fetchStatus();
+    fetchDiagnostics();
     fetchConfig();
     loadDefaultProvider();
     loadNetworkInfo();
@@ -939,6 +972,10 @@ export function ApiServerPage({ hideHeader = false }: ApiServerPageProps) {
     if (totalChecks === 0) return 0;
     return (idempotency.check_completed_total / totalChecks) * 100;
   }, [status]);
+  const diagnosticsJson = useMemo(() => {
+    if (!diagnostics) return "";
+    return JSON.stringify(diagnostics, null, 2);
+  }, [diagnostics]);
 
   const handleGatewayModeChange = async (mode: GatewayMode) => {
     const nextHost = mode === "local" ? "127.0.0.1" : "0.0.0.0";
@@ -1055,6 +1092,7 @@ export function ApiServerPage({ hideHeader = false }: ApiServerPageProps) {
           response: result.body || `HTTP ${result.status}: 无响应内容`,
           time: result.time_ms,
           httpStatus: result.status,
+          responseHeaders: result.response_headers || {},
         },
       }));
 
@@ -1524,6 +1562,33 @@ export function ApiServerPage({ hideHeader = false }: ApiServerPageProps) {
                 </div>
               </div>
             </div>
+
+            <div className="rounded-md border p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">
+                  诊断接口（`/health?full=true` / `/cache` / `/stats`）
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={fetchDiagnostics}
+                    disabled={diagnosticsLoading}
+                    className="rounded border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                  >
+                    {diagnosticsLoading ? "拉取中..." : "拉取诊断"}
+                  </button>
+                  <button
+                    onClick={copyDiagnostics}
+                    disabled={!diagnostics}
+                    className="rounded border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                  >
+                    {diagnosticsCopied ? "已复制" : "复制 JSON"}
+                  </button>
+                </div>
+              </div>
+              <pre className="rounded bg-muted/40 p-2 text-xs overflow-auto max-h-48">
+                {diagnosticsJson || "点击“拉取诊断”获取当前服务诊断 JSON。"}
+              </pre>
+            </div>
           </div>
 
           {/* Default Provider - 动态显示有凭证的 Provider */}
@@ -1766,6 +1831,11 @@ export function ApiServerPage({ hideHeader = false }: ApiServerPageProps) {
                 const result = testResults[endpoint.id];
                 const isExpanded = expandedTest === endpoint.id;
                 const curlCmd = getCurlCommand(endpoint);
+                const proxycastDebugHeaders = Object.entries(
+                  result?.responseHeaders || {},
+                ).filter(([key]) =>
+                  key.toLowerCase().startsWith("x-proxycast-"),
+                );
 
                 return (
                   <div
@@ -1861,6 +1931,28 @@ export function ApiServerPage({ hideHeader = false }: ApiServerPageProps) {
                                 }
                               })()}
                             </pre>
+                          </div>
+                        )}
+                        {proxycastDebugHeaders.length > 0 && (
+                          <div>
+                            <p className="mb-1 text-xs font-medium text-muted-foreground">
+                              调试头（x-proxycast-*）
+                            </p>
+                            <div className="rounded bg-muted p-2 text-xs space-y-1">
+                              {proxycastDebugHeaders.map(([key, value]) => (
+                                <div
+                                  key={key}
+                                  className="flex items-start justify-between gap-3"
+                                >
+                                  <code className="text-muted-foreground">
+                                    {key}
+                                  </code>
+                                  <code className="text-right break-all">
+                                    {value}
+                                  </code>
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         )}
                       </div>

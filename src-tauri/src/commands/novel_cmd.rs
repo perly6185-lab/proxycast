@@ -4,10 +4,10 @@
 
 use crate::database::DbConnection;
 use crate::services::novel_service::{
-    NovelCheckConsistencyRequest, NovelCreateProjectRequest, NovelGenerateChapterRequest,
-    NovelGenerateRequest, NovelGenerateResult, NovelGenerationRun, NovelListRunsRequest,
-    NovelPolishChapterRequest, NovelProject, NovelProjectSnapshot, NovelRewriteChapterRequest,
-    NovelSettingsRecord, NovelUpdateSettingsRequest,
+    NovelCheckConsistencyRequest, NovelCreateProjectRequest, NovelDeleteCharacterRequest,
+    NovelGenerateChapterRequest, NovelGenerateRequest, NovelGenerateResult, NovelGenerationRun,
+    NovelListRunsRequest, NovelPolishChapterRequest, NovelProject, NovelProjectSnapshot,
+    NovelRewriteChapterRequest, NovelSettingsRecord, NovelUpdateSettingsRequest,
 };
 use tauri::State;
 
@@ -108,4 +108,13 @@ pub async fn novel_list_runs(
     request: NovelListRunsRequest,
 ) -> Result<Vec<NovelGenerationRun>, String> {
     crate::theme::novel::command::novel_list_runs(db, request).await
+}
+
+/// 删除单个角色
+#[tauri::command]
+pub async fn novel_delete_character(
+    db: State<'_, DbConnection>,
+    request: NovelDeleteCharacterRequest,
+) -> Result<bool, String> {
+    crate::theme::novel::command::novel_delete_character(db, request).await
 }

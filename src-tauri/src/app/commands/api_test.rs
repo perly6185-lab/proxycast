@@ -12,6 +12,7 @@ pub struct TestResult {
     pub status: u16,
     pub body: String,
     pub time_ms: u64,
+    pub response_headers: std::collections::HashMap<String, String>,
 }
 
 /// 模型信息
@@ -346,6 +347,16 @@ pub async fn test_api(
     match req.send().await {
         Ok(resp) => {
             let status = resp.status().as_u16();
+            let response_headers = resp
+                .headers()
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|text| (name.as_str().to_string(), text.to_string()))
+                })
+                .collect::<std::collections::HashMap<_, _>>();
             let body = resp.text().await.unwrap_or_default();
             let time_ms = start.elapsed().as_millis() as u64;
 
@@ -360,6 +371,7 @@ pub async fn test_api(
                 status,
                 body,
                 time_ms,
+                response_headers,
             })
         }
         Err(e) => {

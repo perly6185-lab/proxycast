@@ -729,6 +729,7 @@ pub fn run() {
             app_commands::start_server,
             app_commands::stop_server,
             app_commands::get_server_status,
+            app_commands::get_server_diagnostics,
             // Config commands (from app::commands)
             app_commands::get_config,
             app_commands::save_config,
@@ -1220,7 +1221,11 @@ pub fn run() {
             commands::update_cmd::check_update,
             commands::update_cmd::get_update_check_settings,
             commands::update_cmd::set_update_check_settings,
+            commands::update_cmd::get_update_notification_metrics,
+            commands::update_cmd::record_update_notification_action,
             commands::update_cmd::skip_update_version,
+            commands::update_cmd::remind_update_later,
+            commands::update_cmd::dismiss_update_notification,
             commands::update_cmd::update_last_check_timestamp,
             commands::update_cmd::close_update_window,
             commands::update_cmd::test_update_window,
@@ -1361,6 +1366,7 @@ pub fn run() {
             commands::novel_cmd::novel_check_consistency,
             commands::novel_cmd::novel_get_project_snapshot,
             commands::novel_cmd::novel_list_runs,
+            commands::novel_cmd::novel_delete_character,
             // Memory commands (Character, WorldBuilding, StyleGuide, Outline)
             commands::memory_cmd::character_create,
             commands::memory_cmd::character_get,

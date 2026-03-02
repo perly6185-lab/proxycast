@@ -3,6 +3,9 @@ import { FolderOpen, Plus, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Page, PageParams, WorkspaceTheme, WorkspaceViewMode } from "@/types/page";
 import type {
+  NovelQuickCreateOptions,
+  NovelQuickCreateResult,
+  OpenProjectWritingOptions,
   ThemeWorkspaceNotice,
   ThemeWorkspaceNavigationItem,
   ThemeWorkspaceRendererProps,
@@ -24,6 +27,13 @@ export interface WorkbenchMainContentProps {
   onOpenCreateProjectDialog: () => void;
   onOpenCreateContentDialog: () => void;
   onEnterWorkspaceView: (view: ThemeWorkspaceView) => void;
+  onQuickCreateNovelEntry?: (
+    options: NovelQuickCreateOptions,
+  ) => Promise<NovelQuickCreateResult>;
+  onOpenProjectWriting?: (
+    projectId: string,
+    options?: OpenProjectWritingOptions,
+  ) => Promise<string>;
   activeWorkspaceView: ThemeWorkspaceView;
   primaryWorkspaceRenderer?: ThemeWorkspaceRenderer;
   selectedContentId: string | null;
@@ -49,6 +59,8 @@ export function WorkbenchMainContent({
   onOpenCreateProjectDialog,
   onOpenCreateContentDialog,
   onEnterWorkspaceView,
+  onQuickCreateNovelEntry,
+  onOpenProjectWriting,
   activeWorkspaceView,
   primaryWorkspaceRenderer: PrimaryWorkspaceRenderer,
   selectedContentId,
@@ -119,16 +131,15 @@ export function WorkbenchMainContent({
     );
   }
 
-  if (!selectedProjectId) {
-    return (
-      <div className="h-full rounded-lg border bg-card flex flex-col items-center justify-center gap-3 text-muted-foreground m-4">
-        <Sparkles className="h-8 w-8 opacity-60" />
-        <p className="text-sm">请先在左侧选择项目</p>
-      </div>
-    );
-  }
+  // 如果有 PrimaryWorkspaceRenderer 且在 create 视图，优先渲染自定义首页
+  const isNovelHomeRenderer =
+    Boolean(onQuickCreateNovelEntry) || Boolean(onOpenProjectWriting);
+  const shouldRenderPrimaryWorkspace =
+    activeWorkspaceView === "create" &&
+    PrimaryWorkspaceRenderer &&
+    (!isNovelHomeRenderer || !selectedContentId);
 
-  if (activeWorkspaceView === "create" && PrimaryWorkspaceRenderer) {
+  if (shouldRenderPrimaryWorkspace) {
     return (
       <PrimaryWorkspaceRenderer
         projectId={selectedProjectId}
@@ -136,7 +147,27 @@ export function WorkbenchMainContent({
         workspaceType={selectedProject?.workspaceType}
         resetAt={resetAt}
         onBackHome={onBackHome}
+        onOpenCreateProjectDialog={onOpenCreateProjectDialog}
+        onProjectSelect={(projectId) => {
+          // 通过导航更新 URL 参数来选中项目
+          if (onNavigate) {
+            const url = new URL(window.location.href);
+            url.searchParams.set("projectId", projectId);
+            onNavigate(theme as any, Object.fromEntries(url.searchParams));
+          }
+        }}
+        onQuickCreateNovelEntry={onQuickCreateNovelEntry}
+        onOpenProjectWriting={onOpenProjectWriting}
       />
+    );
+  }
+
+  if (!selectedProjectId) {
+    return (
+      <div className="h-full rounded-lg border bg-card flex flex-col items-center justify-center gap-3 text-muted-foreground m-4">
+        <Sparkles className="h-8 w-8 opacity-60" />
+        <p className="text-sm">请先在左侧选择项目</p>
+      </div>
     );
   }
 

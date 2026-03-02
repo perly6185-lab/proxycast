@@ -100,6 +100,10 @@ impl IdempotencyStore {
         }
     }
 
+    pub fn config(&self) -> IdempotencyConfig {
+        self.config.clone()
+    }
+
     /// 检查幂等性键
     pub fn check(&self, key: &str) -> IdempotencyCheck {
         if !self.config.enabled {
@@ -224,6 +228,17 @@ impl IdempotencyStore {
             check_completed_total: self.check_completed_total.load(Ordering::Relaxed),
             complete_total: self.complete_total.load(Ordering::Relaxed),
             remove_total: self.remove_total.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn replay_rate_percent(&self) -> f64 {
+        let stats = self.stats();
+        let total_checks =
+            stats.check_new_total + stats.check_in_progress_total + stats.check_completed_total;
+        if total_checks == 0 {
+            0.0
+        } else {
+            (stats.check_completed_total as f64 / total_checks as f64) * 100.0
         }
     }
 }

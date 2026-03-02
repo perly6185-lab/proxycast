@@ -105,24 +105,26 @@ export function useWorkbenchProjectData({
       setContentsLoading(true);
       try {
         const contentList = await listContents(projectId);
-        setContents(contentList);
+        // 防御性编程：确保 contentList 是数组
+        const safeContentList = Array.isArray(contentList) ? contentList : [];
+        setContents(safeContentList);
 
         setSelectedContentId((previousId) => {
           if (
             previousId &&
-            contentList.some((content) => content.id === previousId)
+            safeContentList.some((content) => content.id === previousId)
           ) {
             return previousId;
           }
 
           if (
             initialContentId &&
-            contentList.some((content) => content.id === initialContentId)
+            safeContentList.some((content) => content.id === initialContentId)
           ) {
             return initialContentId;
           }
 
-          return contentList[0]?.id ?? null;
+          return safeContentList[0]?.id ?? null;
         });
       } catch (error) {
         console.error("加载文稿失败:", error);

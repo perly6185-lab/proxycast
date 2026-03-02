@@ -14,6 +14,11 @@ import type {
 } from "@/types/page";
 import { buildHomeAgentParams } from "@/lib/workspace/navigation";
 import { getThemeModule } from "@/features/themes";
+import type {
+  NovelQuickCreateOptions,
+  NovelQuickCreateResult,
+  OpenProjectWritingOptions,
+} from "@/features/themes/types";
 import type { CreationMode } from "@/components/content-creator/types";
 import type { WorkflowProgressSnapshot } from "@/components/agent/chat";
 import { useCreationDialogs } from "@/components/workspace/hooks/useCreationDialogs";
@@ -322,6 +327,8 @@ export function useWorkbenchController({
     handleCreationIntentValueChange,
     handleGoToIntentStep,
     handleCreateContent,
+    handleQuickCreateProjectAndContent,
+    handleOpenProjectForWriting,
     consumePendingInitialPrompt,
   } = useCreationDialogs({
     theme,
@@ -337,6 +344,33 @@ export function useWorkbenchController({
     defaultCreationMode: DEFAULT_CREATION_MODE,
     minCreationIntentLength: MIN_CREATION_INTENT_LENGTH,
   });
+
+  const handleQuickCreateNovelEntry = useCallback(
+    async (options: NovelQuickCreateOptions): Promise<NovelQuickCreateResult> => {
+      return handleQuickCreateProjectAndContent({
+        projectName: options.projectName,
+        workspaceType: "novel",
+        contentTitle: options.contentTitle,
+        initialUserPrompt: options.initialUserPrompt,
+        creationMode: options.creationMode ?? DEFAULT_CREATION_MODE,
+      });
+    },
+    [handleQuickCreateProjectAndContent],
+  );
+
+  const handleOpenProjectWriting = useCallback(
+    async (
+      projectId: string,
+      options?: OpenProjectWritingOptions,
+    ): Promise<string> => {
+      return handleOpenProjectForWriting(projectId, {
+        fallbackContentTitle: options?.fallbackContentTitle,
+        initialUserPrompt: options?.initialUserPrompt,
+        creationMode: options?.creationMode ?? DEFAULT_CREATION_MODE,
+      });
+    },
+    [handleOpenProjectForWriting],
+  );
 
   const handleQuickSaveCurrent = useCallback(async () => {
     if (!selectedContentId || !selectedProjectId) {
@@ -381,6 +415,22 @@ export function useWorkbenchController({
   const handleBackHome = useCallback(() => {
     onNavigate?.("agent", buildHomeAgentParams());
   }, [onNavigate]);
+
+  const handleOpenCreateHome = useCallback(() => {
+    setWorkspaceMode("workspace");
+    setActiveWorkspaceView("create");
+    setSelectedContentId(null);
+    setShowChatPanel(true);
+    setActiveRightDrawer(null);
+    setShowWorkflowRail(false);
+  }, [
+    setActiveRightDrawer,
+    setActiveWorkspaceView,
+    setSelectedContentId,
+    setShowChatPanel,
+    setShowWorkflowRail,
+    setWorkspaceMode,
+  ]);
 
   useSidebarToggleHotkey(toggleLeftSidebar);
 
@@ -481,9 +531,12 @@ export function useWorkbenchController({
     handleCreationIntentValueChange,
     handleGoToIntentStep,
     handleCreateContent,
+    handleQuickCreateNovelEntry,
+    handleOpenProjectWriting,
     consumePendingInitialPrompt,
     handleQuickSaveCurrent,
     handleBackHome,
+    handleOpenCreateHome,
     handleBackToProjectManagement,
     handleEnterWorkspaceView,
     handleSwitchWorkspaceView,

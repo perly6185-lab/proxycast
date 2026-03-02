@@ -12,7 +12,9 @@ export function getAvailableProjects(
   projects: Project[],
   workspaceType?: string,
 ): Project[] {
-  let filtered = projects.filter((project) => !project.isArchived);
+  // 防御性编程：确保 projects 是数组
+  const safeProjects = Array.isArray(projects) ? projects : [];
+  let filtered = safeProjects.filter((project) => !project.isArchived);
 
   if (workspaceType) {
     filtered = filtered.filter(

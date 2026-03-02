@@ -19,6 +19,7 @@ import {
   getProjectByRootPath,
   getProjectTypeLabel,
   getWorkspaceProjectsRoot,
+  listContents,
   resolveProjectRootPath,
   type ProjectType,
 } from "@/lib/api/project";
@@ -329,6 +330,20 @@ export interface UseCreationDialogsParams {
   minCreationIntentLength: number;
 }
 
+export interface QuickCreateProjectAndContentOptions {
+  projectName: string;
+  workspaceType?: ProjectType;
+  contentTitle?: string;
+  initialUserPrompt?: string;
+  creationMode?: CreationMode;
+}
+
+export interface OpenProjectForWritingOptions {
+  fallbackContentTitle?: string;
+  initialUserPrompt?: string;
+  creationMode?: CreationMode;
+}
+
 export function useCreationDialogs({
   theme,
   selectedProjectId,
@@ -442,6 +457,25 @@ export function useCreationDialogs({
       onProjectCreated(createdProject.id);
       toast.success("已创建新项目");
       await loadProjects();
+
+      // 自动创建默认文稿并进入创作页面
+      try {
+        const defaultContentType = getDefaultContentTypeForProject(createdProject.workspaceType);
+        const contentTypeLabel = getContentTypeLabel(defaultContentType);
+        const defaultContent = await createContent({
+          project_id: createdProject.id,
+          title: `新${contentTypeLabel}`,
+          content_type: defaultContentType,
+        });
+
+        // 加载文稿列表并进入创作页面
+        await loadContents(createdProject.id);
+        onEnterWorkspace(defaultContent.id);
+      } catch (contentError) {
+        console.error("自动创建默认文稿失败:", contentError);
+        // 文稿创建失败不影响项目创建成功的提示
+        // 用户可以手动创建文稿
+      }
     } catch (error) {
       console.error("创建项目失败:", error);
       void reportFrontendError(error, {
@@ -454,7 +488,141 @@ export function useCreationDialogs({
     } finally {
       setCreatingProject(false);
     }
-  }, [loadProjects, newProjectName, onProjectCreated, theme]);
+  }, [loadProjects, loadContents, newProjectName, onProjectCreated, onEnterWorkspace, theme]);
+
+  const handleQuickCreateProjectAndContent = useCallback(
+    async (options: QuickCreateProjectAndContentOptions) => {
+      const projectName = options.projectName.trim();
+      if (!projectName) {
+        throw new Error("项目名称不能为空");
+      }
+
+      const projectType = options.workspaceType ?? (theme as ProjectType);
+      const creationMode = normalizeCreationMode(
+        options.creationMode ?? defaultCreationMode,
+      );
+      const initialPrompt = options.initialUserPrompt?.trim() || "";
+
+      try {
+        const rootPath = await resolveProjectRootPath(projectName);
+        const createdProject = await createProject({
+          name: projectName,
+          rootPath,
+          workspaceType: projectType,
+        });
+
+        onProjectCreated(createdProject.id);
+        await loadProjects();
+
+        const defaultContentType = getDefaultContentTypeForProject(
+          createdProject.workspaceType,
+        );
+        const contentTitle =
+          options.contentTitle?.trim() ||
+          `新${getContentTypeLabel(defaultContentType)}`;
+        const createdContent = await createContent({
+          project_id: createdProject.id,
+          title: contentTitle,
+          content_type: defaultContentType,
+          metadata: {
+            creationMode,
+            quickCreate: true,
+          },
+        });
+
+        setContentCreationModes((previous) => ({
+          ...previous,
+          [createdContent.id]: creationMode,
+        }));
+
+        if (initialPrompt) {
+          setPendingInitialPromptsByContentId((previous) => ({
+            ...previous,
+            [createdContent.id]: initialPrompt,
+          }));
+        }
+
+        await loadContents(createdProject.id);
+        onEnterWorkspace(createdContent.id, { showChatPanel: true });
+
+        return {
+          projectId: createdProject.id,
+          contentId: createdContent.id,
+        };
+      } catch (error) {
+        console.error("快速创建项目与文稿失败:", error);
+        void reportFrontendError(error, {
+          component: "useCreationDialogs",
+          workflow_step: "workspace_creation_quick_create_project_content",
+        });
+        toast.error(`创建失败: ${extractErrorMessage(error)}`);
+        throw error;
+      }
+    },
+    [defaultCreationMode, loadContents, loadProjects, onEnterWorkspace, onProjectCreated, theme],
+  );
+
+  const handleOpenProjectForWriting = useCallback(
+    async (projectId: string, options?: OpenProjectForWritingOptions) => {
+      const creationMode = normalizeCreationMode(
+        options?.creationMode ?? defaultCreationMode,
+      );
+      const initialPrompt = options?.initialUserPrompt?.trim() || "";
+
+      try {
+        const existingContents = await listContents(projectId);
+        const latestContent = [...existingContents].sort(
+          (a, b) => b.updated_at - a.updated_at,
+        )[0];
+
+        let targetContentId = latestContent?.id || "";
+
+        if (!targetContentId) {
+          const defaultContentType = getDefaultContentTypeForProject(
+            theme as ProjectType,
+          );
+          const fallbackTitle =
+            options?.fallbackContentTitle?.trim() ||
+            `新${getContentTypeLabel(defaultContentType)}`;
+          const createdContent = await createContent({
+            project_id: projectId,
+            title: fallbackTitle,
+            content_type: defaultContentType,
+            metadata: {
+              creationMode,
+              quickCreate: true,
+            },
+          });
+          targetContentId = createdContent.id;
+          setContentCreationModes((previous) => ({
+            ...previous,
+            [createdContent.id]: creationMode,
+          }));
+        }
+
+        if (initialPrompt) {
+          setPendingInitialPromptsByContentId((previous) => ({
+            ...previous,
+            [targetContentId]: initialPrompt,
+          }));
+        }
+
+        onProjectCreated(projectId);
+        await loadContents(projectId);
+        onEnterWorkspace(targetContentId, { showChatPanel: true });
+        return targetContentId;
+      } catch (error) {
+        console.error("打开项目写作失败:", error);
+        void reportFrontendError(error, {
+          component: "useCreationDialogs",
+          workflow_step: "workspace_open_project_for_writing",
+        });
+        toast.error(`打开写作失败: ${extractErrorMessage(error)}`);
+        throw error;
+      }
+    },
+    [defaultCreationMode, loadContents, onEnterWorkspace, onProjectCreated, theme],
+  );
 
   const handleOpenCreateContentDialog = useCallback(() => {
     if (!selectedProjectId) {
@@ -631,6 +799,8 @@ export function useCreationDialogs({
     handleCreationIntentValueChange,
     handleGoToIntentStep,
     handleCreateContent,
+    handleQuickCreateProjectAndContent,
+    handleOpenProjectForWriting,
     consumePendingInitialPrompt,
   };
 }

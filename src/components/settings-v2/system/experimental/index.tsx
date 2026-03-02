@@ -42,6 +42,7 @@ import {
   openCrashDiagnosticDownloadDirectory,
 } from "@/lib/crashDiagnostic";
 import { ClipboardPermissionGuideCard } from "../shared/ClipboardPermissionGuideCard";
+import { WorkspaceRepairHistoryCard } from "../shared/WorkspaceRepairHistoryCard";
 
 // ============================================================
 // 组件
@@ -672,6 +673,11 @@ export function ExperimentalSettings() {
           </div>
         </div>
       </div>
+
+      <WorkspaceRepairHistoryCard
+        title="Workspace 自愈记录（实验室）"
+        description="用于排查“路径不存在/自动迁移”问题，记录最近修复事件"
+      />
 
       {/* 语音输入功能 */}
       {voiceConfig && (

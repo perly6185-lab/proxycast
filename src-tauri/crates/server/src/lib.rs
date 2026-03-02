@@ -6,7 +6,7 @@ pub mod client_detector;
 pub mod middleware;
 
 use axum::{
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -35,7 +35,7 @@ use proxycast_providers::providers::openai_custom::OpenAICustomProvider;
 use proxycast_server_utils::{
     build_anthropic_response, build_anthropic_stream_response, build_error_response,
     build_error_response_with_status, build_gemini_cli_request, build_gemini_native_request,
-    health, models, parse_cw_response,
+    models, parse_cw_response,
 };
 use proxycast_services::kiro_event_service::KiroEventService;
 use proxycast_services::provider_pool_service::ProviderPoolService;
@@ -180,6 +180,94 @@ pub struct ServerStatus {
     pub request_dedup: middleware::request_dedup::RequestDedupStats,
     /// 幂等运行时统计
     pub idempotency: middleware::idempotency::IdempotencyStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseCacheDiagnostics {
+    pub config: middleware::response_cache::ResponseCacheConfig,
+    pub stats: middleware::response_cache::ResponseCacheStats,
+    pub hit_rate_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestDedupDiagnostics {
+    pub config: middleware::request_dedup::RequestDedupConfig,
+    pub stats: middleware::request_dedup::RequestDedupStats,
+    pub replay_rate_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdempotencyDiagnostics {
+    pub config: middleware::idempotency::IdempotencyConfig,
+    pub stats: middleware::idempotency::IdempotencyStats,
+    pub replay_rate_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerDiagnostics {
+    pub generated_at: String,
+    pub running: bool,
+    pub host: String,
+    pub port: u16,
+    pub telemetry_summary: proxycast_infra::telemetry::StatsSummary,
+    pub capability_routing:
+        middleware::capability_routing_metrics::CapabilityRoutingMetricsSnapshot,
+    pub response_cache: ResponseCacheDiagnostics,
+    pub request_dedup: RequestDedupDiagnostics,
+    pub idempotency: IdempotencyDiagnostics,
+}
+
+pub fn build_response_cache_diagnostics(
+    store: &middleware::response_cache::ResponseCacheStore,
+) -> ResponseCacheDiagnostics {
+    ResponseCacheDiagnostics {
+        config: store.config(),
+        stats: store.stats(),
+        hit_rate_percent: store.hit_rate_percent(),
+    }
+}
+
+pub fn build_request_dedup_diagnostics(
+    store: &middleware::request_dedup::RequestDedupStore,
+) -> RequestDedupDiagnostics {
+    RequestDedupDiagnostics {
+        config: store.config(),
+        stats: store.stats(),
+        replay_rate_percent: store.replay_rate_percent(),
+    }
+}
+
+pub fn build_idempotency_diagnostics(
+    store: &middleware::idempotency::IdempotencyStore,
+) -> IdempotencyDiagnostics {
+    IdempotencyDiagnostics {
+        config: store.config(),
+        stats: store.stats(),
+        replay_rate_percent: store.replay_rate_percent(),
+    }
+}
+
+pub fn build_server_diagnostics(
+    running: bool,
+    host: String,
+    port: u16,
+    telemetry_summary: proxycast_infra::telemetry::StatsSummary,
+    capability_routing: middleware::capability_routing_metrics::CapabilityRoutingMetricsSnapshot,
+    response_cache_store: &middleware::response_cache::ResponseCacheStore,
+    request_dedup_store: &middleware::request_dedup::RequestDedupStore,
+    idempotency_store: &middleware::idempotency::IdempotencyStore,
+) -> ServerDiagnostics {
+    ServerDiagnostics {
+        generated_at: chrono::Utc::now().to_rfc3339(),
+        running,
+        host,
+        port,
+        telemetry_summary,
+        capability_routing,
+        response_cache: build_response_cache_diagnostics(response_cache_store),
+        request_dedup: build_request_dedup_diagnostics(request_dedup_store),
+        idempotency: build_idempotency_diagnostics(idempotency_store),
+    }
 }
 
 pub struct ServerState {
@@ -1107,6 +1195,8 @@ async fn run_server(
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/cache", get(cache_diagnostics))
+        .route("/stats", get(stats_diagnostics))
         .route("/v1/models", get(models))
         .route("/v1/routes", get(list_routes))
         .route("/v1/chat/completions", post(
@@ -1180,6 +1270,103 @@ async fn run_server(
         .await?;
 
     Ok(())
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct HealthQuery {
+    #[serde(default)]
+    full: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StatsQuery {
+    days: Option<u32>,
+}
+
+fn parse_base_url_host_port(base_url: &str) -> (String, u16) {
+    if let Ok(url) = reqwest::Url::parse(base_url) {
+        let host = url.host_str().unwrap_or("127.0.0.1").to_string();
+        let port = url.port_or_known_default().unwrap_or_else(|| {
+            if url.scheme() == "https" {
+                443
+            } else {
+                80
+            }
+        });
+        return (host, port);
+    }
+    ("127.0.0.1".to_string(), 3030)
+}
+
+fn build_diagnostics_from_app_state(
+    state: &AppState,
+    stats_range: Option<proxycast_infra::telemetry::TimeRange>,
+) -> ServerDiagnostics {
+    let telemetry_summary = state.processor.stats.read().summary(stats_range);
+    let (host, port) = parse_base_url_host_port(&state.base_url);
+    build_server_diagnostics(
+        true,
+        host,
+        port,
+        telemetry_summary,
+        state.capability_routing_metrics_store.snapshot(),
+        state.response_cache_store.as_ref(),
+        state.request_dedup_store.as_ref(),
+        state.idempotency_store.as_ref(),
+    )
+}
+
+async fn health(State(state): State<AppState>, Query(query): Query<HealthQuery>) -> Response {
+    if !query.full {
+        return Json(serde_json::json!({
+            "status": "healthy",
+            "version": env!("CARGO_PKG_VERSION")
+        }))
+        .into_response();
+    }
+
+    let diagnostics = build_diagnostics_from_app_state(&state, None);
+    (
+        [
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(serde_json::json!({
+            "status": "healthy",
+            "version": env!("CARGO_PKG_VERSION"),
+            "diagnostics": diagnostics
+        })),
+    )
+        .into_response()
+}
+
+async fn cache_diagnostics(State(state): State<AppState>) -> Response {
+    let cache = build_response_cache_diagnostics(state.response_cache_store.as_ref());
+    (
+        [
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(cache),
+    )
+        .into_response()
+}
+
+async fn stats_diagnostics(
+    State(state): State<AppState>,
+    Query(query): Query<StatsQuery>,
+) -> Response {
+    let days = query.days.unwrap_or(7).clamp(1, 30);
+    let range = proxycast_infra::telemetry::TimeRange::last_days(days as i64);
+    let diagnostics = build_diagnostics_from_app_state(&state, Some(range));
+    (
+        [
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(diagnostics),
+    )
+        .into_response()
 }
 
 async fn count_tokens(

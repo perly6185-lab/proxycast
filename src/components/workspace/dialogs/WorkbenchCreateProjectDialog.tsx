@@ -105,7 +105,7 @@ export function WorkbenchCreateProjectDialog({
               pathChecking ||
               !!pathConflictMessage ||
               !newProjectName.trim() ||
-              !workspaceProjectsRoot.trim()
+              !workspaceProjectsRoot?.trim()
             }
           >
             {creatingProject ? "创建中..." : "创建项目"}

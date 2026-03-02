@@ -49,6 +49,7 @@ export interface WorkbenchLeftSidebarProps {
   filteredContents: ContentListItem[];
   onSelectContent: (contentId: string) => void;
   onBackToCreateView: () => void;
+  onOpenCreateHome: () => void;
 }
 
 export function WorkbenchLeftSidebar({
@@ -76,6 +77,7 @@ export function WorkbenchLeftSidebar({
   filteredContents,
   onSelectContent,
   onBackToCreateView,
+  onOpenCreateHome,
 }: WorkbenchLeftSidebarProps) {
   if (!shouldRender) {
     return null;
@@ -258,6 +260,19 @@ export function WorkbenchLeftSidebar({
                       />
                     </div>
 
+                    {selectedContentId && (
+                      <div className="px-2 pb-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="w-full"
+                          onClick={onOpenCreateHome}
+                        >
+                          返回创作首页
+                        </Button>
+                      </div>
+                    )}
+
                     <ScrollArea className="flex-1">
                       <div className="p-2 space-y-1">
                         {contentsLoading ? (
@@ -315,6 +330,14 @@ export function WorkbenchLeftSidebar({
                         onClick={onBackToCreateView}
                       >
                         返回创作视图
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full"
+                        onClick={onOpenCreateHome}
+                      >
+                        进入创作首页
                       </Button>
                     </div>
                   </div>

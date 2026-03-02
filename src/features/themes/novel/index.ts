@@ -8,13 +8,14 @@ import {
   NovelPublishPanel,
   NovelWorkflowPanel,
 } from "@/features/themes/novel/panelRenderers";
+import { NovelThemeWorkspace } from "./NovelThemeWorkspace";
 
 export const novelThemeModule: ThemeModule = {
   theme: "novel",
   capabilities: {
     workspaceKind: "agent-chat",
     workspaceNotice: {
-      message: "可在工作区内切换到“流程”视图执行大纲、角色、章节与一致性检查",
+      message: "可在工作区内切换到「流程」视图执行大纲、角色、章节与一致性检查",
       actionLabel: "打开流程视图",
     },
   },
@@ -29,6 +30,7 @@ export const novelThemeModule: ThemeModule = {
       { key: "settings", label: "设置" },
     ],
   },
+  primaryWorkspaceRenderer: NovelThemeWorkspace,
   panelRenderers: {
     workflow: NovelWorkflowPanel,
     material: DefaultMaterialPanel,

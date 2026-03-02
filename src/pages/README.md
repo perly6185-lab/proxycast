@@ -10,8 +10,8 @@
 ## 文件索引
 
 - `screenshot-chat.tsx` - 截图对话悬浮窗口页面（独立 Tauri 窗口）
-- `update-notification.tsx` - 更新提醒悬浮窗口页面（独立 Tauri 窗口）
-- `update-notification.css` - 更新提醒窗口样式
+- `update-notification.tsx` - 更新提醒悬浮窗口页面（独立 Tauri 窗口，轻量 Toast 交互，支持 1/3/7 天稍后提醒）
+- `update-notification.css` - 更新提醒窗口样式（底部 Toast + 进入/退出动画）
 - `index.ts` - 页面导出入口
 
 ## 更新提醒

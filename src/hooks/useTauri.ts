@@ -59,6 +59,62 @@ export interface IdempotencyStats {
   remove_total: number;
 }
 
+export interface TelemetrySummary {
+  total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  timeout_requests: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  min_latency_ms: number | null;
+  max_latency_ms: number | null;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+}
+
+export interface ResponseCacheDiagnostics {
+  config: ResponseCacheConfig;
+  stats: ResponseCacheStats;
+  hit_rate_percent: number;
+}
+
+export interface RequestDedupConfig {
+  enabled: boolean;
+  ttl_secs: number;
+  wait_timeout_ms: number;
+}
+
+export interface RequestDedupDiagnostics {
+  config: RequestDedupConfig;
+  stats: RequestDedupStats;
+  replay_rate_percent: number;
+}
+
+export interface IdempotencyConfig {
+  enabled: boolean;
+  ttl_secs: number;
+  header_name: string;
+}
+
+export interface IdempotencyDiagnostics {
+  config: IdempotencyConfig;
+  stats: IdempotencyStats;
+  replay_rate_percent: number;
+}
+
+export interface ServerDiagnostics {
+  generated_at: string;
+  running: boolean;
+  host: string;
+  port: number;
+  telemetry_summary: TelemetrySummary;
+  capability_routing: CapabilityRoutingMetricsSnapshot;
+  response_cache: ResponseCacheDiagnostics;
+  request_dedup: RequestDedupDiagnostics;
+  idempotency: IdempotencyDiagnostics;
+}
+
 // TLS Configuration
 export interface TlsConfig {
   enable: boolean;
@@ -523,6 +579,10 @@ export async function getServerStatus(): Promise<ServerStatus> {
   return safeInvoke("get_server_status");
 }
 
+export async function getServerDiagnostics(): Promise<ServerDiagnostics> {
+  return safeInvoke("get_server_diagnostics");
+}
+
 export async function getConfig(): Promise<Config> {
   return safeInvoke("get_config");
 }
@@ -624,6 +684,7 @@ export interface TestResult {
   status: number;
   body: string;
   time_ms: number;
+  response_headers?: Record<string, string>;
 }
 
 export async function testApi(
