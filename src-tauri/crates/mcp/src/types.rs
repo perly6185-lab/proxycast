@@ -73,6 +73,21 @@ pub struct McpToolDefinition {
     pub description: String,
     pub input_schema: serde_json::Value,
     pub server_name: String,
+    /// 是否延迟加载（不默认注入上下文）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_loading: Option<bool>,
+    /// 是否始终可见（即使 deferred_loading=true 也可见）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always_visible: Option<bool>,
+    /// 允许调用方（如 assistant/code_execution/tool_search）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_callers: Option<Vec<String>>,
+    /// 工具输入示例
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_examples: Option<Vec<serde_json::Value>>,
+    /// 标签（用于工具搜索）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
 }
 
 /// MCP 工具调用请求

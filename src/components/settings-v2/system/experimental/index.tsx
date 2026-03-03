@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { FlaskConical, Camera, AlertTriangle, RefreshCw, Bug } from "lucide-react";
+import { FlaskConical, Camera, AlertTriangle, RefreshCw, Bug, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   getExperimentalConfig,
@@ -21,6 +21,7 @@ import {
   getLogs,
   getPersistedLogsTail,
   type CrashReportingConfig,
+  type ToolCallingConfig,
 } from "@/hooks/useTauri";
 import { ShortcutSettings } from "@/components/smart-input/ShortcutSettings";
 import { UpdateCheckSettings } from "./UpdateCheckSettings";
@@ -43,6 +44,10 @@ import {
 } from "@/lib/crashDiagnostic";
 import { ClipboardPermissionGuideCard } from "../shared/ClipboardPermissionGuideCard";
 import { WorkspaceRepairHistoryCard } from "../shared/WorkspaceRepairHistoryCard";
+import {
+  DEFAULT_TOOL_CALLING_CONFIG,
+  normalizeToolCallingConfig,
+} from "./tool-calling-config";
 
 // ============================================================
 // 组件
@@ -51,6 +56,9 @@ import { WorkspaceRepairHistoryCard } from "../shared/WorkspaceRepairHistoryCard
 export function ExperimentalSettings() {
   // 状态
   const [config, setConfig] = useState<ExperimentalFeatures | null>(null);
+  const [toolCallingConfig, setToolCallingConfig] = useState<ToolCallingConfig>(
+    DEFAULT_TOOL_CALLING_CONFIG,
+  );
   const [voiceConfig, setVoiceConfig] = useState<VoiceInputConfig | null>(null);
   const [crashConfig, setCrashConfig] = useState<CrashReportingConfig>(
     DEFAULT_CRASH_REPORTING_CONFIG,
@@ -79,6 +87,7 @@ export function ExperimentalSettings() {
         getConfig(),
       ]);
       setConfig(experimentalConfig);
+      setToolCallingConfig(normalizeToolCallingConfig(fullConfig.tool_calling));
       setVoiceConfig(voiceInputConfig);
       setCrashConfig(
         normalizeCrashReportingConfig(fullConfig.crash_reporting),
@@ -109,6 +118,7 @@ export function ExperimentalSettings() {
         translate_instruction_id: "default",
       });
       setCrashConfig(DEFAULT_CRASH_REPORTING_CONFIG);
+      setToolCallingConfig(DEFAULT_TOOL_CALLING_CONFIG);
     } finally {
       setLoading(false);
     }
@@ -207,6 +217,68 @@ export function ExperimentalSettings() {
     },
     [],
   );
+
+  const persistToolCallingConfig = useCallback(
+    async (next: ToolCallingConfig, successText: string) => {
+      setSaving(true);
+      setMessage(null);
+      try {
+        const latestConfig = await getConfig();
+        const updatedConfig: Config = {
+          ...latestConfig,
+          tool_calling: next,
+        };
+        await saveConfig(updatedConfig);
+        setToolCallingConfig(next);
+        setMessage({ type: "success", text: successText });
+        setTimeout(() => setMessage(null), 2000);
+      } catch (err) {
+        console.error("保存 Tool Calling 配置失败:", err);
+        setMessage({
+          type: "error",
+          text: err instanceof Error ? err.message : "保存 Tool Calling 配置失败",
+        });
+      } finally {
+        setSaving(false);
+      }
+    },
+    [],
+  );
+
+  const handleToggleToolCallingEnabled = useCallback(() => {
+    const next = {
+      ...toolCallingConfig,
+      enabled: !toolCallingConfig.enabled,
+    };
+    void persistToolCallingConfig(
+      next,
+      next.enabled ? "Tool Calling 2.0 已启用" : "Tool Calling 2.0 已禁用",
+    );
+  }, [persistToolCallingConfig, toolCallingConfig]);
+
+  const handleToggleDynamicFiltering = useCallback(() => {
+    const next = {
+      ...toolCallingConfig,
+      dynamic_filtering: !toolCallingConfig.dynamic_filtering,
+    };
+    void persistToolCallingConfig(
+      next,
+      next.dynamic_filtering ? "动态过滤已启用" : "动态过滤已禁用",
+    );
+  }, [persistToolCallingConfig, toolCallingConfig]);
+
+  const handleToggleNativeInputExamples = useCallback(() => {
+    const next = {
+      ...toolCallingConfig,
+      native_input_examples: !toolCallingConfig.native_input_examples,
+    };
+    void persistToolCallingConfig(
+      next,
+      next.native_input_examples
+        ? "原生 input_examples 透传已启用"
+        : "原生 input_examples 透传已禁用",
+    );
+  }, [persistToolCallingConfig, toolCallingConfig]);
 
   const persistCrashConfig = useCallback(async (next: CrashReportingConfig) => {
     setSaving(true);
@@ -436,6 +508,100 @@ export function ExperimentalSettings() {
       )}
 
       {showClipboardGuide && <ClipboardPermissionGuideCard />}
+
+      {/* Tool Calling 2.0 */}
+      <div className="rounded-lg border p-4 space-y-4">
+        <div className="flex items-start justify-between">
+          <div className="flex items-start gap-3">
+            <Wrench className="h-5 w-5 text-muted-foreground mt-0.5" />
+            <div>
+              <h4 className="text-sm font-medium">Tool Calling 2.0</h4>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                控制编程式工具调用、动态过滤和 input examples 透传
+              </p>
+            </div>
+          </div>
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              checked={toolCallingConfig.enabled}
+              onChange={handleToggleToolCallingEnabled}
+              disabled={saving}
+              className="sr-only peer"
+            />
+            <div
+              className={cn(
+                "w-9 h-5 rounded-full transition-colors",
+                "bg-muted peer-checked:bg-primary",
+                "after:content-[''] after:absolute after:top-0.5 after:left-0.5",
+                "after:bg-white after:rounded-full after:h-4 after:w-4",
+                "after:transition-transform peer-checked:after:translate-x-4",
+                saving && "opacity-50 cursor-not-allowed",
+              )}
+            />
+          </label>
+        </div>
+
+        <div className="pt-3 border-t space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h5 className="text-sm">动态过滤</h5>
+              <p className="text-xs text-muted-foreground">
+                自动过滤网页抓取中的 HTML 噪音，减少上下文无关内容
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={toolCallingConfig.dynamic_filtering}
+                onChange={handleToggleDynamicFiltering}
+                disabled={saving || !toolCallingConfig.enabled}
+                className="sr-only peer"
+              />
+              <div
+                className={cn(
+                  "w-9 h-5 rounded-full transition-colors",
+                  "bg-muted peer-checked:bg-primary",
+                  "after:content-[''] after:absolute after:top-0.5 after:left-0.5",
+                  "after:bg-white after:rounded-full after:h-4 after:w-4",
+                  "after:transition-transform peer-checked:after:translate-x-4",
+                  (saving || !toolCallingConfig.enabled) &&
+                    "opacity-50 cursor-not-allowed",
+                )}
+              />
+            </label>
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h5 className="text-sm">原生 input examples 透传</h5>
+              <p className="text-xs text-muted-foreground">
+                在支持的模型协议中，直接携带工具调用示例提升复杂参数准确率
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={toolCallingConfig.native_input_examples}
+                onChange={handleToggleNativeInputExamples}
+                disabled={saving || !toolCallingConfig.enabled}
+                className="sr-only peer"
+              />
+              <div
+                className={cn(
+                  "w-9 h-5 rounded-full transition-colors",
+                  "bg-muted peer-checked:bg-primary",
+                  "after:content-[''] after:absolute after:top-0.5 after:left-0.5",
+                  "after:bg-white after:rounded-full after:h-4 after:w-4",
+                  "after:transition-transform peer-checked:after:translate-x-4",
+                  (saving || !toolCallingConfig.enabled) &&
+                    "opacity-50 cursor-not-allowed",
+                )}
+              />
+            </label>
+          </div>
+        </div>
+      </div>
 
       {/* 截图对话功能 */}
       <div className="rounded-lg border p-4 space-y-4">

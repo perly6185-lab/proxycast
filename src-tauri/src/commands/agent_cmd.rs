@@ -10,6 +10,7 @@ use crate::database::dao::agent::AgentDao;
 use crate::database::DbConnection;
 use crate::services::memory_profile_prompt_service::merge_system_prompt_with_memory_profile;
 use crate::services::web_search_prompt_service::merge_system_prompt_with_web_search;
+use crate::services::web_search_runtime_service::apply_web_search_runtime_env;
 use crate::services::workspace_health_service::ensure_workspace_ready_with_auto_relocate;
 use crate::workspace::WorkspaceManager;
 use crate::AppState;
@@ -229,6 +230,7 @@ pub async fn agent_create_session(
     // 构建包含 Skills 的 System Prompt，并附加记忆画像偏好
     let base_system_prompt = build_system_prompt_with_skills(system_prompt, skills.as_ref());
     let config = config_manager.config();
+    apply_web_search_runtime_env(&config);
     let prompt_with_memory = merge_system_prompt_with_memory_profile(base_system_prompt, &config);
     let final_system_prompt = merge_system_prompt_with_web_search(prompt_with_memory, &config);
 

@@ -380,9 +380,6 @@ describe("AgentChatPage 话题切换项目恢复", () => {
     const container = renderPage();
     await flushEffects();
 
-    clickButton(container, "toggle-history");
-    await flushEffects();
-
     clickButton(container, "switch-topic");
     await flushEffects();
 
@@ -406,9 +403,6 @@ describe("AgentChatPage 话题切换项目恢复", () => {
     const container = renderPage({ projectId: "locked-project" });
     await flushEffects();
 
-    clickButton(container, "toggle-history");
-    await flushEffects();
-
     clickButton(container, "switch-topic");
     await flushEffects();
 
@@ -427,9 +421,6 @@ describe("AgentChatPage 话题切换项目恢复", () => {
     mockGetOrCreateDefaultProject.mockResolvedValue(createProject("default-new"));
 
     const container = renderPage();
-    await flushEffects();
-
-    clickButton(container, "toggle-history");
     await flushEffects();
 
     clickButton(container, "switch-topic");
@@ -463,7 +454,7 @@ describe("AgentChatPage 话题切换项目恢复", () => {
 });
 
 describe("AgentChatPage 侧栏显示控制", () => {
-  it("有消息时手动展开侧栏后不应被自动收起", async () => {
+  it("有消息时默认显示侧栏且不应被自动收起", async () => {
     mockUseAgentChatUnified.mockImplementation(
       ({ workspaceId }: { workspaceId: string }) => {
         observedWorkspaceIds.push(workspaceId);
@@ -501,10 +492,6 @@ describe("AgentChatPage 侧栏显示控制", () => {
     const container = renderPage();
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="chat-sidebar"]')).toBeNull();
-
-    clickButton(container, "toggle-history");
-    await flushEffects();
     expect(container.querySelector('[data-testid="chat-sidebar"]')).not.toBeNull();
 
     clickButton(container, "set-project");

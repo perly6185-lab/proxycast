@@ -588,6 +588,7 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
                 <ToolCallItem
                   key={part.toolCall.id}
                   toolCall={part.toolCall}
+                  isMessageStreaming={isStreaming}
                   onFileClick={onFileClick}
                 />
               );
@@ -721,7 +722,11 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
 
         {/* 工具调用区域 */}
         {hasToolCalls && (
-          <ToolCallList toolCalls={toolCalls} onFileClick={onFileClick} />
+          <ToolCallList
+            toolCalls={toolCalls}
+            isMessageStreaming={isStreaming}
+            onFileClick={onFileClick}
+          />
         )}
 
         {/* 权限确认区域 */}

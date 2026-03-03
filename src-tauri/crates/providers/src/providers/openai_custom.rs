@@ -42,6 +42,121 @@ impl Default for OpenAICustomProvider {
 }
 
 impl OpenAICustomProvider {
+    fn tool_calling_v2_enabled() -> bool {
+        proxycast_core::tool_calling::tool_calling_v2_enabled()
+    }
+
+    fn native_input_examples_enabled() -> bool {
+        proxycast_core::tool_calling::tool_calling_native_input_examples_enabled()
+    }
+
+    fn normalize_openai_request_payload(&self, payload: &mut serde_json::Value) {
+        if !Self::tool_calling_v2_enabled() {
+            return;
+        }
+
+        let Some(tools) = payload.get_mut("tools").and_then(|v| v.as_array_mut()) else {
+            return;
+        };
+
+        for tool in tools.iter_mut() {
+            let tool_type = tool
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if tool_type != "function" {
+                continue;
+            }
+
+            let Some(function) = tool.get_mut("function").and_then(|v| v.as_object_mut()) else {
+                continue;
+            };
+
+            let parameters = function
+                .get("parameters")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let extension = parameters
+                .get("x-proxycast")
+                .or_else(|| parameters.get("x_proxycast"))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+
+            let mut input_examples = extension
+                .get("input_examples")
+                .or_else(|| extension.get("inputExamples"))
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if input_examples.is_empty() {
+                let tool_name = function
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                input_examples = proxycast_core::tool_calling::resolve_tool_input_examples(
+                    tool_name,
+                    &parameters,
+                );
+            }
+            let allowed_callers = extension
+                .get("allowed_callers")
+                .or_else(|| extension.get("allowedCallers"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let deferred_loading = extension
+                .get("deferred_loading")
+                .or_else(|| extension.get("deferredLoading"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let description = function
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let mut enhanced_description = description.clone();
+
+            if !input_examples.is_empty() && !enhanced_description.contains("[InputExamples]") {
+                let rendered = input_examples
+                    .iter()
+                    .take(3)
+                    .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                enhanced_description.push_str("\n\n[InputExamples] ");
+                enhanced_description.push_str(&rendered);
+            }
+
+            if !allowed_callers.is_empty() && !enhanced_description.contains("[AllowedCallers]") {
+                enhanced_description.push_str("\n\n[AllowedCallers] ");
+                enhanced_description.push_str(&allowed_callers.join(", "));
+            }
+
+            if deferred_loading && !enhanced_description.contains("[DeferredLoading]") {
+                enhanced_description.push_str("\n\n[DeferredLoading] true");
+            }
+
+            function.insert(
+                "description".to_string(),
+                serde_json::Value::String(enhanced_description),
+            );
+
+            if !input_examples.is_empty() && Self::native_input_examples_enabled() {
+                function.insert(
+                    "input_examples".to_string(),
+                    serde_json::Value::Array(input_examples.clone()),
+                );
+            }
+        }
+    }
+
     fn maybe_log_protocol_mismatch_hint(url: &str, status: StatusCode) {
         if (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
             && url.contains("/api/anthropic")
@@ -221,6 +336,10 @@ impl OpenAICustomProvider {
             request.model
         );
 
+        let mut payload =
+            serde_json::to_value(request).map_err(|e| format!("序列化 OpenAI 请求失败: {e}"))?;
+        self.normalize_openai_request_payload(&mut payload);
+
         for url in &urls {
             eprintln!("[OPENAI_CUSTOM] call_api trying URL: {url}");
             let resp = self
@@ -228,7 +347,7 @@ impl OpenAICustomProvider {
                 .post(url)
                 .header("Authorization", format!("Bearer {api_key}"))
                 .header("Content-Type", "application/json")
-                .json(request)
+                .json(&payload)
                 .send()
                 .await?;
 
@@ -261,12 +380,15 @@ impl OpenAICustomProvider {
             self.get_base_url()
         );
 
+        let mut payload = request.clone();
+        self.normalize_openai_request_payload(&mut payload);
+
         let resp = self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/json")
-            .json(request)
+            .json(&payload)
             .send()
             .await?;
 
@@ -280,7 +402,7 @@ impl OpenAICustomProvider {
                         .post(&fallback_url)
                         .header("Authorization", format!("Bearer {api_key}"))
                         .header("Content-Type", "application/json")
-                        .json(request)
+                        .json(&payload)
                         .send()
                         .await?;
                     Self::maybe_log_protocol_mismatch_hint(&fallback_url, resp2.status());
@@ -368,6 +490,9 @@ impl StreamingProvider for OpenAICustomProvider {
         // 确保请求启用流式
         let mut stream_request = request.clone();
         stream_request.stream = true;
+        let mut payload = serde_json::to_value(&stream_request)
+            .map_err(|e| ProviderError::ConfigurationError(format!("序列化流式请求失败: {e}")))?;
+        self.normalize_openai_request_payload(&mut payload);
 
         let url = self.build_url("chat/completions");
 
@@ -383,7 +508,7 @@ impl StreamingProvider for OpenAICustomProvider {
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")
-            .json(&stream_request)
+            .json(&payload)
             .send()
             .await
             .map_err(|e| ProviderError::from_reqwest_error(&e))?;
@@ -396,7 +521,7 @@ impl StreamingProvider for OpenAICustomProvider {
                         .header("Authorization", format!("Bearer {api_key}"))
                         .header("Content-Type", "application/json")
                         .header("Accept", "text/event-stream")
-                        .json(&stream_request)
+                        .json(&payload)
                         .send()
                         .await
                         .map_err(|e| ProviderError::from_reqwest_error(&e))?
@@ -434,5 +559,264 @@ impl StreamingProvider for OpenAICustomProvider {
 
     fn stream_format(&self) -> StreamFormat {
         StreamFormat::OpenAiSse
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{extract::State, http::header, response::IntoResponse, routing::post, Json, Router};
+    use futures::StreamExt;
+    use proxycast_core::models::openai::{ChatMessage, FunctionDef, MessageContent, Tool};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn start_mock_openai_server(
+        captured: Arc<Mutex<Vec<serde_json::Value>>>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        async fn handle_chat(
+            State(captured): State<Arc<Mutex<Vec<serde_json::Value>>>>,
+            Json(payload): Json<serde_json::Value>,
+        ) -> impl IntoResponse {
+            captured.lock().await.push(payload.clone());
+
+            if payload
+                .get("stream")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                (
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[]}\n\ndata: [DONE]\n\n",
+                )
+                    .into_response()
+            } else {
+                Json(serde_json::json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role":"assistant","content":"ok"},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+                }))
+                .into_response()
+            }
+        }
+
+        let app = Router::new()
+            .route("/v1/chat/completions", post(handle_chat))
+            .with_state(captured);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
+        let addr = listener.local_addr().expect("read mock server local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("mock server should run");
+        });
+        (format!("http://{}", addr), server)
+    }
+
+    fn build_tool_calling_request() -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "deepseek-chat".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("hi".to_string())),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            temperature: None,
+            max_tokens: Some(128),
+            top_p: None,
+            stream: false,
+            tools: Some(vec![Tool::Function {
+                function: FunctionDef {
+                    name: "search_docs".to_string(),
+                    description: Some("Search docs".to_string()),
+                    parameters: Some(serde_json::json!({
+                        "type":"object",
+                        "properties":{"query":{"type":"string"}},
+                        "x-proxycast": {
+                            "input_examples":[{"query":"rust async"}],
+                            "allowed_callers":["assistant","code_execution"],
+                            "deferred_loading": true
+                        }
+                    })),
+                },
+            }]),
+            tool_choice: None,
+            reasoning_effort: None,
+        }
+    }
+
+    #[test]
+    fn test_normalize_openai_request_payload_injects_fallback_description() {
+        let provider = OpenAICustomProvider::default();
+        let mut payload = serde_json::json!({
+            "model": "deepseek-chat",
+            "messages": [{"role":"user","content":"hi"}],
+            "tools": [{
+                "type":"function",
+                "function": {
+                    "name":"search_docs",
+                    "description":"Search docs",
+                    "parameters": {
+                        "type":"object",
+                        "properties":{"query":{"type":"string"}},
+                        "x-proxycast": {
+                            "input_examples":[{"query":"rust async"}],
+                            "allowed_callers":["assistant","code_execution"],
+                            "deferred_loading":true
+                        }
+                    }
+                }
+            }]
+        });
+
+        provider.normalize_openai_request_payload(&mut payload);
+        let description = payload["tools"][0]["function"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(description.contains("[InputExamples]"));
+        assert!(description.contains("[AllowedCallers]"));
+        assert!(description.contains("[DeferredLoading]"));
+    }
+
+    #[test]
+    fn test_normalize_openai_request_payload_supports_x_proxycast_alias() {
+        let provider = OpenAICustomProvider::default();
+        let mut payload = serde_json::json!({
+            "model": "deepseek-chat",
+            "messages": [{"role":"user","content":"hi"}],
+            "tools": [{
+                "type":"function",
+                "function": {
+                    "name":"search_docs",
+                    "description":"Search docs",
+                    "parameters": {
+                        "type":"object",
+                        "properties":{"query":{"type":"string"}},
+                        "x_proxycast": {
+                            "inputExamples":[{"query":"tool search"}],
+                            "allowedCallers":["tool_search"]
+                        }
+                    }
+                }
+            }]
+        });
+
+        provider.normalize_openai_request_payload(&mut payload);
+        let description = payload["tools"][0]["function"]["description"]
+            .as_str()
+            .unwrap_or_default();
+
+        assert!(description.contains("[InputExamples]"));
+        assert!(description.contains("[AllowedCallers]"));
+        assert!(description.contains("tool_search"));
+    }
+
+    #[test]
+    fn test_normalize_openai_request_payload_ignores_non_function_tools() {
+        let provider = OpenAICustomProvider::default();
+        let mut payload = serde_json::json!({
+            "model": "deepseek-chat",
+            "messages": [{"role":"user","content":"hi"}],
+            "tools": [{"type":"web_search_20250305"}]
+        });
+
+        provider.normalize_openai_request_payload(&mut payload);
+
+        assert_eq!(
+            payload["tools"][0],
+            serde_json::json!({"type":"web_search_20250305"})
+        );
+    }
+
+    #[test]
+    fn test_normalize_openai_request_payload_uses_builtin_input_examples_fallback() {
+        let provider = OpenAICustomProvider::default();
+        let mut payload = serde_json::json!({
+            "model": "deepseek-chat",
+            "messages": [{"role":"user","content":"hi"}],
+            "tools": [{
+                "type":"function",
+                "function": {
+                    "name":"WebSearch",
+                    "description":"允许 Claude 搜索网络并使用结果来提供响应。",
+                    "parameters": {
+                        "type":"object",
+                        "properties":{"query":{"type":"string"},"limit":{"type":"integer"}},
+                        "required":["query"]
+                    }
+                }
+            }]
+        });
+
+        provider.normalize_openai_request_payload(&mut payload);
+        let description = payload["tools"][0]["function"]["description"]
+            .as_str()
+            .unwrap_or_default();
+
+        assert!(description.contains("[InputExamples]"));
+    }
+
+    #[tokio::test]
+    async fn test_openai_compatible_non_stream_and_stream_both_normalized() {
+        if !OpenAICustomProvider::tool_calling_v2_enabled() {
+            return;
+        }
+
+        let captured = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let (base_url, server_handle) = start_mock_openai_server(captured.clone()).await;
+        let mut provider = OpenAICustomProvider::with_config("sk-test".to_string(), Some(base_url));
+        provider.client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build test client without proxy");
+        let request = build_tool_calling_request();
+
+        let resp = provider
+            .call_api(&request)
+            .await
+            .expect("non-stream call should succeed");
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            panic!("non-stream call failed: status={status}, body={body}");
+        }
+
+        let mut stream = provider
+            .call_api_stream(&request)
+            .await
+            .expect("stream call should succeed");
+        let first_chunk = stream
+            .next()
+            .await
+            .expect("stream should return at least one chunk")
+            .expect("first stream chunk should be ok");
+        let chunk_text = String::from_utf8(first_chunk.to_vec()).expect("chunk should be utf8");
+        assert!(chunk_text.contains("data:"));
+
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[1]["stream"], serde_json::json!(true));
+
+        for body in bodies.iter() {
+            let description = body["tools"][0]["function"]["description"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            assert!(description.contains("[InputExamples]"));
+            assert!(description.contains("[AllowedCallers]"));
+            assert!(description.contains("[DeferredLoading]"));
+        }
+
+        server_handle.abort();
     }
 }

@@ -585,6 +585,9 @@ impl AsterAgentState {
                 timeout: None,
                 bundled: Some(false),
                 available_tools: Vec::new(),
+                deferred_loading: false,
+                always_expose_tools: Vec::new(),
+                allowed_caller: None,
             };
 
             // 注册到 ExtensionManager

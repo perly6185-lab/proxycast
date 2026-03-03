@@ -24,7 +24,10 @@
 //!
 //! ## 工具管理命令
 //! - `mcp_list_tools`: 获取所有可用工具
+//! - `mcp_list_tools_for_context`: 按调用方获取可见工具
+//! - `mcp_search_tools`: 搜索工具
 //! - `mcp_call_tool`: 调用指定工具
+//! - `mcp_call_tool_with_caller`: 带调用方权限检查的工具调用
 //!
 //! ## 提示词管理命令
 //! - `mcp_list_prompts`: 获取所有可用提示词
@@ -324,6 +327,43 @@ pub async fn mcp_list_tools(
     Ok(tools)
 }
 
+/// 根据调用方获取可见工具（支持 deferred_loading 过滤）
+#[tauri::command]
+pub async fn mcp_list_tools_for_context(
+    mcp_manager: State<'_, McpManagerState>,
+    caller: Option<String>,
+    include_deferred: Option<bool>,
+) -> Result<Vec<McpToolDefinition>, String> {
+    let manager = mcp_manager.lock().await;
+    let tools = manager
+        .list_tools_for_context(caller.as_deref(), include_deferred.unwrap_or(false))
+        .await
+        .map_err(|e| {
+            error!(error = %e, "按上下文获取工具列表失败");
+            e.to_string()
+        })?;
+    Ok(tools)
+}
+
+/// 搜索工具（用于 Tool Search 模式）
+#[tauri::command]
+pub async fn mcp_search_tools(
+    mcp_manager: State<'_, McpManagerState>,
+    query: String,
+    caller: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<McpToolDefinition>, String> {
+    let manager = mcp_manager.lock().await;
+    let tools = manager
+        .search_tools(&query, limit.unwrap_or(10), caller.as_deref())
+        .await
+        .map_err(|e| {
+            error!(error = %e, "搜索工具失败");
+            e.to_string()
+        })?;
+    Ok(tools)
+}
+
 /// 调用 MCP 工具
 ///
 /// 根据工具名称和参数调用指定的 MCP 工具。
@@ -364,6 +404,25 @@ pub async fn mcp_call_tool(
         is_error = result.is_error,
         "工具调用完成"
     );
+    Ok(result)
+}
+
+/// 带调用方权限检查的 MCP 工具调用
+#[tauri::command]
+pub async fn mcp_call_tool_with_caller(
+    mcp_manager: State<'_, McpManagerState>,
+    tool_name: String,
+    arguments: serde_json::Value,
+    caller: Option<String>,
+) -> Result<McpToolResult, String> {
+    let manager = mcp_manager.lock().await;
+    let result = manager
+        .call_tool_with_caller(&tool_name, arguments, caller.as_deref())
+        .await
+        .map_err(|e| {
+            error!(tool_name = %tool_name, error = %e, "带 caller 调用工具失败");
+            e.to_string()
+        })?;
     Ok(result)
 }
 

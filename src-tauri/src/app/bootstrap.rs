@@ -92,6 +92,9 @@ type TelemetryInit = (
 
 /// 初始化所有应用状态
 pub fn init_states(config: &Config) -> Result<AppStates, String> {
+    // 将 Tool Calling 运行时开关与当前配置同步，避免依赖手工环境变量。
+    proxycast_core::tool_calling::apply_tool_calling_runtime_config(config);
+
     // 核心状态
     let state: AppState = Arc::new(RwLock::new(server::ServerState::new(config.clone())));
     let logs: LogState = Arc::new(RwLock::new(logger::create_log_store_from_config(

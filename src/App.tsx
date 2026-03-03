@@ -71,12 +71,13 @@ const AppContainer = styled.div`
   overflow: hidden;
 `;
 
-const MainContent = styled.main`
+const MainContent = styled.main<{ $withSidebarGap?: boolean }>`
   flex: 1;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding-left: ${(props) => (props.$withSidebarGap ? "10px" : "0")};
 `;
 
 const PageWrapper = styled.div<{ $isActive: boolean }>`
@@ -543,6 +544,8 @@ function AppContent() {
     !isThemeWorkspacePage(currentPage) &&
     !shouldHideSidebarForAgent;
 
+  const shouldAddMainContentGap = shouldShowAppSidebar && currentPage === "agent";
+
   return (
     <SoundProvider>
       <ComponentDebugProvider>
@@ -550,7 +553,9 @@ function AppContent() {
           {shouldShowAppSidebar && (
             <AppSidebar currentPage={currentPage} onNavigate={handleNavigate} />
           )}
-          <MainContent>{renderAllPages()}</MainContent>
+          <MainContent $withSidebarGap={shouldAddMainContentGap}>
+            {renderAllPages()}
+          </MainContent>
           <RecentImageInsertFloating onNavigate={handleNavigate} />
 
           <ConnectConfirmDialog

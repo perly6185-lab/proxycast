@@ -4,11 +4,10 @@
  * 在输入框中检测 @ 符号，显示角色和技能列表供选择
  */
 
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { User, Zap } from "lucide-react";
 import {
   Command,
-  CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
@@ -95,50 +94,52 @@ export function CharacterMention({
     );
   }, [skills, mentionQuery]);
 
-  const hasItems =
-    characters.length > 0 || skills.length > 0;
+  const updateMentionState = useCallback(() => {
+    const textarea = inputRef.current;
+    if (!textarea) {
+      setShowMentions(false);
+      return;
+    }
+
+    const cursorPos = textarea.selectionStart ?? textarea.value.length;
+    const textBeforeCursor = textarea.value.slice(0, cursorPos);
+    const lastAtIndex = textBeforeCursor.lastIndexOf("@");
+
+    if (lastAtIndex !== -1) {
+      const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1);
+      if (!textAfterAt.includes(" ") && !textAfterAt.includes("\n")) {
+        setMentionQuery(textAfterAt);
+        setShowMentions(true);
+
+        const rect = textarea.getBoundingClientRect();
+        const top = rect.top;
+        const left = rect.left + 10;
+        setCursorPosition({ top, left });
+        return;
+      }
+    }
+
+    setShowMentions(false);
+  }, [inputRef]);
 
   // 检测 @ 符号
   useEffect(() => {
     const textarea = inputRef.current;
     if (!textarea) return;
-
-    const handleInput = () => {
-      const cursorPos = textarea.selectionStart;
-      const textBeforeCursor = value.slice(0, cursorPos);
-      const lastAtIndex = textBeforeCursor.lastIndexOf("@");
-
-      // 检查是否在 @ 后面输入
-      if (lastAtIndex !== -1) {
-        const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1);
-        // 如果 @ 后面没有空格，说明正在输入角色名
-        if (!textAfterAt.includes(" ") && !textAfterAt.includes("\n")) {
-          setMentionQuery(textAfterAt);
-          setShowMentions(true);
-
-          // 计算弹窗位置 — 锚定到输入框顶部
-          const rect = textarea.getBoundingClientRect();
-          const top = rect.top;
-          const left = rect.left + 10;
-
-          setCursorPosition({ top, left });
-          return;
-        }
-      }
-
-      setShowMentions(false);
-    };
-
-    textarea.addEventListener("input", handleInput);
-    textarea.addEventListener("click", handleInput);
-    textarea.addEventListener("keyup", handleInput);
+    textarea.addEventListener("input", updateMentionState);
+    textarea.addEventListener("click", updateMentionState);
+    textarea.addEventListener("keyup", updateMentionState);
 
     return () => {
-      textarea.removeEventListener("input", handleInput);
-      textarea.removeEventListener("click", handleInput);
-      textarea.removeEventListener("keyup", handleInput);
+      textarea.removeEventListener("input", updateMentionState);
+      textarea.removeEventListener("click", updateMentionState);
+      textarea.removeEventListener("keyup", updateMentionState);
     };
-  }, [value, inputRef]);
+  }, [inputRef, updateMentionState]);
+
+  useEffect(() => {
+    updateMentionState();
+  }, [updateMentionState, value]);
 
   // 插入角色引用
   const handleSelectCharacter = (character: Character) => {
@@ -178,18 +179,30 @@ export function CharacterMention({
     const textAfterCursor = value.slice(cursorPos);
     const lastAtIndex = textBeforeCursor.lastIndexOf("@");
 
-    // 移除 @ 及查询文本，恢复原有输入
-    const newValue = value.slice(0, lastAtIndex) + textAfterCursor;
-    onChange(newValue.trimEnd() === "" ? "" : newValue);
+    // Inputbar 场景：由父组件接管 activeSkill（显示 SkillBadge）
+    if (onSelectSkill) {
+      const newValue = value.slice(0, lastAtIndex) + textAfterCursor;
+      onChange(newValue.trimEnd() === "" ? "" : newValue);
+      setShowMentions(false);
+      onSelectSkill(skill);
+
+      setTimeout(() => {
+        textarea.focus();
+        const newCursorPos = Math.max(0, lastAtIndex);
+        textarea.setSelectionRange(newCursorPos, newCursorPos);
+      }, 0);
+      return;
+    }
+
+    // 通用场景（例如 EmptyState）：直接回填为 /skillKey，保证可见且可发送
+    const newValue =
+      value.slice(0, lastAtIndex) + `/${skill.key} ` + textAfterCursor;
+    onChange(newValue);
     setShowMentions(false);
 
-    // 通知父组件设置 activeSkill
-    onSelectSkill?.(skill);
-
-    // 恢复焦点
     setTimeout(() => {
       textarea.focus();
-      const newCursorPos = Math.max(0, lastAtIndex);
+      const newCursorPos = lastAtIndex + skill.key.length + 2;
       textarea.setSelectionRange(newCursorPos, newCursorPos);
     }, 0);
   };
@@ -241,7 +254,7 @@ export function CharacterMention({
     return () => textarea.removeEventListener("keydown", handleKeyDown);
   }, [showMentions, inputRef]);
 
-  if (!showMentions || !hasItems) return null;
+  if (!showMentions) return null;
 
   const hasFilteredResults =
     filteredCharacters.length > 0 ||
@@ -278,7 +291,22 @@ export function CharacterMention({
           />
           <CommandList>
             {!hasFilteredResults && (
-              <CommandEmpty>没有找到匹配项</CommandEmpty>
+              <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                <div>暂无可用角色或技能</div>
+                {onNavigateToSettings && (
+                  <button
+                    type="button"
+                    className="mt-2 text-primary hover:underline"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setShowMentions(false);
+                      onNavigateToSettings();
+                    }}
+                  >
+                    去技能设置
+                  </button>
+                )}
+              </div>
             )}
             {filteredCharacters.length > 0 && (
               <CommandGroup heading="角色">

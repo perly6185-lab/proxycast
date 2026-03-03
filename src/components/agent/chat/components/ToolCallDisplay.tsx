@@ -543,6 +543,8 @@ const ToolResultView: React.FC<ToolResultViewProps> = ({
 interface ToolCallDisplayProps {
   toolCall: ToolCallState;
   defaultExpanded?: boolean;
+  /** 当前 assistant 消息是否仍在流式输出 */
+  isMessageStreaming?: boolean;
   /** 文件点击回调 - 用于打开右边栏显示文件内容 */
   onFileClick?: (fileName: string, content: string) => void;
 }
@@ -550,6 +552,7 @@ interface ToolCallDisplayProps {
 export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
   toolCall,
   defaultExpanded = false,
+  isMessageStreaming = false,
   onFileClick,
 }) => {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
@@ -608,6 +611,16 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
     [toolCall.result?.images],
   );
   const hasResultImages = resultImages.length > 0;
+
+  useEffect(() => {
+    if (isMessageStreaming && (isRunning || hasResult || hasResultImages)) {
+      setIsExpanded(true);
+      return;
+    }
+    if (!isMessageStreaming && !isRunning) {
+      setIsExpanded(false);
+    }
+  }, [isMessageStreaming, isRunning, hasResult, hasResultImages]);
 
   // 处理点击事件 - 如果是文件写入工具，打开右边栏
   const handleOpenFile = useCallback(() => {
@@ -754,12 +767,15 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
 
 interface ToolCallListProps {
   toolCalls: ToolCallState[];
+  /** 当前 assistant 消息是否仍在流式输出 */
+  isMessageStreaming?: boolean;
   /** 文件点击回调 - 用于打开右边栏显示文件内容 */
   onFileClick?: (fileName: string, content: string) => void;
 }
 
 export const ToolCallList: React.FC<ToolCallListProps> = ({
   toolCalls,
+  isMessageStreaming = false,
   onFileClick,
 }) => {
   if (!toolCalls || toolCalls.length === 0) return null;
@@ -767,7 +783,12 @@ export const ToolCallList: React.FC<ToolCallListProps> = ({
   return (
     <div className="flex flex-col gap-1">
       {toolCalls.map((tc) => (
-        <ToolCallDisplay key={tc.id} toolCall={tc} onFileClick={onFileClick} />
+        <ToolCallDisplay
+          key={tc.id}
+          toolCall={tc}
+          isMessageStreaming={isMessageStreaming}
+          onFileClick={onFileClick}
+        />
       ))}
     </div>
   );

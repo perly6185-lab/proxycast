@@ -1,16 +1,70 @@
-## ProxyCast v0.77.0
+# ProxyCast v0.78.0 Release Notes
 
-### ✨ 新功能
-- 添加可观测性面板，支持响应缓存配置和剪贴板权限指南 (ad61472a)
-- 增强崩溃诊断功能，新增调用错误缓冲区、前端崩溃缓冲区和应用版本信息 (ff915523)
-- 改进 Aster 运行时、Agent 命令、小说解析和日志检索功能 (68e16d4a)
-- API 服务器新增请求去重、响应缓存和能力路由指标 (0b2d3caa)
-- 使用崩溃边界包裹应用路由，添加启动时工作区检查，改进小说角色解析 (61270d6f)
+## 🎯 主要功能
 
-### 🐛 修复
-- 为工作区健康检查添加自动重定位功能，使用修复标志进行遥测 (0f1be80b)
-- 构建 workspace 目录 4 层健康防护体系，彻底解决路径缺失问题 (2d00911c)
+### Tool Calling 2.0
+- 新增 Tool Calling 2.0 配置系统，支持统一控制编程式工具调用
+- 支持动态过滤功能，优先过滤网页抓取噪音
+- 支持原生 input_examples 透传
+- 在实验性设置中新增 Tool Calling 配置面板
 
-### 🔧 优化与重构
-- 完善工作区健康监控和错误恢复机制
-- 提升应用稳定性和可观测性
+### 联网搜索增强
+- 新增多种联网搜索提供商支持：
+  - Tavily Search API
+  - Multi Search Engine v2.0.1（支持 12+ 搜索引擎）
+  - DuckDuckGo Instant Answer API（无需 API Key，默认启用）
+  - Bing Search API
+  - Google Custom Search API
+- Multi Search Engine 支持自定义引擎优先级和启用/禁用控制
+- 新增 Web Search Runtime Service 用于运行时搜索能力
+
+### MCP 工具增强
+- 改进 MCP 工具管理器，支持更灵活的工具转换
+- 新增 MCP 工具类型定义和转换逻辑
+- 优化 MCP 命令接口
+
+### Provider 增强
+- Claude Custom Provider 支持更丰富的工具调用配置
+- OpenAI Custom Provider 增强工具调用能力
+- 改进 Provider Calls 处理逻辑
+
+## 🔧 改进
+
+### Agent 系统
+- 改进 Aster Agent 状态管理
+- 优化事件转换器逻辑
+- 增强 Agent 命令接口（新增 643 行代码）
+- 改进 Unified Chat 命令处理
+
+### UI/UX
+- 优化 Agent Chat 界面
+  - 改进空状态显示
+  - 优化角色提及（Character Mention）组件
+  - 改进输入栏交互
+  - 优化流式渲染和工具调用显示
+- 改进实验性设置界面布局
+- 优化 Web Search 设置界面，支持多提供商配置
+
+### 配置系统
+- 新增 `tool_calling` 配置项到核心配置
+- 新增 `WebSearchProvider` 枚举类型
+- 新增 `MultiSearchEngineEntryConfig` 和 `MultiSearchConfig` 配置类型
+- 改进配置测试覆盖
+
+## 🐛 修复
+- 修复版本号测试用例（0.77.0 → 0.78.0）
+- 改进 Tauri Mock 核心逻辑
+- 优化 API Server 页面
+
+## 📊 统计
+- 46 个文件修改
+- +3622 行新增代码
+- -323 行删除代码
+
+## 🔗 依赖更新
+- 更新 Aster 依赖到 v0.16.0（通过 git tag）
+- 更新 Cargo.lock 依赖
+
+---
+
+**完整变更**: v0.77.0...v0.78.0

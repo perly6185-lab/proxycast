@@ -1818,8 +1818,67 @@ pub async fn call_provider_openai(
                         custom_url,
                         &credential.uuid[..8],
                         request.stream
-                    ),
+                        ),
                 );
+
+                if request.stream {
+                    state.logs.write().await.add(
+                        "info",
+                        "[OPENAI_COMPAT] 流式请求，走 OpenAICustomProvider.call_api_stream",
+                    );
+
+                    match openai.call_api_stream(request).await {
+                        Ok(stream_response) => {
+                            if let Some(db) = &state.db {
+                                let _ = state.pool_service.mark_healthy(
+                                    db,
+                                    &credential.uuid,
+                                    Some(&request.model),
+                                );
+                                let _ = state.pool_service.record_usage(db, &credential.uuid);
+                            }
+
+                            let body_stream =
+                                stream_response.map(|result| -> Result<axum::body::Bytes, std::io::Error> {
+                                    match result {
+                                        Ok(bytes) => Ok(bytes),
+                                        Err(e) => Ok(axum::body::Bytes::from(e.to_sse_error())),
+                                    }
+                                });
+
+                            return Response::builder()
+                                .status(StatusCode::OK)
+                                .header(header::CONTENT_TYPE, "text/event-stream")
+                                .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
+                                .header("Connection", "keep-alive")
+                                .header("X-Accel-Buffering", "no")
+                                .header("Transfer-Encoding", "chunked")
+                                .body(Body::from_stream(body_stream))
+                                .unwrap_or_else(|_| {
+                                    (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        Json(serde_json::json!({"error": {"message": "Failed to build stream response"}})),
+                                    )
+                                        .into_response()
+                                });
+                        }
+                        Err(e) => {
+                            if let Some(db) = &state.db {
+                                let _ = state.pool_service.mark_unhealthy(
+                                    db,
+                                    &credential.uuid,
+                                    Some(&format!("Streaming API call failed: {e}")),
+                                );
+                            }
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"error": {"message": format!("OpenAI compatible streaming API call failed: {}", e)}})),
+                            )
+                                .into_response();
+                        }
+                    }
+                }
+
                 match openai.call_api(request).await {
                     Ok(resp) => {
                         let status = resp.status();
@@ -1832,37 +1891,6 @@ pub async fn call_provider_openai(
                                 request.stream
                             ),
                         );
-
-                        if request.stream && status.is_success() {
-                            state.logs.write().await.add(
-                                "info",
-                                "[OPENAI_COMPAT] 流式请求，透传 SSE 响应",
-                            );
-                            if let Some(db) = &state.db {
-                                let _ = state.pool_service.mark_healthy(
-                                    db,
-                                    &credential.uuid,
-                                    Some(&request.model),
-                                );
-                                let _ = state.pool_service.record_usage(db, &credential.uuid);
-                            }
-                            let stream = resp.bytes_stream();
-                            return Response::builder()
-                                .status(StatusCode::OK)
-                                .header(header::CONTENT_TYPE, "text/event-stream")
-                                .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
-                                .header("Connection", "keep-alive")
-                                .header("X-Accel-Buffering", "no") // 禁用 nginx 等代理的缓冲
-                                .header("Transfer-Encoding", "chunked")
-                                .body(Body::from_stream(stream))
-                                .unwrap_or_else(|_| {
-                                    (
-                                        StatusCode::INTERNAL_SERVER_ERROR,
-                                        Json(serde_json::json!({"error": {"message": "Failed to build stream response"}})),
-                                    )
-                                        .into_response()
-                                });
-                        }
 
                         // 非流式响应
                         if status.is_success() {

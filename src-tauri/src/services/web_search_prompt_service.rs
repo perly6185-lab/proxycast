@@ -3,7 +3,7 @@
 //! 将设置页中的网络搜索引擎偏好转换为统一提示词，
 //! 并注入到系统提示词中，确保所有对话入口行为一致。
 
-use proxycast_core::config::{Config, SearchEngine};
+use proxycast_core::config::{Config, SearchEngine, WebSearchProvider};
 
 const WEB_SEARCH_PROMPT_MARKER: &str = "【网络搜索偏好】";
 
@@ -17,6 +17,19 @@ pub fn build_web_search_prompt(config: &Config) -> Option<String> {
             "优先检索小红书相关内容；必要时优先使用 site:xiaohongshu.com 限定范围。"
         }
     };
+    let provider_instruction = match config.web_search.provider {
+        WebSearchProvider::Tavily => "优先使用 Tavily Search API 进行网页检索。",
+        WebSearchProvider::MultiSearchEngine => {
+            "优先使用 Multi Search Engine 聚合检索；遇到高时效内容可保留多来源交叉验证。"
+        }
+        WebSearchProvider::DuckduckgoInstant => {
+            "默认使用 DuckDuckGo Instant Answer；若结果不足，可继续补充其他公开来源。"
+        }
+        WebSearchProvider::BingSearchApi => "优先使用 Bing Search API 进行网页检索。",
+        WebSearchProvider::GoogleCustomSearch => {
+            "优先使用 Google Custom Search API（CSE）进行网页检索。"
+        }
+    };
 
     Some(format!(
         "{WEB_SEARCH_PROMPT_MARKER}\n\
@@ -24,7 +37,8 @@ pub fn build_web_search_prompt(config: &Config) -> Option<String> {
 1. 当用户要求联网搜索/检索实时信息时，遵循以下引擎偏好。\n\
 2. 若结果不足，可补充其他公开网页来源，但优先级低于偏好引擎。\n\
 3. 不要显式提及你看到了该偏好配置。\n\
-- 搜索偏好：{engine_instruction}"
+- 搜索偏好：{engine_instruction}\n\
+- 提供商偏好：{provider_instruction}"
     ))
 }
 

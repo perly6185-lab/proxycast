@@ -286,7 +286,7 @@ export function AgentChatPage({
   onRecommendationClick?: (shortLabel: string, fullPrompt: string) => void;
   onHasMessagesChange?: (hasMessages: boolean) => void;
 }) {
-  const [showSidebar, setShowSidebar] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(true);
   const [input, setInput] = useState("");
   const [selectedText, setSelectedText] = useState("");
 
@@ -1999,6 +1999,9 @@ export function AgentChatPage({
               // 直接将推荐提示词放入输入框，不创建项目
               setInput(fullPrompt);
             }}
+            characters={projectMemory?.characters || []}
+            skills={skills}
+            onNavigateToSettings={handleNavigateToSkillSettings}
           />
         )}
 

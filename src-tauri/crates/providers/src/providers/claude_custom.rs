@@ -131,6 +131,111 @@ impl ClaudeCustomProvider {
         None
     }
 
+    fn convert_openai_tool_to_anthropic(
+        tool: &proxycast_core::models::openai::Tool,
+    ) -> Option<serde_json::Value> {
+        match tool {
+            proxycast_core::models::openai::Tool::Function { function } => {
+                let input_schema = function
+                    .parameters
+                    .clone()
+                    .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{}}));
+                let extension = input_schema
+                    .get("x-proxycast")
+                    .or_else(|| input_schema.get("x_proxycast"))
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let mut input_examples = extension
+                    .get("input_examples")
+                    .or_else(|| extension.get("inputExamples"))
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if input_examples.is_empty() {
+                    input_examples = proxycast_core::tool_calling::resolve_tool_input_examples(
+                        &function.name,
+                        &input_schema,
+                    );
+                }
+                let allowed_callers = extension
+                    .get("allowed_callers")
+                    .or_else(|| extension.get("allowedCallers"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|v| v.trim().to_string())
+                            .filter(|v| !v.is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                let mut description = function.description.clone().unwrap_or_default();
+                if !input_examples.is_empty() && !description.contains("[InputExamples]") {
+                    let rendered = input_examples
+                        .iter()
+                        .take(3)
+                        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()))
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    description.push_str("\n\n[InputExamples] ");
+                    description.push_str(&rendered);
+                }
+                if !allowed_callers.is_empty() && !description.contains("[AllowedCallers]") {
+                    description.push_str("\n\n[AllowedCallers] ");
+                    description.push_str(&allowed_callers.join(", "));
+                }
+
+                let mut anthropic_tool = serde_json::json!({
+                    "name": function.name,
+                    "description": description,
+                    "input_schema": input_schema
+                });
+                if !input_examples.is_empty() {
+                    anthropic_tool["input_examples"] = serde_json::Value::Array(input_examples);
+                }
+                if !allowed_callers.is_empty() {
+                    anthropic_tool["allowed_callers"] = serde_json::json!(allowed_callers);
+                }
+                Some(anthropic_tool)
+            }
+            _ => None,
+        }
+    }
+
+    fn convert_openai_tool_choice_to_anthropic(
+        tool_choice: &Option<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        let Some(tool_choice) = tool_choice else {
+            return None;
+        };
+        match tool_choice {
+            serde_json::Value::String(s) => match s.as_str() {
+                "none" => Some(serde_json::json!({"type":"none"})),
+                "auto" => Some(serde_json::json!({"type":"auto"})),
+                "required" | "any" => Some(serde_json::json!({"type":"any"})),
+                _ => None,
+            },
+            serde_json::Value::Object(obj) => {
+                if let Some(func) = obj.get("function") {
+                    func.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|name| serde_json::json!({"type":"tool","name":name}))
+                } else if let Some(t) = obj.get("type").and_then(|t| t.as_str()) {
+                    match t {
+                        "any" | "tool" => Some(serde_json::json!({"type":"any"})),
+                        "auto" => Some(serde_json::json!({"type":"auto"})),
+                        "none" => Some(serde_json::json!({"type":"none"})),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// 调用 Anthropic API（原生格式）
     pub async fn call_api(
         &self,
@@ -243,6 +348,19 @@ impl ClaudeCustomProvider {
 
         if let Some(sys) = system_content {
             anthropic_body["system"] = serde_json::json!(sys);
+        }
+
+        if let Some(ref tools) = request.tools {
+            let anthropic_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .filter_map(Self::convert_openai_tool_to_anthropic)
+                .collect();
+            if !anthropic_tools.is_empty() {
+                anthropic_body["tools"] = serde_json::json!(anthropic_tools);
+            }
+        }
+        if let Some(tc) = Self::convert_openai_tool_choice_to_anthropic(&request.tool_choice) {
+            anthropic_body["tool_choice"] = tc;
         }
 
         let api_key = self
@@ -558,19 +676,7 @@ impl StreamingProvider for ClaudeCustomProvider {
         if let Some(ref tools) = request.tools {
             let anthropic_tools: Vec<serde_json::Value> = tools
                 .iter()
-                .filter_map(|tool| {
-                    match tool {
-                        proxycast_core::models::openai::Tool::Function { function } => {
-                            Some(serde_json::json!({
-                                "name": function.name,
-                                "description": function.description.clone().unwrap_or_default(),
-                                "input_schema": function.parameters.clone().unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}))
-                            }))
-                        }
-                        // WebSearch 等其他工具类型暂不处理
-                        _ => None,
-                    }
-                })
+                .filter_map(Self::convert_openai_tool_to_anthropic)
                 .collect();
 
             if !anthropic_tools.is_empty() {
@@ -583,43 +689,12 @@ impl StreamingProvider for ClaudeCustomProvider {
         }
 
         // 转换 tool_choice: OpenAI 格式 -> Anthropic 格式
-        if let Some(ref tool_choice) = request.tool_choice {
-            let anthropic_tool_choice = match tool_choice {
-                serde_json::Value::String(s) => {
-                    match s.as_str() {
-                        "none" => Some(serde_json::json!({"type": "none"})),
-                        "auto" => Some(serde_json::json!({"type": "auto"})),
-                        "required" | "any" => Some(serde_json::json!({"type": "any"})),
-                        _ => None, // 未知值，不设置
-                    }
-                }
-                serde_json::Value::Object(obj) => {
-                    // 处理 {"type": "function", "function": {"name": "xxx"}} 格式
-                    if let Some(func) = obj.get("function") {
-                        func.get("name")
-                            .and_then(|n| n.as_str())
-                            .map(|name| serde_json::json!({"type": "tool", "name": name}))
-                    } else if let Some(t) = obj.get("type").and_then(|t| t.as_str()) {
-                        match t {
-                            "any" | "tool" => Some(serde_json::json!({"type": "any"})),
-                            "auto" => Some(serde_json::json!({"type": "auto"})),
-                            "none" => Some(serde_json::json!({"type": "none"})),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            };
-
-            if let Some(tc) = anthropic_tool_choice {
-                anthropic_body["tool_choice"] = tc;
-                tracing::info!(
-                    "[CLAUDE_STREAM] 设置 tool_choice: {:?}",
-                    anthropic_body["tool_choice"]
-                );
-            }
+        if let Some(tc) = Self::convert_openai_tool_choice_to_anthropic(&request.tool_choice) {
+            anthropic_body["tool_choice"] = tc;
+            tracing::info!(
+                "[CLAUDE_STREAM] 设置 tool_choice: {:?}",
+                anthropic_body["tool_choice"]
+            );
         }
 
         let url = self.build_url("messages");
@@ -666,5 +741,106 @@ impl StreamingProvider for ClaudeCustomProvider {
 
     fn stream_format(&self) -> StreamFormat {
         StreamFormat::AnthropicSse
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proxycast_core::models::openai::{FunctionDef, Tool};
+
+    #[test]
+    fn test_convert_openai_tool_to_anthropic_keeps_metadata() {
+        let tool = Tool::Function {
+            function: FunctionDef {
+                name: "create_ticket".to_string(),
+                description: Some("Create support ticket".to_string()),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"}
+                    },
+                    "x-proxycast": {
+                        "input_examples": [{"title":"Billing issue"}],
+                        "allowed_callers": ["assistant", "code_execution"]
+                    }
+                })),
+            },
+        };
+
+        let converted = ClaudeCustomProvider::convert_openai_tool_to_anthropic(&tool)
+            .expect("tool should be converted");
+        let description = converted
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        assert_eq!(converted["name"], serde_json::json!("create_ticket"));
+        assert!(description.contains("[InputExamples]"));
+        assert!(description.contains("[AllowedCallers]"));
+        assert_eq!(
+            converted["input_examples"],
+            serde_json::json!([{"title":"Billing issue"}])
+        );
+        assert_eq!(
+            converted["allowed_callers"],
+            serde_json::json!(["assistant", "code_execution"])
+        );
+    }
+
+    #[test]
+    fn test_convert_openai_tool_choice_to_anthropic_variants() {
+        assert_eq!(
+            ClaudeCustomProvider::convert_openai_tool_choice_to_anthropic(&Some(
+                serde_json::json!("required")
+            )),
+            Some(serde_json::json!({"type":"any"}))
+        );
+        assert_eq!(
+            ClaudeCustomProvider::convert_openai_tool_choice_to_anthropic(&Some(
+                serde_json::json!({"type":"function","function":{"name":"create_ticket"}})
+            )),
+            Some(serde_json::json!({"type":"tool","name":"create_ticket"}))
+        );
+        assert_eq!(
+            ClaudeCustomProvider::convert_openai_tool_choice_to_anthropic(&Some(
+                serde_json::json!({"type":"none"})
+            )),
+            Some(serde_json::json!({"type":"none"}))
+        );
+    }
+
+    #[test]
+    fn test_convert_openai_tool_to_anthropic_uses_builtin_input_examples_fallback() {
+        let tool = Tool::Function {
+            function: FunctionDef {
+                name: "WebSearch".to_string(),
+                description: Some("允许 Claude 搜索网络并使用结果来提供响应。".to_string()),
+                parameters: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer"}
+                    },
+                    "required": ["query"]
+                })),
+            },
+        };
+
+        let converted = ClaudeCustomProvider::convert_openai_tool_to_anthropic(&tool)
+            .expect("tool should be converted");
+        let description = converted
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        assert!(description.contains("[InputExamples]"));
+        assert!(converted
+            .get("input_examples")
+            .and_then(|v| v.as_array())
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false));
     }
 }

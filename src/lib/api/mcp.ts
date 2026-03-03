@@ -55,6 +55,11 @@ export interface McpToolDefinition {
   description: string;
   input_schema: Record<string, unknown>;
   server_name: string;
+  deferred_loading?: boolean;
+  always_visible?: boolean;
+  allowed_callers?: string[];
+  input_examples?: unknown[];
+  tags?: string[];
 }
 
 /** MCP 内容类型 */
@@ -177,12 +182,35 @@ export const mcpApi = {
   /** 获取所有可用工具 */
   listTools: (): Promise<McpToolDefinition[]> => safeInvoke("mcp_list_tools"),
 
+  /** 按调用上下文获取可见工具（支持 deferred_loading） */
+  listToolsForContext: (
+    caller?: string,
+    includeDeferred = false,
+  ): Promise<McpToolDefinition[]> =>
+    safeInvoke("mcp_list_tools_for_context", { caller, includeDeferred }),
+
+  /** 工具搜索（Tool Search） */
+  searchTools: (
+    query: string,
+    caller?: string,
+    limit = 10,
+  ): Promise<McpToolDefinition[]> =>
+    safeInvoke("mcp_search_tools", { query, caller, limit }),
+
   /** 调用工具 */
   callTool: (
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<McpToolResult> =>
     safeInvoke("mcp_call_tool", { toolName, arguments: args }),
+
+  /** 带 caller 校验调用工具 */
+  callToolWithCaller: (
+    toolName: string,
+    args: Record<string, unknown>,
+    caller?: string,
+  ): Promise<McpToolResult> =>
+    safeInvoke("mcp_call_tool_with_caller", { toolName, arguments: args, caller }),
 
   // --------------------------------------------------------------------------
   // 提示词管理 API

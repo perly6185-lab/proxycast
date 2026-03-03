@@ -21,11 +21,15 @@ use crate::database::dao::chat::{ChatDao, ChatMessage, ChatMode, ChatSession};
 use crate::database::DbConnection;
 use crate::services::memory_profile_prompt_service::merge_system_prompt_with_memory_profile;
 use crate::services::web_search_prompt_service::merge_system_prompt_with_web_search;
+use crate::services::web_search_runtime_service::apply_web_search_runtime_env;
+use aster::agents::extension::ExtensionConfig;
 use aster::conversation::message::Message;
 use futures::StreamExt;
 use proxycast_agent::event_converter::convert_agent_event;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
+
+const CODE_EXECUTION_EXTENSION_NAME: &str = "code_execution";
 
 // ============================================================================
 // 请求/响应结构
@@ -351,9 +355,18 @@ pub async fn chat_send_message(
 
     // 根据模式处理
     let config = config_manager.config();
+    apply_web_search_runtime_env(&config);
     let merged_system_prompt = merge_system_prompt_with_web_search(
         merge_system_prompt_with_memory_profile(session.system_prompt.clone(), &config),
         &config,
+    );
+
+    let prefer_web_search_tools = matches!(session.mode, ChatMode::General);
+    tracing::info!(
+        "[UnifiedChat][WebSearchGuard] session={}, mode={:?}, prefer_web_search_tools={}",
+        request.session_id,
+        session.mode,
+        prefer_web_search_tools
     );
 
     let result = match session.mode {
@@ -368,6 +381,7 @@ pub async fn chat_send_message(
                 &request.event_name,
                 merged_system_prompt.as_deref(),
                 config.memory.enabled,
+                false,
             )
             .await
         }
@@ -382,6 +396,7 @@ pub async fn chat_send_message(
                 &request.event_name,
                 merged_system_prompt.as_deref(),
                 config.memory.enabled,
+                true,
             )
             .await
         }
@@ -407,8 +422,14 @@ async fn send_message_with_aster(
     event_name: &str,
     system_prompt: Option<&str>,
     include_context_trace: bool,
+    prefer_web_search_tools: bool,
 ) -> Result<(), String> {
     let start_time = std::time::Instant::now();
+    tracing::info!(
+        "[UnifiedChat][WebSearchGuard] session={}, prefer_web_search_tools={}",
+        session_id,
+        prefer_web_search_tools
+    );
 
     // 确保 Agent 已初始化
     let init_start = std::time::Instant::now();
@@ -433,11 +454,22 @@ async fn send_message_with_aster(
     // 创建取消令牌
     let cancel_token = agent_state.create_cancel_token(session_id).await;
 
-    // 构建消息（如果有 system_prompt 且是第一条消息，注入到消息前面）
-    let final_message = if let Some(prompt) = system_prompt {
-        format!("{prompt}\n\n{message}")
+    let guarded_user_message = if prefer_web_search_tools {
+        format!(
+            "[执行约束]\n\
+本次请求必须优先使用 WebSearch / WebFetch 工具获取联网结果。\n\
+不要调用 code_execution_execute_code / code_execution_read_module / code_execution_search_modules 这类代码执行模块来替代联网搜索。\n\n{}",
+            message
+        )
     } else {
         message.to_string()
+    };
+
+    // 构建消息（如果有 system_prompt 且是第一条消息，注入到消息前面）
+    let final_message = if let Some(prompt) = system_prompt {
+        format!("{prompt}\n\n{guarded_user_message}")
+    } else {
+        guarded_user_message
     };
 
     let user_message = Message::user().with_text(&final_message);
@@ -450,6 +482,38 @@ async fn send_message_with_aster(
     let guard = agent_arc.read().await;
     let agent = guard.as_ref().ok_or("Agent 未初始化")?;
 
+    let mut removed_extension: Option<ExtensionConfig> = None;
+    if prefer_web_search_tools {
+        let extension_configs = agent.get_extension_configs().await;
+        if let Some(extension) = extension_configs
+            .into_iter()
+            .find(|extension| extension.name() == CODE_EXECUTION_EXTENSION_NAME)
+        {
+            match agent.remove_extension(CODE_EXECUTION_EXTENSION_NAME).await {
+                Ok(_) => {
+                    removed_extension = Some(extension);
+                    tracing::info!(
+                        "[UnifiedChat] 当前会话优先联网搜索，临时关闭 {} 扩展",
+                        CODE_EXECUTION_EXTENSION_NAME
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "[UnifiedChat] 移除 {} 扩展失败: {}",
+                        CODE_EXECUTION_EXTENSION_NAME,
+                        error
+                    );
+                }
+            }
+        } else {
+            tracing::info!(
+                "[UnifiedChat][WebSearchGuard] session={}, 未检测到 {} 扩展，无需移除",
+                session_id,
+                CODE_EXECUTION_EXTENSION_NAME
+            );
+        }
+    }
+
     // 调用 Agent
     let reply_start = std::time::Instant::now();
     let stream_result = agent
@@ -458,6 +522,7 @@ async fn send_message_with_aster(
 
     let mut first_chunk_time: Option<std::time::Instant> = None;
     let mut chunk_count = 0;
+    let mut stream_error: Option<String> = None;
 
     match stream_result {
         Ok(mut stream) => {
@@ -480,10 +545,12 @@ async fn send_message_with_aster(
                         }
                     }
                     Err(e) => {
+                        let message = format!("流错误: {e}");
                         let error_event = TauriAgentEvent::Error {
-                            message: format!("流错误: {e}"),
+                            message: message.clone(),
                         };
                         let _ = app.emit(event_name, &error_event);
+                        stream_error = Some(message);
                     }
                 }
             }
@@ -501,16 +568,31 @@ async fn send_message_with_aster(
             );
         }
         Err(e) => {
+            let message = format!("Agent 错误: {e}");
             let error_event = TauriAgentEvent::Error {
-                message: format!("Agent 错误: {e}"),
+                message: message.clone(),
             };
             let _ = app.emit(event_name, &error_event);
-            return Err(format!("Agent 错误: {e}"));
+            stream_error = Some(message);
+        }
+    }
+
+    if let Some(extension) = removed_extension {
+        if let Err(error) = agent.add_extension(extension).await {
+            tracing::warn!(
+                "[UnifiedChat] 恢复 {} 扩展失败: {}",
+                CODE_EXECUTION_EXTENSION_NAME,
+                error
+            );
         }
     }
 
     // 清理取消令牌
     agent_state.remove_cancel_token(session_id).await;
+
+    if let Some(error) = stream_error {
+        return Err(error);
+    }
 
     Ok(())
 }

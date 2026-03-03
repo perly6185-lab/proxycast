@@ -279,6 +279,15 @@ pub struct FunctionDefinition {
     pub description: String,
     /// 参数 schema
     pub parameters: serde_json::Value,
+    /// 工具输入示例（用于复杂参数提高准确率）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_examples: Option<Vec<serde_json::Value>>,
+    /// 允许调用方（assistant/code_execution/tool_search）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_callers: Option<Vec<String>>,
+    /// 是否延迟加载（默认不注入上下文）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_loading: Option<bool>,
 }
 
 /// Agent 配置

@@ -399,6 +399,9 @@ pub struct Config {
     /// 实验室功能配置
     #[serde(default)]
     pub experimental: ExperimentalFeatures,
+    /// Tool Calling 2.0 配置
+    #[serde(default)]
+    pub tool_calling: ToolCallingConfig,
     /// 内容创作配置
     #[serde(default)]
     pub content_creator: ContentCreatorConfig,
@@ -743,6 +746,40 @@ pub struct ExperimentalFeatures {
     /// 语音输入功能配置
     #[serde(default)]
     pub voice_input: VoiceInputConfig,
+}
+
+/// Tool Calling 2.0 配置
+///
+/// 统一控制编程式工具调用、动态过滤与 input examples 透传行为。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolCallingConfig {
+    /// 是否启用 Tool Calling 2.0 能力
+    #[serde(default = "default_tool_calling_enabled")]
+    pub enabled: bool,
+    /// 是否启用动态过滤（优先过滤网页抓取噪音）
+    #[serde(default = "default_tool_calling_dynamic_filtering_enabled")]
+    pub dynamic_filtering: bool,
+    /// 是否启用原生 input_examples 透传
+    #[serde(default)]
+    pub native_input_examples: bool,
+}
+
+fn default_tool_calling_enabled() -> bool {
+    true
+}
+
+fn default_tool_calling_dynamic_filtering_enabled() -> bool {
+    true
+}
+
+impl Default for ToolCallingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_tool_calling_enabled(),
+            dynamic_filtering: default_tool_calling_dynamic_filtering_enabled(),
+            native_input_examples: false,
+        }
+    }
 }
 
 // ============ 语音输入功能配置类型 ============
@@ -1921,6 +1958,7 @@ impl Default for Config {
             models: ModelsConfig::default(),
             agent: NativeAgentConfig::default(),
             experimental: ExperimentalFeatures::default(),
+            tool_calling: ToolCallingConfig::default(),
             content_creator: ContentCreatorConfig::default(),
             navigation: NavigationConfig::default(),
             chat_appearance: ChatAppearanceConfig::default(),
@@ -1954,12 +1992,143 @@ pub enum SearchEngine {
     Xiaohongshu,
 }
 
+/// 联网搜索提供商类型
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchProvider {
+    /// Tavily Search API
+    Tavily,
+    /// Multi Search Engine v2.0.1
+    MultiSearchEngine,
+    /// DuckDuckGo Instant Answer API（无需 Key）
+    #[default]
+    DuckduckgoInstant,
+    /// Bing Search API
+    BingSearchApi,
+    /// Google Custom Search API
+    GoogleCustomSearch,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MultiSearchEngineEntryConfig {
+    /// 引擎标识名
+    pub name: String,
+    /// 搜索 URL 模板，必须包含 {query}
+    pub url_template: String,
+    /// 是否启用该引擎
+    #[serde(default = "default_mse_engine_enabled")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MultiSearchConfig {
+    /// 引擎优先级（按名称）
+    #[serde(default)]
+    pub priority: Vec<String>,
+    /// 自定义/覆盖引擎列表
+    #[serde(default = "default_multi_search_engines")]
+    pub engines: Vec<MultiSearchEngineEntryConfig>,
+    /// 每个引擎最大结果数
+    #[serde(default = "default_mse_max_results_per_engine")]
+    pub max_results_per_engine: usize,
+    /// 最终聚合最大结果数
+    #[serde(default = "default_mse_max_total_results")]
+    pub max_total_results: usize,
+    /// 每个引擎请求超时（毫秒）
+    #[serde(default = "default_mse_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for MultiSearchConfig {
+    fn default() -> Self {
+        Self {
+            priority: vec![],
+            engines: default_multi_search_engines(),
+            max_results_per_engine: default_mse_max_results_per_engine(),
+            max_total_results: default_mse_max_total_results(),
+            timeout_ms: default_mse_timeout_ms(),
+        }
+    }
+}
+
+fn default_mse_engine_enabled() -> bool {
+    true
+}
+
+fn default_mse_max_results_per_engine() -> usize {
+    5
+}
+
+fn default_mse_max_total_results() -> usize {
+    20
+}
+
+fn default_mse_timeout_ms() -> u64 {
+    4000
+}
+
+fn default_multi_search_engines() -> Vec<MultiSearchEngineEntryConfig> {
+    vec![
+        ("google", "https://www.google.com/search?q={query}"),
+        ("bing", "https://www.bing.com/search?q={query}"),
+        ("duckduckgo", "https://duckduckgo.com/?q={query}"),
+        ("yahoo", "https://search.yahoo.com/search?p={query}"),
+        ("baidu", "https://www.baidu.com/s?wd={query}"),
+        ("yandex", "https://yandex.com/search/?text={query}"),
+        ("ecosia", "https://www.ecosia.org/search?q={query}"),
+        ("brave", "https://search.brave.com/search?q={query}"),
+        (
+            "startpage",
+            "https://www.startpage.com/do/search?query={query}",
+        ),
+        ("qwant", "https://www.qwant.com/?q={query}&t=web"),
+        ("sogou", "https://www.sogou.com/web?query={query}"),
+        ("so360", "https://www.so.com/s?q={query}"),
+        ("aol", "https://search.aol.com/aol/search?q={query}"),
+        ("ask", "https://www.ask.com/web?q={query}"),
+        (
+            "naver",
+            "https://search.naver.com/search.naver?query={query}",
+        ),
+        ("seznam", "https://search.seznam.cz/?q={query}"),
+        ("dogpile", "https://www.dogpile.com/serp?q={query}"),
+    ]
+    .into_iter()
+    .map(|(name, url_template)| MultiSearchEngineEntryConfig {
+        name: name.to_string(),
+        url_template: url_template.to_string(),
+        enabled: true,
+    })
+    .collect()
+}
+
 /// 网络搜索配置
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct WebSearchConfig {
     /// 默认搜索引擎偏好
     #[serde(default)]
     pub engine: SearchEngine,
+    /// 联网搜索提供商
+    #[serde(default)]
+    pub provider: WebSearchProvider,
+    /// 提供商回退优先级
+    #[serde(default)]
+    pub provider_priority: Vec<WebSearchProvider>,
+    /// Tavily Search API Key
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tavily_api_key: Option<String>,
+    /// Bing Search API Key
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bing_search_api_key: Option<String>,
+    /// Google Search API Key
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_search_api_key: Option<String>,
+    /// Google Search Engine ID (CSE CX)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_search_engine_id: Option<String>,
+    /// Multi Search Engine 配置
+    #[serde(default)]
+    pub multi_search: MultiSearchConfig,
 }
 
 /// 聊天外观配置
@@ -2601,6 +2770,31 @@ mod unit_tests {
     }
 
     #[test]
+    fn test_tool_calling_config_default() {
+        let config = ToolCallingConfig::default();
+        assert!(config.enabled);
+        assert!(config.dynamic_filtering);
+        assert!(!config.native_input_examples);
+    }
+
+    #[test]
+    fn test_tool_calling_config_serialization() {
+        let config = ToolCallingConfig {
+            enabled: false,
+            dynamic_filtering: false,
+            native_input_examples: true,
+        };
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(yaml.contains("enabled: false"));
+        assert!(yaml.contains("dynamic_filtering: false"));
+        assert!(yaml.contains("native_input_examples: true"));
+
+        let parsed: ToolCallingConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
     fn test_config_with_experimental() {
         let config = Config::default();
         assert!(!config.experimental.screenshot_chat.enabled);
@@ -2614,6 +2808,9 @@ mod unit_tests {
             config.experimental.voice_input.shortcut,
             "CommandOrControl+Shift+V"
         );
+        assert!(config.tool_calling.enabled);
+        assert!(config.tool_calling.dynamic_filtering);
+        assert!(!config.tool_calling.native_input_examples);
     }
 
     #[test]

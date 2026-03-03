@@ -87,8 +87,32 @@ const defaultMocks: Record<string, any> = {
         shortcut: "",
       },
     },
+    tool_calling: {
+      enabled: true,
+      dynamic_filtering: true,
+      native_input_examples: false,
+    },
     web_search: {
       engine: "google",
+      provider: "duckduckgo_instant",
+      provider_priority: [
+        "duckduckgo_instant",
+        "tavily",
+        "multi_search_engine",
+        "bing_search_api",
+        "google_custom_search",
+      ],
+      tavily_api_key: "",
+      bing_search_api_key: "",
+      google_search_api_key: "",
+      google_search_engine_id: "",
+      multi_search: {
+        priority: [],
+        engines: [],
+        max_results_per_engine: 5,
+        max_total_results: 20,
+        timeout_ms: 4000,
+      },
     },
     image_gen: {
       default_service: "dall_e",
@@ -690,6 +714,18 @@ const defaultMocks: Record<string, any> = {
   import_mcp_from_app: () => ({ success: true }),
   sync_all_mcp_to_live: () => ({ success: true }),
   sync_from_external_config: () => ({ success: true }),
+  mcp_list_servers_with_status: () => [],
+  mcp_start_server: () => ({ success: true }),
+  mcp_stop_server: () => ({ success: true }),
+  mcp_list_tools: () => [],
+  mcp_list_tools_for_context: () => [],
+  mcp_search_tools: () => [],
+  mcp_call_tool: () => ({ content: [], is_error: false }),
+  mcp_call_tool_with_caller: () => ({ content: [], is_error: false }),
+  mcp_list_prompts: () => [],
+  mcp_get_prompt: () => ({ description: "", messages: [] }),
+  mcp_list_resources: () => [],
+  mcp_read_resource: () => ({}),
 
   // Switch Provider 相关
   get_switch_providers: () => [],
@@ -1035,11 +1071,13 @@ const defaultMocks: Record<string, any> = {
     warning: null,
   }),
   workspace_get_projects_root: () => "/mock/workspace/projects",
-  workspace_resolve_project_path: (args: any) => `/mock/workspace/projects/${args?.name ?? "untitled"}`,
+  workspace_resolve_project_path: (args: any) =>
+    `/mock/workspace/projects/${args?.name ?? "untitled"}`,
   workspace_create: (args: any) => ({
     id: `mock-project-${Date.now()}`,
     name: args?.request?.name ?? "Mock Project",
-    rootPath: args?.request?.rootPath ?? "/mock/workspace/projects/mock-project",
+    rootPath:
+      args?.request?.rootPath ?? "/mock/workspace/projects/mock-project",
     workspaceType: args?.request?.workspaceType ?? "general",
     createdAt: Date.now(),
     updatedAt: Date.now(),

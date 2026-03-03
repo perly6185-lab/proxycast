@@ -114,6 +114,25 @@ beforeEach(() => {
   mockGetConfig.mockResolvedValue({
     web_search: {
       engine: "google",
+      provider: "duckduckgo_instant",
+      provider_priority: ["duckduckgo_instant", "bing_search_api"],
+      tavily_api_key: "tavily-old-key",
+      bing_search_api_key: "bing-old-key",
+      google_search_api_key: "google-old-key",
+      google_search_engine_id: "cx-old-id",
+      multi_search: {
+        priority: ["google", "bing"],
+        engines: [
+          {
+            name: "google",
+            url_template: "https://www.google.com/search?q={query}",
+            enabled: true,
+          },
+        ],
+        max_results_per_engine: 5,
+        max_total_results: 20,
+        timeout_ms: 4000,
+      },
     },
     image_gen: {
       image_search_pexels_api_key: "old-key",
@@ -144,6 +163,20 @@ describe("WebSearchSettings", () => {
 
     const select = findSelect(container, "web-search-engine");
     expect(select.value).toBe("google");
+    const provider = findSelect(container, "web-search-provider");
+    expect(provider.value).toBe("duckduckgo_instant");
+    const tavilyInput = findInput(container, "web-search-tavily-key");
+    expect(tavilyInput.value).toBe("tavily-old-key");
+
+    const bingKeyInput = findInput(container, "web-search-bing-key");
+    expect(bingKeyInput.value).toBe("bing-old-key");
+    const googleKeyInput = findInput(container, "web-search-google-key");
+    expect(googleKeyInput.value).toBe("google-old-key");
+    const googleEngineInput = findInput(
+      container,
+      "web-search-google-engine-id",
+    );
+    expect(googleEngineInput.value).toBe("cx-old-id");
 
     const input = findInput(container, "web-search-pexels-key");
     expect(input.value).toBe("old-key");
@@ -151,7 +184,7 @@ describe("WebSearchSettings", () => {
     expect(pixabayInput.value).toBe("old-pixabay-key");
   });
 
-  it("修改搜索引擎和图片 Key 后应统一保存", async () => {
+  it("修改搜索提供商与图片 Key 后应统一保存", async () => {
     const container = renderComponent();
     await flushEffects();
     await flushEffects();
@@ -159,6 +192,38 @@ describe("WebSearchSettings", () => {
     await setSelectValue(
       findSelect(container, "web-search-engine"),
       "xiaohongshu",
+    );
+    await setSelectValue(
+      findSelect(container, "web-search-provider"),
+      "multi_search_engine",
+    );
+    await setInputValue(
+      findInput(container, "web-search-provider-priority"),
+      "multi_search_engine, tavily, bing_search_api",
+    );
+    await setInputValue(
+      findInput(container, "web-search-tavily-key"),
+      "tavily-new-key",
+    );
+    await setInputValue(
+      findInput(container, "web-search-bing-key"),
+      "bing-new-key",
+    );
+    await setInputValue(
+      findInput(container, "web-search-google-key"),
+      "google-new-key",
+    );
+    await setInputValue(
+      findInput(container, "web-search-google-engine-id"),
+      "cx-new-id",
+    );
+    await setInputValue(
+      findInput(container, "web-search-mse-custom-engine-name"),
+      "hn",
+    );
+    await setInputValue(
+      findInput(container, "web-search-mse-custom-engine-template"),
+      "https://hn.algolia.com/?q={query}",
     );
     await setInputValue(
       findInput(container, "web-search-pexels-key"),
@@ -177,9 +242,23 @@ describe("WebSearchSettings", () => {
     expect(mockSaveConfig).toHaveBeenCalledTimes(1);
     expect(mockSaveConfig).toHaveBeenCalledWith(
       expect.objectContaining({
-        web_search: {
+        web_search: expect.objectContaining({
           engine: "xiaohongshu",
-        },
+          provider: "multi_search_engine",
+          provider_priority: [
+            "multi_search_engine",
+            "tavily",
+            "bing_search_api",
+          ],
+          tavily_api_key: "tavily-new-key",
+          bing_search_api_key: "bing-new-key",
+          google_search_api_key: "google-new-key",
+          google_search_engine_id: "cx-new-id",
+          multi_search: expect.objectContaining({
+            priority: ["google", "bing"],
+            timeout_ms: 4000,
+          }),
+        }),
         image_gen: expect.objectContaining({
           image_search_pexels_api_key: "new-key",
           image_search_pixabay_api_key: "new-pixabay-key",
@@ -200,6 +279,19 @@ describe("WebSearchSettings", () => {
     });
 
     expect(mockOpen).toHaveBeenCalledWith("https://www.pexels.com/api/new/");
+  });
+
+  it("点击 Tavily 申请按钮应打开官方页面", async () => {
+    const container = renderComponent();
+    await flushEffects();
+    await flushEffects();
+
+    await act(async () => {
+      findButton(container, "申请 Tavily Key").click();
+      await flushEffects();
+    });
+
+    expect(mockOpen).toHaveBeenCalledWith("https://app.tavily.com/");
   });
 
   it("插件打开失败时应回退到 window.open", async () => {
@@ -231,6 +323,53 @@ describe("WebSearchSettings", () => {
       await flushEffects();
     });
 
-    expect(mockOpen).toHaveBeenCalledWith("https://pixabay.com/accounts/register/");
+    expect(mockOpen).toHaveBeenCalledWith(
+      "https://pixabay.com/accounts/register/",
+    );
+  });
+
+  it("点击 Bing 申请按钮应打开 Azure 页面", async () => {
+    const container = renderComponent();
+    await flushEffects();
+    await flushEffects();
+
+    await act(async () => {
+      findButton(container, "申请 Bing Key").click();
+      await flushEffects();
+    });
+
+    expect(mockOpen).toHaveBeenCalledWith(
+      "https://portal.azure.com/#create/Microsoft.CognitiveServicesBingSearch-v7",
+    );
+  });
+
+  it("点击 Google 申请按钮应打开 Google Cloud API 页面", async () => {
+    const container = renderComponent();
+    await flushEffects();
+    await flushEffects();
+
+    await act(async () => {
+      findButton(container, "申请 Google Key").click();
+      await flushEffects();
+    });
+
+    expect(mockOpen).toHaveBeenCalledWith(
+      "https://console.cloud.google.com/apis/library/customsearch.googleapis.com",
+    );
+  });
+
+  it("点击创建 CSE 按钮应打开可编程搜索引擎页面", async () => {
+    const container = renderComponent();
+    await flushEffects();
+    await flushEffects();
+
+    await act(async () => {
+      findButton(container, "创建 CSE").click();
+      await flushEffects();
+    });
+
+    expect(mockOpen).toHaveBeenCalledWith(
+      "https://programmablesearchengine.google.com/",
+    );
   });
 });

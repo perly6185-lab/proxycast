@@ -224,6 +224,20 @@ export interface ApiKeyEntry {
   proxy_url: string | null;
 }
 
+export interface MultiSearchEngineEntryConfig {
+  name: string;
+  url_template: string;
+  enabled: boolean;
+}
+
+export interface MultiSearchConfig {
+  priority?: string[];
+  engines?: MultiSearchEngineEntryConfig[];
+  max_results_per_engine?: number;
+  max_total_results?: number;
+  timeout_ms?: number;
+}
+
 // ============ 实验室功能配置 ============
 
 /**
@@ -242,6 +256,18 @@ export interface SmartInputConfig {
 export interface ExperimentalFeatures {
   /** 截图对话功能配置 */
   screenshot_chat: SmartInputConfig;
+}
+
+/**
+ * Tool Calling 2.0 配置
+ */
+export interface ToolCallingConfig {
+  /** 总开关 */
+  enabled: boolean;
+  /** 动态过滤（网页噪音过滤） */
+  dynamic_filtering: boolean;
+  /** 原生 input examples 透传 */
+  native_input_examples: boolean;
 }
 
 /**
@@ -535,6 +561,8 @@ export interface Config {
   language: string;
   /** 实验室功能配置 */
   experimental?: ExperimentalFeatures;
+  /** Tool Calling 2.0 配置 */
+  tool_calling?: ToolCallingConfig;
   /** 内容创作配置 */
   content_creator?: ContentCreatorConfig;
   /** 导航栏配置 */
@@ -544,6 +572,24 @@ export interface Config {
   /** 网络搜索配置 */
   web_search?: {
     engine: "google" | "xiaohongshu";
+    provider?:
+      | "tavily"
+      | "multi_search_engine"
+      | "duckduckgo_instant"
+      | "bing_search_api"
+      | "google_custom_search";
+    provider_priority?: Array<
+      | "tavily"
+      | "multi_search_engine"
+      | "duckduckgo_instant"
+      | "bing_search_api"
+      | "google_custom_search"
+    >;
+    tavily_api_key?: string | null;
+    bing_search_api_key?: string | null;
+    google_search_api_key?: string | null;
+    google_search_engine_id?: string | null;
+    multi_search?: MultiSearchConfig;
   };
   /** 记忆管理配置 */
   memory?: MemoryConfig;
@@ -616,9 +662,7 @@ export async function workspaceEnsureReady(
   return safeInvoke("workspace_ensure_ready", { id });
 }
 
-export async function workspaceEnsureDefaultReady(): Promise<
-  WorkspaceEnsureResult | null
-> {
+export async function workspaceEnsureDefaultReady(): Promise<WorkspaceEnsureResult | null> {
   return safeInvoke("workspace_ensure_default_ready");
 }
 

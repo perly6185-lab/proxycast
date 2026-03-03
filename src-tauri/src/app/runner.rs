@@ -822,7 +822,10 @@ pub fn run() {
             commands::mcp_cmd::mcp_stop_server,
             // MCP 工具管理命令
             commands::mcp_cmd::mcp_list_tools,
+            commands::mcp_cmd::mcp_list_tools_for_context,
+            commands::mcp_cmd::mcp_search_tools,
             commands::mcp_cmd::mcp_call_tool,
+            commands::mcp_cmd::mcp_call_tool_with_caller,
             // MCP 提示词管理命令
             commands::mcp_cmd::mcp_list_prompts,
             commands::mcp_cmd::mcp_get_prompt,

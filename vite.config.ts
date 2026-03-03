@@ -20,6 +20,8 @@ const tauriMockDir = path.resolve(__dirname, "./src/lib/tauri-mock");
 export default defineConfig(({ mode }) => {
   // 检查是否在 Tauri 环境中运行（通过环境变量判断）
   const isTauri = process.env.TAURI_ENV_PLATFORM !== undefined;
+  // 避免 Tauri/非 Tauri 共享同一份 optimize deps 缓存导致 chunk 丢失
+  const cacheDir = isTauri ? "node_modules/.vite-tauri" : "node_modules/.vite-web";
   
   // 只在非 Tauri 环境（纯浏览器开发）下使用 mock
   const tauriAliases = isTauri ? {} : {
@@ -35,6 +37,7 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
+  cacheDir,
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify(appVersion),
   },
@@ -56,6 +59,8 @@ export default defineConfig(({ mode }) => {
     },
   },
   optimizeDeps: {
+    // 强制每次启动时校验并重建依赖预构建，避免命中损坏缓存
+    force: true,
     // 只在非 Tauri 环境下排除 Tauri 包的预构建
     exclude: isTauri ? [] : [
       "@tauri-apps/api",

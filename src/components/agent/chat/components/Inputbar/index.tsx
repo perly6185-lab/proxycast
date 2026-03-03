@@ -452,9 +452,13 @@ export const Inputbar: React.FC<InputbarProps> = ({
     if (!input.trim() && pendingImages.length === 0) return;
     const webSearch = activeTools["web_search"] || false;
     const thinking = activeTools["thinking"] || false;
-    const strategy =
+    let strategy =
       executionStrategy ||
       (activeTools["execution_strategy"] ? "code_orchestrated" : "react");
+
+    if (webSearch && strategy !== "react") {
+      strategy = "react";
+    }
 
     // 如果有 activeSkill，拼接 /skill.key 前缀
     const textOverride = activeSkill
@@ -588,18 +592,16 @@ export const Inputbar: React.FC<InputbarProps> = ({
         onChange={handleFileSelect}
       />
       {/* 角色与技能引用组件 */}
-      {(characters.length > 0 || skills.length > 0) && (
-        <CharacterMention
-          characters={characters}
-          skills={skills}
-          inputRef={textareaRef}
-          value={input}
-          onChange={inputAdapter.actions.setText}
-          onSelectCharacter={onSelectCharacter}
-          onSelectSkill={setActiveSkill}
-          onNavigateToSettings={onNavigateToSettings}
-        />
-      )}
+      <CharacterMention
+        characters={characters}
+        skills={skills}
+        inputRef={textareaRef}
+        value={input}
+        onChange={inputAdapter.actions.setText}
+        onSelectCharacter={onSelectCharacter}
+        onSelectSkill={setActiveSkill}
+        onNavigateToSettings={onNavigateToSettings}
+      />
       <InputbarCore
         textareaRef={textareaRef}
         text={inputAdapter.state.text}

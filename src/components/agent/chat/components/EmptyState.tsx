@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import styled, { keyframes, css } from "styled-components";
 import {
   ArrowRight,
@@ -47,6 +47,11 @@ import {
   getContextualRecommendations,
 } from "../utils/contextualRecommendations";
 import { ChatModelSelector } from "./ChatModelSelector";
+import { CharacterMention } from "./Inputbar/components/CharacterMention";
+import { SkillBadge } from "./Inputbar/components/SkillBadge";
+import { useActiveSkill } from "./Inputbar/hooks/useActiveSkill";
+import type { Character } from "@/lib/api/memory";
+import type { Skill } from "@/lib/api/skills";
 
 // Import Assets
 import iconXhs from "@/assets/platforms/xhs.png";
@@ -384,6 +389,12 @@ interface EmptyStateProps {
   hasCanvasContent?: boolean;
   hasContentId?: boolean;
   selectedText?: string;
+  /** 角色列表（用于 @ 引用） */
+  characters?: Character[];
+  /** 技能列表（用于 @ 引用） */
+  skills?: Skill[];
+  /** 跳转到设置页安装技能 */
+  onNavigateToSettings?: () => void;
 }
 
 const ENTRY_THEME_ID = "social-media";
@@ -506,7 +517,14 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   hasCanvasContent = false,
   hasContentId = false,
   selectedText = "",
+  characters = [],
+  skills = [],
+  onNavigateToSettings,
 }) => {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { activeSkill, setActiveSkill, clearActiveSkill, wrapTextWithSkill } =
+    useActiveSkill();
+
   // 从配置中读取启用的主题
   const [enabledThemes, setEnabledThemes] = useState<string[]>(
     DEFAULT_ENABLED_THEMES,
@@ -678,7 +696,8 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         },
       });
 
-      onSend(composedPrompt, executionStrategy);
+      onSend(wrapTextWithSkill(composedPrompt), executionStrategy);
+      clearActiveSkill();
       return;
     }
 
@@ -693,7 +712,8 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
       prefix = `[知识探索: ${depth === "deep" ? "深度" : "快速"}] `;
     if (activeTheme === "planning") prefix = `[计划规划] `;
 
-    onSend(prefix + input, executionStrategy);
+    onSend(wrapTextWithSkill(prefix + input), executionStrategy);
+    clearActiveSkill();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -844,11 +864,24 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
             </EntryTaskContainer>
           )}
 
+          {activeSkill && (
+            <SkillBadge skill={activeSkill} onClear={clearActiveSkill} />
+          )}
           <StyledTextarea
+            ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={getPlaceholder()}
+          />
+          <CharacterMention
+            characters={characters}
+            skills={skills}
+            inputRef={textareaRef}
+            value={input}
+            onChange={setInput}
+            onSelectSkill={setActiveSkill}
+            onNavigateToSettings={onNavigateToSettings}
           />
 
           <Toolbar>

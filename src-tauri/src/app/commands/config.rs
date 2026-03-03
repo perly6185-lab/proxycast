@@ -55,6 +55,8 @@ pub async fn save_config(
     let save_result = config::save_config(&config).map_err(|e| e.to_string());
     match save_result {
         Ok(()) => {
+            proxycast_core::tool_calling::apply_tool_calling_runtime_config(&config);
+
             let full_reload_event = ConfigChangeEvent::FullReload(FullReloadEvent {
                 timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
                 source: ConfigChangeSource::FrontendUI,

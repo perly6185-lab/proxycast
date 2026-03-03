@@ -11,6 +11,7 @@ const SidebarContainer = styled.div`
   display: flex;
   flex-direction: column;
   height: 100%;
+  margin-right: 10px;
   background-color: hsl(var(--muted) / 0.3);
   border-right: 1px solid hsl(var(--border));
 `;

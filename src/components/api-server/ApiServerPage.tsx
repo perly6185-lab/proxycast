@@ -1220,7 +1220,7 @@ export function ApiServerPage({ hideHeader = false }: ApiServerPageProps) {
 
       {/* Server Control Tab */}
       {activeTab === "server" && (
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           {/* Server Control - 紧凑版 */}
           <div className="rounded-lg border bg-card p-4">
             <div className="flex flex-wrap items-center gap-4">
@@ -1389,7 +1389,7 @@ export function ApiServerPage({ hideHeader = false }: ApiServerPageProps) {
           </div>
 
           {/* 观测面板（对标 ClawRouter） */}
-          <div className="rounded-lg border bg-card p-4 space-y-4">
+          <div className="order-last rounded-lg border bg-card p-4 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-medium">观测面板</h3>
               <span className="text-xs text-muted-foreground">

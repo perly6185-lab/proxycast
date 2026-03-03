@@ -5,6 +5,7 @@
 
 use aster::agents::AgentEvent;
 use aster::conversation::message::{ActionRequiredData, Message, MessageContent};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 /// 从工具结果中提取文本内容
@@ -74,10 +75,69 @@ fn extract_tool_result_text<T: serde::Serialize>(result: &T) -> String {
         collect_tool_result_text(&json, &mut parts);
         let deduped = dedupe_preserve_order(parts);
         if !deduped.is_empty() {
-            return deduped.join("\n");
+            return maybe_filter_web_content(&deduped.join("\n"));
         }
     }
     String::new()
+}
+
+fn dynamic_filtering_enabled() -> bool {
+    proxycast_core::tool_calling::tool_calling_dynamic_filtering_enabled()
+}
+
+fn maybe_filter_web_content(raw: &str) -> String {
+    if !dynamic_filtering_enabled() {
+        return raw.to_string();
+    }
+
+    let lowered = raw.to_ascii_lowercase();
+    let looks_like_html =
+        (lowered.contains("<html") || lowered.contains("<body") || lowered.contains("</div>"))
+            && raw.len() > 4_000;
+    if !looks_like_html {
+        return raw.to_string();
+    }
+
+    let script_re = Regex::new(r"(?is)<script[^>]*>.*?</script>").ok();
+    let style_re = Regex::new(r"(?is)<style[^>]*>.*?</style>").ok();
+    let tag_re = Regex::new(r"(?is)<[^>]+>").ok();
+    let space_re = Regex::new(r"[ \t]{2,}").ok();
+    let newline_re = Regex::new(r"\n{3,}").ok();
+
+    let mut cleaned = raw.to_string();
+    if let Some(re) = script_re.as_ref() {
+        cleaned = re.replace_all(&cleaned, " ").to_string();
+    }
+    if let Some(re) = style_re.as_ref() {
+        cleaned = re.replace_all(&cleaned, " ").to_string();
+    }
+    if let Some(re) = tag_re.as_ref() {
+        cleaned = re.replace_all(&cleaned, "\n").to_string();
+    }
+    if let Some(re) = space_re.as_ref() {
+        cleaned = re.replace_all(&cleaned, " ").to_string();
+    }
+    if let Some(re) = newline_re.as_ref() {
+        cleaned = re.replace_all(&cleaned, "\n\n").to_string();
+    }
+    cleaned = cleaned
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    const MAX_FILTERED_CHARS: usize = 8_000;
+    if cleaned.chars().count() > MAX_FILTERED_CHARS {
+        let shortened = cleaned.chars().take(MAX_FILTERED_CHARS).collect::<String>();
+        return format!(
+            "{}\n\n[dynamic_filtering] 内容已裁剪，原始长度 {} 字符",
+            shortened,
+            cleaned.chars().count()
+        );
+    }
+
+    cleaned
 }
 
 #[derive(Debug, Clone)]
@@ -800,5 +860,17 @@ mod tests {
         let extracted = extract_tool_result_data(&payload);
         assert_eq!(extracted.images.len(), 1);
         assert_eq!(extracted.images[0].src, "data:image/png;base64,aGVsbG8=");
+    }
+
+    #[test]
+    fn test_maybe_filter_web_content_should_strip_html_noise() {
+        let html = format!(
+            "<html><head><style>body{{color:red}}</style><script>alert(1)</script></head><body>{}</body></html>",
+            "正文".repeat(2500)
+        );
+        let filtered = maybe_filter_web_content(&html);
+        assert!(!filtered.to_ascii_lowercase().contains("<html"));
+        assert!(!filtered.to_ascii_lowercase().contains("<script"));
+        assert!(filtered.contains("正文"));
     }
 }

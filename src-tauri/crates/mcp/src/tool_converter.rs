@@ -29,6 +29,10 @@ pub struct OpenAIFunction {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    /// OpenAI 兼容模型多数不原生支持 input_examples；
+    /// 这里仅在上游支持时透传，默认使用 description 降级提示。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_examples: Option<Vec<serde_json::Value>>,
 }
 
 /// OpenAI 工具调用
@@ -57,6 +61,10 @@ pub struct AnthropicTool {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_examples: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_callers: Option<Vec<String>>,
 }
 
 /// Anthropic 工具使用
@@ -96,6 +104,34 @@ pub struct GeminiParameters {
 pub struct ToolConverter;
 
 impl ToolConverter {
+    fn build_openai_description(tool: &McpToolDefinition) -> String {
+        let mut description = tool.description.clone();
+        if let Some(examples) = tool.input_examples.as_ref() {
+            if !examples.is_empty() {
+                let rendered = examples
+                    .iter()
+                    .take(3)
+                    .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                description.push_str("\n\n[InputExamples] ");
+                description.push_str(&rendered);
+            }
+        }
+        if let Some(callers) = tool.allowed_callers.as_ref() {
+            let normalized = callers
+                .iter()
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+                .collect::<Vec<_>>();
+            if !normalized.is_empty() {
+                description.push_str("\n\n[AllowedCallers] ");
+                description.push_str(&normalized.join(", "));
+            }
+        }
+        description
+    }
+
     /// 转换为 OpenAI function calling 格式
     pub fn to_openai(tools: &[McpToolDefinition]) -> Vec<OpenAITool> {
         tools
@@ -104,8 +140,9 @@ impl ToolConverter {
                 tool_type: "function".to_string(),
                 function: OpenAIFunction {
                     name: tool.name.clone(),
-                    description: tool.description.clone(),
+                    description: Self::build_openai_description(tool),
                     parameters: tool.input_schema.clone(),
+                    input_examples: tool.input_examples.clone(),
                 },
             })
             .collect()
@@ -119,6 +156,8 @@ impl ToolConverter {
                 name: tool.name.clone(),
                 description: tool.description.clone(),
                 input_schema: tool.input_schema.clone(),
+                input_examples: tool.input_examples.clone(),
+                allowed_callers: tool.allowed_callers.clone(),
             })
             .collect()
     }
@@ -176,5 +215,59 @@ impl ToolConverter {
             name: use_.name.clone(),
             arguments: use_.input.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_tool() -> McpToolDefinition {
+        McpToolDefinition {
+            name: "search_docs".to_string(),
+            description: "Search project docs".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }),
+            server_name: "docs".to_string(),
+            deferred_loading: Some(true),
+            always_visible: Some(false),
+            allowed_callers: Some(vec!["code_execution".to_string()]),
+            input_examples: Some(vec![serde_json::json!({"query":"rust async"})]),
+            tags: Some(vec!["docs".to_string(), "search".to_string()]),
+        }
+    }
+
+    #[test]
+    fn test_to_openai_contains_fallback_description_and_examples() {
+        let openai_tools = ToolConverter::to_openai(&[sample_tool()]);
+        assert_eq!(openai_tools.len(), 1);
+        let function = &openai_tools[0].function;
+        assert!(function.description.contains("[InputExamples]"));
+        assert!(function.description.contains("[AllowedCallers]"));
+        assert_eq!(function.input_examples.as_ref().map(|v| v.len()), Some(1));
+    }
+
+    #[test]
+    fn test_to_anthropic_passes_input_examples_and_allowed_callers() {
+        let anthropic_tools = ToolConverter::to_anthropic(&[sample_tool()]);
+        assert_eq!(anthropic_tools.len(), 1);
+        assert_eq!(
+            anthropic_tools[0]
+                .input_examples
+                .as_ref()
+                .map(|v| v.len())
+                .unwrap_or(0),
+            1
+        );
+        assert_eq!(
+            anthropic_tools[0]
+                .allowed_callers
+                .as_ref()
+                .map(|v| v[0].as_str()),
+            Some("code_execution")
+        );
     }
 }
