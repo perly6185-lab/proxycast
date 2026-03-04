@@ -1,70 +1,44 @@
-# ProxyCast v0.78.0 Release Notes
+# ProxyCast v0.79.0 Release Notes
 
 ## 🎯 主要功能
 
-### Tool Calling 2.0
-- 新增 Tool Calling 2.0 配置系统，支持统一控制编程式工具调用
-- 支持动态过滤功能，优先过滤网页抓取噪音
-- 支持原生 input_examples 透传
-- 在实验性设置中新增 Tool Calling 配置面板
+### Agent 与工具调用增强
+- 新增 `request_tool_policy_prompt_service`，统一注入工具请求策略提示词
+- 增强 Aster Agent 聊天链路，补齐工具调用偏好与策略处理
+- 新增真实联网回归测试（Web Search policy / preflight）
 
-### 联网搜索增强
-- 新增多种联网搜索提供商支持：
-  - Tavily Search API
-  - Multi Search Engine v2.0.1（支持 12+ 搜索引擎）
-  - DuckDuckGo Instant Answer API（无需 API Key，默认启用）
-  - Bing Search API
-  - Google Custom Search API
-- Multi Search Engine 支持自定义引擎优先级和启用/禁用控制
-- 新增 Web Search Runtime Service 用于运行时搜索能力
+### 内容创作工作流升级
+- 新增活动日志能力（`ActivityLog` 组件、Hook、工具函数及测试）
+- 新增社媒模板体系（行业分析、产品发布、技术分享、热点话题、视觉内容）
+- 新增掘金与知乎平台适配
+- 改进海报工作流与文档画布类型系统
 
-### MCP 工具增强
-- 改进 MCP 工具管理器，支持更灵活的工具转换
-- 新增 MCP 工具类型定义和转换逻辑
-- 优化 MCP 命令接口
+### 聊天与工作台体验优化
+- 优化 Agent Chat 输入区、空状态、工具入口与状态流转
+- 改进 Unified Chat 与通用聊天面板交互
+- 调整 Workbench 主内容区/右侧栏结构和导航逻辑
 
-### Provider 增强
-- Claude Custom Provider 支持更丰富的工具调用配置
-- OpenAI Custom Provider 增强工具调用能力
-- 改进 Provider Calls 处理逻辑
-
-## 🔧 改进
-
-### Agent 系统
-- 改进 Aster Agent 状态管理
-- 优化事件转换器逻辑
-- 增强 Agent 命令接口（新增 643 行代码）
-- 改进 Unified Chat 命令处理
-
-### UI/UX
-- 优化 Agent Chat 界面
-  - 改进空状态显示
-  - 优化角色提及（Character Mention）组件
-  - 改进输入栏交互
-  - 优化流式渲染和工具调用显示
-- 改进实验性设置界面布局
-- 优化 Web Search 设置界面，支持多提供商配置
-
-### 配置系统
-- 新增 `tool_calling` 配置项到核心配置
-- 新增 `WebSearchProvider` 枚举类型
-- 新增 `MultiSearchEngineEntryConfig` 和 `MultiSearchConfig` 配置类型
-- 改进配置测试覆盖
+## 🔧 工程改进
+- 新增应用版本一致性脚本：
+  - `scripts/app-version.mjs`
+  - `scripts/check-app-version-consistency.mjs`
+- 版本统一升级到 `0.79.0`（`package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`）
+- 同步更新 Rust 锁文件与多模块实现
 
 ## 🐛 修复
-- 修复版本号测试用例（0.77.0 → 0.78.0）
-- 改进 Tauri Mock 核心逻辑
-- 优化 API Server 页面
+- 修复版本解析相关测试用例（`appVersion`）
+- 修复部分 Agent/Provider/MCP/Terminal 场景下的兼容与稳定性问题
+- 改进 Live Sync 与命令处理链路的健壮性
 
 ## 📊 统计
-- 46 个文件修改
-- +3622 行新增代码
-- -323 行删除代码
+- 89 个文件修改
+- +6642 行新增代码
+- -859 行删除代码
 
 ## 🔗 依赖更新
-- 更新 Aster 依赖到 v0.16.0（通过 git tag）
-- 更新 Cargo.lock 依赖
+- Aster 依赖保持 `v0.16.0`
+- 同步更新 `Cargo.lock`
 
 ---
 
-**完整变更**: v0.77.0...v0.78.0
+**完整变更**: v0.78.0...v0.79.0
