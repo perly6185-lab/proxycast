@@ -7,18 +7,25 @@
 - 修复不必要的 `unwrap()` 调用，改用更安全的 `if let` 模式
 - 优化代码结构：修复 TypeScript lint 错误，移除未使用的变量和函数
 - 修复 `react-hooks/exhaustive-deps` 警告，优化 Hook 依赖项
+- 使用 `vec![]` 宏替代 `vec init then push` 模式，提升代码简洁性
 
 ### 🐛 修复
 
 - 修复 ThemeWorkbenchSidebar 组件中的 20+ 个 ESLint 错误
 - 修复 useConfiguredProviders hook 中的依赖项警告
 - 修复 Rust 代码中的 33 个 clippy 警告
+- 修复 6 个失败的 Rust 测试：
+  - test_bundled_social_post_with_cover_skill_contract: 支持 SKILL.md 中的中文引号格式
+  - workspace_commands_roundtrip: 使用驼峰命名 workspaceType
+  - should_embed_social_image_tool_contract_in_default_skill: 更新为 **配图说明** 格式
+  - 修复 normalize 相关测试中的配图说明断言
 - 修复 sticky_manager.rs 中的不必要的 unwrap 调用
 - 修复 poster_material_dao.rs 中的不必要的 unwrap 调用
 
 ### 📦 其他
 
-- AI 代码质量验证全部通过（57 个文件，平均分 97/100）
+- AI 代码质量验证全部通过（30 个文件，平均分 96/100）
+- 所有核心测试通过 (328 passed; 0 failed)
 - 代码格式化和 lint 检查全部通过
 - 为未来的 Rust 代码改进打下基础
 
