@@ -309,16 +309,18 @@ export function WorkbenchCreateEntryHome({
                       </div>
                     ) : null}
 
-                    <A2UIRenderer
-                      response={createConfirmationResponse}
-                      className="space-y-4"
-                      onFormStateChange={setConfirmationFormData}
-                      submitDisabled={!canSubmitTask}
-                      submitButtonClassName="w-full"
-                      onSubmit={(formData) => {
-                        void onSubmitCreateConfirmation?.(formData);
-                      }}
-                    />
+                    {createConfirmationResponse && (
+                      <A2UIRenderer
+                        response={createConfirmationResponse}
+                        className="space-y-4"
+                        onFormStateChange={setConfirmationFormData}
+                        submitDisabled={!canSubmitTask}
+                        submitButtonClassName="w-full"
+                        onSubmit={(formData) => {
+                          void onSubmitCreateConfirmation?.(formData);
+                        }}
+                      />
+                    )}
                   </A2UITaskCardBody>
 
                   <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
