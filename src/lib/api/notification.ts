@@ -9,5 +9,5 @@ export interface ShowNotificationRequest {
 export async function showSystemNotification(
   request: ShowNotificationRequest,
 ): Promise<void> {
-  await safeInvoke("show_notification", request);
+  await safeInvoke("show_notification", request as unknown as Record<string, unknown>);
 }

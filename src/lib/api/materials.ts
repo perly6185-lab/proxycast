@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import type {
   Material,
   MaterialFilter,
@@ -88,7 +88,7 @@ export async function listMaterials(
   projectId: string,
   filter?: MaterialFilter | null,
 ): Promise<Material[]> {
-  const materials = await invoke<RawMaterial[]>("list_materials", {
+  const materials = await safeInvoke<RawMaterial[]>("list_materials", {
     projectId,
     project_id: projectId,
     filter: filter ?? null,
@@ -103,7 +103,7 @@ export async function listMaterials(
 }
 
 export async function getMaterialCount(projectId: string): Promise<number> {
-  return invoke<number>("get_material_count", {
+  return safeInvoke<number>("get_material_count", {
     projectId,
     project_id: projectId,
   });
@@ -112,7 +112,7 @@ export async function getMaterialCount(projectId: string): Promise<number> {
 export async function uploadMaterial(
   request: UploadMaterialRequest,
 ): Promise<Material> {
-  const material = await invoke<RawMaterial>("upload_material", {
+  const material = await safeInvoke<RawMaterial>("upload_material", {
     req: buildUploadRequestPayload(request),
   });
   return normalizeMaterial(material, request.projectId);
@@ -121,7 +121,7 @@ export async function uploadMaterial(
 export async function importMaterialFromUrl(
   request: ImportMaterialFromUrlRequest,
 ): Promise<ImportedMaterialRef> {
-  return invoke<ImportedMaterialRef>("import_material_from_url", {
+  return safeInvoke<ImportedMaterialRef>("import_material_from_url", {
     req: buildImportRequestPayload(request),
   });
 }
@@ -130,7 +130,7 @@ export async function updateMaterial(
   id: string,
   update: MaterialUpdate,
 ): Promise<Material> {
-  const material = await invoke<RawMaterial>("update_material", {
+  const material = await safeInvoke<RawMaterial>("update_material", {
     id,
     update,
   });
@@ -138,9 +138,9 @@ export async function updateMaterial(
 }
 
 export async function deleteMaterial(id: string): Promise<void> {
-  await invoke("delete_material", { id });
+  await safeInvoke<void>("delete_material", { id });
 }
 
 export async function getMaterialContent(id: string): Promise<string> {
-  return invoke<string>("get_material_content", { id });
+  return safeInvoke<string>("get_material_content", { id });
 }

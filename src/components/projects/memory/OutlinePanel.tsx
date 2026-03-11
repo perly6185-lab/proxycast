@@ -38,22 +38,21 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import {
-  OutlineNode,
   CreateOutlineNodeRequest,
+  OutlineNode,
+  OutlineTreeNode,
   UpdateOutlineNodeRequest,
-  listOutlineNodes,
-  createOutlineNode,
-  updateOutlineNode,
-  deleteOutlineNode,
   buildOutlineTree,
+  createOutlineNode,
+  deleteOutlineNode,
+  listOutlineNodes,
+  updateOutlineNode,
 } from "@/lib/api/memory";
 import { toast } from "sonner";
 
 interface OutlinePanelProps {
   projectId: string;
 }
-
-type OutlineTreeNode = OutlineNode & { children: OutlineTreeNode[] };
 
 interface NodeFormData {
   title: string;
@@ -82,8 +81,7 @@ export function OutlinePanel({ projectId }: OutlinePanelProps) {
     try {
       const list = await listOutlineNodes(projectId);
       setNodes(list);
-      const treeData = buildOutlineTree(list) as OutlineTreeNode[];
-      setTree(treeData);
+      setTree(buildOutlineTree(list));
       // 默认展开所有节点
       const allIds = new Set(list.map((n) => n.id));
       setExpandedNodes(allIds);

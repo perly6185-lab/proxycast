@@ -41,6 +41,7 @@ function renderPanel(
         description: "社媒文案与封面生成",
         directory: "social_post_with_cover",
         installed: true,
+        sourceKind: "builtin",
       },
       {
         key: "research",
@@ -48,6 +49,7 @@ function renderPanel(
         description: "信息检索与趋势分析",
         directory: "research",
         installed: true,
+        sourceKind: "builtin",
       },
       {
         key: "typesetting",
@@ -55,6 +57,7 @@ function renderPanel(
         description: "主稿排版与润色",
         directory: "typesetting",
         installed: true,
+        sourceKind: "builtin",
       },
     ],
     currentGate: {

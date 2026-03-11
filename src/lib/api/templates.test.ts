@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import {
   createTemplate,
   deleteTemplate,
@@ -9,8 +9,8 @@ import {
   updateTemplate,
 } from "./templates";
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+vi.mock("@/lib/dev-bridge", () => ({
+  safeInvoke: vi.fn(),
 }));
 
 describe("templates API", () => {
@@ -19,7 +19,7 @@ describe("templates API", () => {
   });
 
   it("应获取模板列表和默认模板", async () => {
-    vi.mocked(invoke)
+    vi.mocked(safeInvoke)
       .mockResolvedValueOnce([{ id: "t1", name: "模板 1" }])
       .mockResolvedValueOnce({ id: "t1", name: "模板 1" });
 
@@ -30,16 +30,16 @@ describe("templates API", () => {
       expect.objectContaining({ id: "t1" }),
     );
 
-    expect(invoke).toHaveBeenNthCalledWith(1, "list_templates", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(1, "list_templates", {
       projectId: "project-1",
     });
-    expect(invoke).toHaveBeenNthCalledWith(2, "get_default_template", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(2, "get_default_template", {
       projectId: "project-1",
     });
   });
 
   it("应代理模板写操作", async () => {
-    vi.mocked(invoke)
+    vi.mocked(safeInvoke)
       .mockResolvedValueOnce({ id: "t2", name: "模板 2" })
       .mockResolvedValueOnce({ id: "t2", name: "模板 2-更新" })
       .mockResolvedValueOnce(undefined)
@@ -60,15 +60,17 @@ describe("templates API", () => {
       setDefaultTemplate("project-2", "t2"),
     ).resolves.toBeUndefined();
 
-    expect(invoke).toHaveBeenNthCalledWith(1, "create_template", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(1, "create_template", {
       req: expect.objectContaining({ projectId: "project-2" }),
     });
-    expect(invoke).toHaveBeenNthCalledWith(2, "update_template", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(2, "update_template", {
       id: "t2",
       update: { name: "模板 2-更新" },
     });
-    expect(invoke).toHaveBeenNthCalledWith(3, "delete_template", { id: "t2" });
-    expect(invoke).toHaveBeenNthCalledWith(4, "set_default_template", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(3, "delete_template", {
+      id: "t2",
+    });
+    expect(safeInvoke).toHaveBeenNthCalledWith(4, "set_default_template", {
       projectId: "project-2",
       templateId: "t2",
     });

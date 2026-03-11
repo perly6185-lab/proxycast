@@ -5,17 +5,31 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import {
+  createContent,
+  createProject,
+  deleteContent,
+  deleteProject,
   ensureWorkspaceReady,
   ensureDefaultWorkspaceReady,
+  getContent,
+  getContentStats,
   getWorkspaceProjectsRoot,
+  getOrCreateDefaultProject,
   resolveProjectRootPath,
   getProjectByRootPath,
   getDefaultProject,
+  getProject,
+  getThemeWorkbenchDocumentState,
+  listContents,
+  listProjects,
   requireDefaultProject,
   requireDefaultProjectId,
+  reorderContents,
   setDefaultProject,
+  updateContent,
+  updateProject,
   isUserProjectType,
   getProjectTypeLabel,
   getProjectTypeIcon,
@@ -35,8 +49,8 @@ import {
   type ContentStatus,
 } from "./project";
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+vi.mock("@/lib/dev-bridge", () => ({
+  safeInvoke: vi.fn(),
 }));
 
 // ============================================================================
@@ -50,44 +64,50 @@ describe("项目管理 API", () => {
     });
 
     it("应该调用命令获取 workspace 根目录", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(
+      vi.mocked(safeInvoke).mockResolvedValueOnce(
         "/Users/test/.proxycast/projects",
       );
 
       const root = await getWorkspaceProjectsRoot();
 
       expect(root).toBe("/Users/test/.proxycast/projects");
-      expect(invoke).toHaveBeenCalledWith("workspace_get_projects_root");
+      expect(safeInvoke).toHaveBeenCalledWith("workspace_get_projects_root");
     });
 
     it("应该调用命令解析项目目录", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(
+      vi.mocked(safeInvoke).mockResolvedValueOnce(
         "/Users/test/.proxycast/projects/MyProject",
       );
 
       const path = await resolveProjectRootPath("MyProject");
 
       expect(path).toBe("/Users/test/.proxycast/projects/MyProject");
-      expect(invoke).toHaveBeenCalledWith("workspace_resolve_project_path", {
-        name: "MyProject",
-      });
+      expect(safeInvoke).toHaveBeenCalledWith(
+        "workspace_resolve_project_path",
+        {
+          name: "MyProject",
+        },
+      );
     });
 
     it("应该将空名称传给后端统一处理", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(
+      vi.mocked(safeInvoke).mockResolvedValueOnce(
         "/Users/test/.proxycast/projects/未命名项目",
       );
 
       const path = await resolveProjectRootPath("   ");
 
       expect(path).toBe("/Users/test/.proxycast/projects/未命名项目");
-      expect(invoke).toHaveBeenCalledWith("workspace_resolve_project_path", {
-        name: "   ",
-      });
+      expect(safeInvoke).toHaveBeenCalledWith(
+        "workspace_resolve_project_path",
+        {
+          name: "   ",
+        },
+      );
     });
 
     it("应该调用命令按路径获取项目", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce({
+      vi.mocked(safeInvoke).mockResolvedValueOnce({
         id: "p1",
         name: "测试项目",
         workspace_type: "general",
@@ -100,13 +120,13 @@ describe("项目管理 API", () => {
 
       expect(project?.id).toBe("p1");
       expect(project?.rootPath).toBe("/Users/test/.proxycast/projects/demo");
-      expect(invoke).toHaveBeenCalledWith("workspace_get_by_path", {
+      expect(safeInvoke).toHaveBeenCalledWith("workspace_get_by_path", {
         rootPath: "/Users/test/.proxycast/projects/demo",
       });
     });
 
     it("按路径查询不存在项目时应该返回 null", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(null);
+      vi.mocked(safeInvoke).mockResolvedValueOnce(null);
 
       const project = await getProjectByRootPath(
         "/Users/test/.proxycast/projects/missing",
@@ -116,7 +136,7 @@ describe("项目管理 API", () => {
     });
 
     it("应该获取并标准化默认项目", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce({
+      vi.mocked(safeInvoke).mockResolvedValueOnce({
         id: "default-1",
         name: "默认项目",
         workspace_type: "general",
@@ -135,11 +155,11 @@ describe("项目管理 API", () => {
           isDefault: true,
         }),
       );
-      expect(invoke).toHaveBeenCalledWith("workspace_get_default");
+      expect(safeInvoke).toHaveBeenCalledWith("workspace_get_default");
     });
 
     it("requireDefaultProject 缺失默认项目时应抛指定错误", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(null);
+      vi.mocked(safeInvoke).mockResolvedValueOnce(null);
 
       await expect(requireDefaultProject("请先创建默认项目")).rejects.toThrow(
         "请先创建默认项目",
@@ -147,7 +167,7 @@ describe("项目管理 API", () => {
     });
 
     it("requireDefaultProjectId 应返回默认项目 ID", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce({
+      vi.mocked(safeInvoke).mockResolvedValueOnce({
         id: "default-2",
         name: "默认项目 2",
       });
@@ -156,7 +176,7 @@ describe("项目管理 API", () => {
     });
 
     it("应该调用命令确保默认项目目录就绪", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce({
+      vi.mocked(safeInvoke).mockResolvedValueOnce({
         workspaceId: "default-3",
         rootPath: "/tmp/default-3",
         existed: true,
@@ -171,24 +191,230 @@ describe("项目管理 API", () => {
         created: false,
         repaired: true,
       });
-      expect(invoke).toHaveBeenCalledWith("workspace_ensure_ready", {
+      expect(safeInvoke).toHaveBeenCalledWith("workspace_ensure_ready", {
         id: "default-3",
       });
     });
 
     it("应该调用命令确保默认项目目录就绪并支持空返回", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(null);
+      vi.mocked(safeInvoke).mockResolvedValueOnce(null);
 
       await expect(ensureDefaultWorkspaceReady()).resolves.toBeNull();
-      expect(invoke).toHaveBeenCalledWith("workspace_ensure_default_ready");
+      expect(safeInvoke).toHaveBeenCalledWith("workspace_ensure_default_ready");
     });
 
     it("应该调用命令设置默认项目", async () => {
-      vi.mocked(invoke).mockResolvedValueOnce(undefined);
+      vi.mocked(safeInvoke).mockResolvedValueOnce(undefined);
 
       await expect(setDefaultProject("default-4")).resolves.toBeUndefined();
-      expect(invoke).toHaveBeenCalledWith("workspace_set_default", {
+      expect(safeInvoke).toHaveBeenCalledWith("workspace_set_default", {
         id: "default-4",
+      });
+    });
+
+    it("应该代理项目 CRUD 相关命令", async () => {
+      vi.mocked(safeInvoke)
+        .mockResolvedValueOnce({
+          id: "project-1",
+          name: "项目 1",
+          workspace_type: "general",
+          root_path: "/tmp/project-1",
+        })
+        .mockResolvedValueOnce([
+          {
+            id: "project-1",
+            name: "项目 1",
+            workspace_type: "general",
+            root_path: "/tmp/project-1",
+          },
+        ])
+        .mockResolvedValueOnce({
+          id: "default-5",
+          name: "默认项目 5",
+          workspace_type: "general",
+          root_path: "/tmp/default-5",
+        })
+        .mockResolvedValueOnce({
+          id: "project-1",
+          name: "项目 1",
+          workspace_type: "general",
+          root_path: "/tmp/project-1",
+        })
+        .mockResolvedValueOnce({
+          id: "project-1",
+          name: "项目 1-更新",
+          workspace_type: "general",
+          root_path: "/tmp/project-1",
+        })
+        .mockResolvedValueOnce(true);
+
+      await expect(
+        createProject({
+          name: "项目 1",
+          rootPath: "/tmp/project-1",
+          workspaceType: "general",
+        }),
+      ).resolves.toEqual(expect.objectContaining({ id: "project-1" }));
+      await expect(listProjects()).resolves.toEqual([
+        expect.objectContaining({ id: "project-1" }),
+      ]);
+      await expect(getOrCreateDefaultProject()).resolves.toEqual(
+        expect.objectContaining({ id: "default-5" }),
+      );
+      await expect(getProject("project-1")).resolves.toEqual(
+        expect.objectContaining({ id: "project-1" }),
+      );
+      await expect(
+        updateProject("project-1", { name: "项目 1-更新" }),
+      ).resolves.toEqual(expect.objectContaining({ name: "项目 1-更新" }));
+      await expect(deleteProject("project-1", true)).resolves.toBe(true);
+
+      expect(safeInvoke).toHaveBeenNthCalledWith(1, "workspace_create", {
+        request: {
+          name: "项目 1",
+          rootPath: "/tmp/project-1",
+          workspaceType: "general",
+        },
+      });
+      expect(safeInvoke).toHaveBeenNthCalledWith(2, "workspace_list");
+      expect(safeInvoke).toHaveBeenNthCalledWith(
+        3,
+        "get_or_create_default_project",
+      );
+      expect(safeInvoke).toHaveBeenNthCalledWith(4, "workspace_get", {
+        id: "project-1",
+      });
+      expect(safeInvoke).toHaveBeenNthCalledWith(5, "workspace_update", {
+        id: "project-1",
+        request: { name: "项目 1-更新" },
+      });
+      expect(safeInvoke).toHaveBeenNthCalledWith(6, "workspace_delete", {
+        id: "project-1",
+        deleteDirectory: true,
+      });
+    });
+
+    it("应该代理内容相关命令", async () => {
+      vi.mocked(safeInvoke)
+        .mockResolvedValueOnce({
+          id: "content-1",
+          project_id: "project-1",
+          title: "第一章",
+          content_type: "chapter",
+          status: "draft",
+          order: 1,
+          word_count: 10,
+          created_at: 1,
+          updated_at: 2,
+          body: "内容",
+        })
+        .mockResolvedValueOnce({
+          id: "content-1",
+          project_id: "project-1",
+          title: "第一章",
+          content_type: "chapter",
+          status: "draft",
+          order: 1,
+          word_count: 10,
+          created_at: 1,
+          updated_at: 2,
+          body: "内容",
+        })
+        .mockResolvedValueOnce({
+          content_id: "content-1",
+          current_version_id: "v1",
+          version_count: 1,
+          versions: [],
+        })
+        .mockResolvedValueOnce([
+          {
+            id: "content-1",
+            project_id: "project-1",
+            title: "第一章",
+            content_type: "chapter",
+            status: "draft",
+            order: 1,
+            word_count: 10,
+            created_at: 1,
+            updated_at: 2,
+          },
+        ])
+        .mockResolvedValueOnce({
+          id: "content-1",
+          project_id: "project-1",
+          title: "第一章-修订",
+          content_type: "chapter",
+          status: "completed",
+          order: 1,
+          word_count: 20,
+          created_at: 1,
+          updated_at: 3,
+          body: "内容",
+        })
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce([1, 2, 3]);
+
+      await expect(
+        createContent({
+          project_id: "project-1",
+          title: "第一章",
+          content_type: "chapter",
+        }),
+      ).resolves.toEqual(expect.objectContaining({ id: "content-1" }));
+      await expect(getContent("content-1")).resolves.toEqual(
+        expect.objectContaining({ id: "content-1" }),
+      );
+      await expect(
+        getThemeWorkbenchDocumentState("content-1"),
+      ).resolves.toEqual(expect.objectContaining({ current_version_id: "v1" }));
+      await expect(
+        listContents("project-1", { content_type: "chapter" }),
+      ).resolves.toEqual([expect.objectContaining({ id: "content-1" })]);
+      await expect(
+        updateContent("content-1", {
+          title: "第一章-修订",
+          status: "completed",
+        }),
+      ).resolves.toEqual(expect.objectContaining({ title: "第一章-修订" }));
+      await expect(deleteContent("content-1")).resolves.toBe(true);
+      await expect(
+        reorderContents("project-1", ["content-1"]),
+      ).resolves.toBeUndefined();
+      await expect(getContentStats("project-1")).resolves.toEqual([1, 2, 3]);
+
+      expect(safeInvoke).toHaveBeenNthCalledWith(1, "content_create", {
+        request: {
+          project_id: "project-1",
+          title: "第一章",
+          content_type: "chapter",
+        },
+      });
+      expect(safeInvoke).toHaveBeenNthCalledWith(2, "content_get", {
+        id: "content-1",
+      });
+      expect(safeInvoke).toHaveBeenNthCalledWith(
+        3,
+        "content_get_theme_workbench_document_state",
+        { id: "content-1" },
+      );
+      expect(safeInvoke).toHaveBeenNthCalledWith(4, "content_list", {
+        projectId: "project-1",
+        query: { content_type: "chapter" },
+      });
+      expect(safeInvoke).toHaveBeenNthCalledWith(5, "content_update", {
+        id: "content-1",
+        request: { title: "第一章-修订", status: "completed" },
+      });
+      expect(safeInvoke).toHaveBeenNthCalledWith(6, "content_delete", {
+        id: "content-1",
+      });
+      expect(safeInvoke).toHaveBeenNthCalledWith(7, "content_reorder", {
+        projectId: "project-1",
+        contentIds: ["content-1"],
+      });
+      expect(safeInvoke).toHaveBeenNthCalledWith(8, "content_stats", {
+        projectId: "project-1",
       });
     });
   });

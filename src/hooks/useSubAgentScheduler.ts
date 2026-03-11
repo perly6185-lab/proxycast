@@ -26,10 +26,10 @@ export type {
   SubAgentTask,
 } from "@/lib/api/subAgentScheduler";
 
-interface SchedulerEventEnvelope extends SchedulerEvent {
+type SchedulerEventEnvelope = SchedulerEvent & {
   sessionId?: string;
   session_id?: string;
-}
+};
 
 /**
  * Hook 状态

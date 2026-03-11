@@ -204,6 +204,7 @@ describe("EmptyState", () => {
         description: "desc",
         directory: "skill-a",
         installed: true,
+        sourceKind: "builtin",
       },
     ];
     const setInput = vi.fn<(value: string) => void>();
@@ -246,6 +247,7 @@ describe("EmptyState", () => {
       description: "desc",
       directory: "canvas-design",
       installed: true,
+      sourceKind: "builtin",
     };
 
     const container = renderEmptyState({
@@ -393,6 +395,7 @@ describe("EmptyState", () => {
       description: "desc",
       directory: "custom-social-skill",
       installed: true,
+      sourceKind: "builtin",
     };
 
     const container = renderEmptyState({

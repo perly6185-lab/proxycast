@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import {
   createPersona,
   deletePersona,
@@ -10,8 +10,8 @@ import {
   updatePersona,
 } from "./personas";
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+vi.mock("@/lib/dev-bridge", () => ({
+  safeInvoke: vi.fn(),
 }));
 
 describe("personas API", () => {
@@ -20,7 +20,7 @@ describe("personas API", () => {
   });
 
   it("应获取人设列表、默认人设和模板列表", async () => {
-    vi.mocked(invoke)
+    vi.mocked(safeInvoke)
       .mockResolvedValueOnce([{ id: "p1", name: "人设 1" }])
       .mockResolvedValueOnce({ id: "p1", name: "人设 1" })
       .mockResolvedValueOnce([{ id: "pt1", name: "模板人设" }]);
@@ -37,7 +37,7 @@ describe("personas API", () => {
   });
 
   it("应代理人设写操作", async () => {
-    vi.mocked(invoke)
+    vi.mocked(safeInvoke)
       .mockResolvedValueOnce({ id: "p2", name: "人设 2" })
       .mockResolvedValueOnce({ id: "p2", name: "人设 2-更新" })
       .mockResolvedValueOnce(undefined)
@@ -56,15 +56,17 @@ describe("personas API", () => {
     await expect(deletePersona("p2")).resolves.toBeUndefined();
     await expect(setDefaultPersona("project-2", "p2")).resolves.toBeUndefined();
 
-    expect(invoke).toHaveBeenNthCalledWith(1, "create_persona", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(1, "create_persona", {
       req: expect.objectContaining({ projectId: "project-2" }),
     });
-    expect(invoke).toHaveBeenNthCalledWith(2, "update_persona", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(2, "update_persona", {
       id: "p2",
       update: { tone: "克制" },
     });
-    expect(invoke).toHaveBeenNthCalledWith(3, "delete_persona", { id: "p2" });
-    expect(invoke).toHaveBeenNthCalledWith(4, "set_default_persona", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(3, "delete_persona", {
+      id: "p2",
+    });
+    expect(safeInvoke).toHaveBeenNthCalledWith(4, "set_default_persona", {
       projectId: "project-2",
       personaId: "p2",
     });

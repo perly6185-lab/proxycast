@@ -453,6 +453,7 @@ export function ThemeWorkbenchSkillsPanel({
         description: "社媒主稿与封面图生成",
         directory: "social_post_with_cover",
         installed: true,
+        sourceKind: "builtin",
       },
       {
         key: "cover_generate",
@@ -460,6 +461,7 @@ export function ThemeWorkbenchSkillsPanel({
         description: "封面图生成",
         directory: "cover_generate",
         installed: true,
+        sourceKind: "builtin",
       },
       {
         key: "research",
@@ -467,6 +469,7 @@ export function ThemeWorkbenchSkillsPanel({
         description: "信息检索与趋势分析",
         directory: "research",
         installed: true,
+        sourceKind: "builtin",
       },
       {
         key: "typesetting",
@@ -474,6 +477,7 @@ export function ThemeWorkbenchSkillsPanel({
         description: "主稿排版与润色",
         directory: "typesetting",
         installed: true,
+        sourceKind: "builtin",
       },
     ],
     [],

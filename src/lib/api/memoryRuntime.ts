@@ -1,8 +1,11 @@
 import { safeInvoke } from "@/lib/dev-bridge";
 import type {
   AutoMemoryIndexResponse,
+  CleanupMemoryResult,
   EffectiveMemorySourcesResponse,
+  MemoryAnalysisResult,
   MemoryAutoToggleResponse,
+  MemoryStatsResponse,
   MemoryOverviewResponse,
 } from "./memoryRuntimeTypes";
 
@@ -29,6 +32,24 @@ export async function getMemoryOverview(
   limit?: number,
 ): Promise<MemoryOverviewResponse> {
   return safeInvoke("get_conversation_memory_overview", { limit });
+}
+
+export async function getMemoryStats(): Promise<MemoryStatsResponse> {
+  return safeInvoke("get_conversation_memory_stats");
+}
+
+export async function requestMemoryAnalysis(
+  fromTimestamp?: number,
+  toTimestamp?: number,
+): Promise<MemoryAnalysisResult> {
+  return safeInvoke("request_conversation_memory_analysis", {
+    fromTimestamp,
+    toTimestamp,
+  });
+}
+
+export async function cleanupMemory(): Promise<CleanupMemoryResult> {
+  return safeInvoke("cleanup_conversation_memory");
 }
 
 export async function getMemoryEffectiveSources(

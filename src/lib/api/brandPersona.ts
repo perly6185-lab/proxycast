@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import type {
   BrandPersona,
   BrandPersonaExtension,
@@ -10,13 +10,13 @@ import type {
 export async function getBrandPersona(
   personaId: string,
 ): Promise<BrandPersona | null> {
-  return invoke<BrandPersona | null>("get_brand_persona", { personaId });
+  return safeInvoke<BrandPersona | null>("get_brand_persona", { personaId });
 }
 
 export async function getBrandExtension(
   personaId: string,
 ): Promise<BrandPersonaExtension | null> {
-  return invoke<BrandPersonaExtension | null>("get_brand_extension", {
+  return safeInvoke<BrandPersonaExtension | null>("get_brand_extension", {
     personaId,
   });
 }
@@ -24,7 +24,7 @@ export async function getBrandExtension(
 export async function saveBrandExtension(
   request: CreateBrandExtensionRequest,
 ): Promise<BrandPersonaExtension> {
-  return invoke<BrandPersonaExtension>("save_brand_extension", {
+  return safeInvoke<BrandPersonaExtension>("save_brand_extension", {
     req: request,
   });
 }
@@ -33,18 +33,18 @@ export async function updateBrandExtension(
   personaId: string,
   update: UpdateBrandExtensionRequest,
 ): Promise<BrandPersonaExtension> {
-  return invoke<BrandPersonaExtension>("update_brand_extension", {
+  return safeInvoke<BrandPersonaExtension>("update_brand_extension", {
     personaId,
     update,
   });
 }
 
 export async function deleteBrandExtension(personaId: string): Promise<void> {
-  await invoke("delete_brand_extension", { personaId });
+  await safeInvoke<void>("delete_brand_extension", { personaId });
 }
 
 export async function listBrandPersonaTemplates(): Promise<
   BrandPersonaTemplate[]
 > {
-  return invoke<BrandPersonaTemplate[]>("list_brand_persona_templates");
+  return safeInvoke<BrandPersonaTemplate[]>("list_brand_persona_templates");
 }

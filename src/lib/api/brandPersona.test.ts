@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import {
   deleteBrandExtension,
   getBrandExtension,
@@ -9,8 +9,8 @@ import {
   updateBrandExtension,
 } from "./brandPersona";
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+vi.mock("@/lib/dev-bridge", () => ({
+  safeInvoke: vi.fn(),
 }));
 
 describe("brandPersona API", () => {
@@ -19,7 +19,7 @@ describe("brandPersona API", () => {
   });
 
   it("应获取品牌人设与扩展", async () => {
-    vi.mocked(invoke)
+    vi.mocked(safeInvoke)
       .mockResolvedValueOnce({ id: "persona-1", name: "品牌人设" })
       .mockResolvedValueOnce({ personaId: "persona-1", brandTone: "专业" });
 
@@ -32,7 +32,7 @@ describe("brandPersona API", () => {
   });
 
   it("应代理品牌扩展写操作与模板列表", async () => {
-    vi.mocked(invoke)
+    vi.mocked(safeInvoke)
       .mockResolvedValueOnce({ personaId: "persona-2" })
       .mockResolvedValueOnce({ personaId: "persona-2" })
       .mockResolvedValueOnce(undefined)

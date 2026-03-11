@@ -4,7 +4,7 @@
  * 提供角色、世界观、风格指南、大纲的 CRUD 操作
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 
 // ==================== 类型定义 ====================
 
@@ -118,6 +118,11 @@ export interface OutlineNode {
   updated_at: string;
 }
 
+/** 大纲树节点 */
+export interface OutlineTreeNode extends OutlineNode {
+  children: OutlineTreeNode[];
+}
+
 /** 创建大纲节点请求 */
 export interface CreateOutlineNodeRequest {
   project_id: string;
@@ -151,19 +156,19 @@ export interface ProjectMemory {
 
 /** 获取角色列表 */
 export async function listCharacters(projectId: string): Promise<Character[]> {
-  return invoke("character_list", { projectId });
+  return safeInvoke<Character[]>("character_list", { projectId });
 }
 
 /** 获取角色详情 */
 export async function getCharacter(id: string): Promise<Character | null> {
-  return invoke("character_get", { id });
+  return safeInvoke<Character | null>("character_get", { id });
 }
 
 /** 创建角色 */
 export async function createCharacter(
   request: CreateCharacterRequest,
 ): Promise<Character> {
-  return invoke("character_create", { request });
+  return safeInvoke<Character>("character_create", { request });
 }
 
 /** 更新角色 */
@@ -171,12 +176,12 @@ export async function updateCharacter(
   id: string,
   request: UpdateCharacterRequest,
 ): Promise<Character> {
-  return invoke("character_update", { id, request });
+  return safeInvoke<Character>("character_update", { id, request });
 }
 
 /** 删除角色 */
 export async function deleteCharacter(id: string): Promise<boolean> {
-  return invoke("character_delete", { id });
+  return safeInvoke<boolean>("character_delete", { id });
 }
 
 // ==================== 世界观 API ====================
@@ -185,7 +190,7 @@ export async function deleteCharacter(id: string): Promise<boolean> {
 export async function getWorldBuilding(
   projectId: string,
 ): Promise<WorldBuilding | null> {
-  return invoke("world_building_get", { projectId });
+  return safeInvoke<WorldBuilding | null>("world_building_get", { projectId });
 }
 
 /** 更新世界观 */
@@ -193,7 +198,10 @@ export async function updateWorldBuilding(
   projectId: string,
   request: UpdateWorldBuildingRequest,
 ): Promise<WorldBuilding> {
-  return invoke("world_building_update", { projectId, request });
+  return safeInvoke<WorldBuilding>("world_building_update", {
+    projectId,
+    request,
+  });
 }
 
 // ==================== 风格指南 API ====================
@@ -202,7 +210,7 @@ export async function updateWorldBuilding(
 export async function getStyleGuide(
   projectId: string,
 ): Promise<StyleGuide | null> {
-  return invoke("style_guide_get", { projectId });
+  return safeInvoke<StyleGuide | null>("style_guide_get", { projectId });
 }
 
 /** 更新风格指南 */
@@ -210,7 +218,7 @@ export async function updateStyleGuide(
   projectId: string,
   request: UpdateStyleGuideRequest,
 ): Promise<StyleGuide> {
-  return invoke("style_guide_update", { projectId, request });
+  return safeInvoke<StyleGuide>("style_guide_update", { projectId, request });
 }
 
 // ==================== 大纲 API ====================
@@ -219,19 +227,19 @@ export async function updateStyleGuide(
 export async function listOutlineNodes(
   projectId: string,
 ): Promise<OutlineNode[]> {
-  return invoke("outline_node_list", { projectId });
+  return safeInvoke<OutlineNode[]>("outline_node_list", { projectId });
 }
 
 /** 获取大纲节点详情 */
 export async function getOutlineNode(id: string): Promise<OutlineNode | null> {
-  return invoke("outline_node_get", { id });
+  return safeInvoke<OutlineNode | null>("outline_node_get", { id });
 }
 
 /** 创建大纲节点 */
 export async function createOutlineNode(
   request: CreateOutlineNodeRequest,
 ): Promise<OutlineNode> {
-  return invoke("outline_node_create", { request });
+  return safeInvoke<OutlineNode>("outline_node_create", { request });
 }
 
 /** 更新大纲节点 */
@@ -239,12 +247,12 @@ export async function updateOutlineNode(
   id: string,
   request: UpdateOutlineNodeRequest,
 ): Promise<OutlineNode> {
-  return invoke("outline_node_update", { id, request });
+  return safeInvoke<OutlineNode>("outline_node_update", { id, request });
 }
 
 /** 删除大纲节点 */
 export async function deleteOutlineNode(id: string): Promise<boolean> {
-  return invoke("outline_node_delete", { id });
+  return safeInvoke<boolean>("outline_node_delete", { id });
 }
 
 // ==================== 聚合 API ====================
@@ -253,17 +261,15 @@ export async function deleteOutlineNode(id: string): Promise<boolean> {
 export async function getProjectMemory(
   projectId: string,
 ): Promise<ProjectMemory> {
-  return invoke("project_memory_get", { projectId });
+  return safeInvoke<ProjectMemory>("project_memory_get", { projectId });
 }
 
 // ==================== 辅助函数 ====================
 
 /** 构建大纲树结构 */
-export function buildOutlineTree(
-  nodes: OutlineNode[],
-): (OutlineNode & { children: OutlineNode[] })[] {
-  const nodeMap = new Map<string, OutlineNode & { children: OutlineNode[] }>();
-  const roots: (OutlineNode & { children: OutlineNode[] })[] = [];
+export function buildOutlineTree(nodes: OutlineNode[]): OutlineTreeNode[] {
+  const nodeMap = new Map<string, OutlineTreeNode>();
+  const roots: OutlineTreeNode[] = [];
 
   // 初始化所有节点
   nodes.forEach((node) => {
@@ -286,11 +292,9 @@ export function buildOutlineTree(
   });
 
   // 按 order 排序
-  const sortByOrder = (
-    items: (OutlineNode & { children: OutlineNode[] })[],
-  ) => {
+  const sortByOrder = (items: OutlineTreeNode[]) => {
     items.sort((a, b) => a.order - b.order);
-    items.forEach((item) => sortByOrder(item.children as any));
+    items.forEach((item) => sortByOrder(item.children));
   };
   sortByOrder(roots);
 

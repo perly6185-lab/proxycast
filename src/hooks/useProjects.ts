@@ -21,6 +21,7 @@ import {
   listProjects,
   resolveProjectRootPath,
   updateProject,
+  type ProjectType,
 } from "@/lib/api/project";
 import { toProjectView } from "@/lib/projectView";
 import { recordWorkspaceRepair } from "@/lib/workspaceHealthTelemetry";
@@ -140,7 +141,7 @@ export function useProjects(): UseProjectsReturn {
       const project = await createProject({
         name: request.name,
         rootPath,
-        workspaceType: request.workspaceType,
+        workspaceType: request.workspaceType as ProjectType,
       });
       await refresh();
       return toProjectView(project);

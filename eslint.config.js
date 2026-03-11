@@ -128,6 +128,56 @@ const generalChatRestrictedPaths = [
   {
     name: "@/hooks/useTauri",
     importNames: [
+      "checkApiCompatibility",
+      "ApiCheckResult",
+      "ApiCompatibilityResult",
+    ],
+    message:
+      "API 兼容性检查能力已迁移到 @/lib/api/apiCompatibility，请不要继续从 useTauri 聚合层引入。",
+  },
+  {
+    name: "@/hooks/useTauri",
+    importNames: [
+      "getEndpointProviders",
+      "setEndpointProvider",
+      "EndpointProvidersConfig",
+    ],
+    message:
+      "端点 Provider 配置能力已迁移到 @/lib/api/endpointProviders，请不要继续从 useTauri 聚合层引入。",
+  },
+  {
+    name: "@/hooks/useTauri",
+    importNames: [
+      "getMemoryStats",
+      "requestMemoryAnalysis",
+      "cleanupMemory",
+      "CleanupMemoryResult",
+      "MemoryAnalysisResult",
+      "MemoryStatsResponse",
+    ],
+    message:
+      "记忆分析/清理能力已迁移到 @/lib/api/memoryRuntime，请不要继续从 useTauri 聚合层引入。",
+  },
+  {
+    name: "@/hooks/useTauri",
+    importNames: [
+      "testTts",
+      "getAvailableVoices",
+      "TtsTestResult",
+      "VoiceOption",
+    ],
+    message:
+      "语音测试能力已迁移到 @/lib/api/voiceTools，请不要继续从 useTauri 聚合层引入。",
+  },
+  {
+    name: "@/hooks/useTauri",
+    importNames: ["uploadAvatar", "deleteAvatar", "UploadResult"],
+    message:
+      "头像上传/删除能力已迁移到 @/lib/api/profileAssets，请不要继续从 useTauri 聚合层引入。",
+  },
+  {
+    name: "@/hooks/useTauri",
+    importNames: [
       "getConfig",
       "saveConfig",
       "getEnvironmentPreview",
@@ -414,6 +464,14 @@ const projectGatewayCommandSelectors = [
   "workspace_delete",
   "workspace_ensure_ready",
   "get_or_create_default_project",
+  "content_create",
+  "content_get",
+  "content_get_theme_workbench_document_state",
+  "content_list",
+  "content_update",
+  "content_delete",
+  "content_reorder",
+  "content_stats",
 ].map((command) => ({
   selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
   message:
@@ -656,6 +714,9 @@ const experimentalFeaturesCommandSelectors = [
 }));
 
 const memoryRuntimeCommandSelectors = [
+  "get_conversation_memory_stats",
+  "request_conversation_memory_analysis",
+  "cleanup_conversation_memory",
   "get_conversation_memory_overview",
   "memory_get_effective_sources",
   "memory_get_auto_index",
@@ -666,6 +727,61 @@ const memoryRuntimeCommandSelectors = [
   message:
     "记忆运行时相关后端命令请统一通过 `src/lib/api/memoryRuntime.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
 }));
+
+const projectMemoryCommandSelectors = [
+  "character_list",
+  "character_get",
+  "character_create",
+  "character_update",
+  "character_delete",
+  "world_building_get",
+  "world_building_update",
+  "style_guide_get",
+  "style_guide_update",
+  "outline_node_list",
+  "outline_node_get",
+  "outline_node_create",
+  "outline_node_update",
+  "outline_node_delete",
+  "project_memory_get",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "项目记忆 CRUD 相关后端命令请统一通过 `src/lib/api/memory.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
+const apiCompatibilityCommandSelectors = ["check_api_compatibility"].map(
+  (command) => ({
+    selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+    message:
+      "API 兼容性检查命令请统一通过 `src/lib/api/apiCompatibility.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+  }),
+);
+
+const endpointProvidersCommandSelectors = [
+  "get_endpoint_providers",
+  "set_endpoint_provider",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "端点 Provider 配置命令请统一通过 `src/lib/api/endpointProviders.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
+const voiceToolsCommandSelectors = ["test_tts", "get_available_voices"].map(
+  (command) => ({
+    selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+    message:
+      "语音测试命令请统一通过 `src/lib/api/voiceTools.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+  }),
+);
+
+const profileAssetsCommandSelectors = ["upload_avatar", "delete_avatar"].map(
+  (command) => ({
+    selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+    message:
+      "头像资产命令请统一通过 `src/lib/api/profileAssets.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+  }),
+);
 
 const modelCatalogCommandSelectors = ["get_available_models"].map(
   (command) => ({
@@ -812,10 +928,15 @@ export default [
         ...channelsRuntimeCommandSelectors,
         ...experimentalFeaturesCommandSelectors,
         ...memoryRuntimeCommandSelectors,
+        ...projectMemoryCommandSelectors,
+        ...apiCompatibilityCommandSelectors,
+        ...endpointProvidersCommandSelectors,
         ...modelCatalogCommandSelectors,
+        ...profileAssetsCommandSelectors,
         ...usageStatsCommandSelectors,
         ...providerRuntimeCommandSelectors,
         ...serverToolsCommandSelectors,
+        ...voiceToolsCommandSelectors,
       ],
       "@typescript-eslint/no-unused-vars": [
         "error",
@@ -870,6 +991,7 @@ export default [
       "src/lib/api/posterMaterials.ts",
       "src/lib/api/subAgentScheduler.ts",
       "src/lib/api/fileSystem.ts",
+      "src/lib/api/memory.ts",
       "src/lib/api/plugins.ts",
       "src/lib/api/pluginUI.ts",
       "src/lib/api/fileBrowser.ts",
@@ -881,14 +1003,18 @@ export default [
       "src/lib/api/terminal.ts",
       "src/lib/api/serverRuntime.ts",
       "src/lib/api/logs.ts",
+      "src/lib/api/apiCompatibility.ts",
       "src/lib/api/appConfig.ts",
       "src/lib/api/channelsRuntime.ts",
+      "src/lib/api/endpointProviders.ts",
       "src/lib/api/experimentalFeatures.ts",
       "src/lib/api/memoryRuntime.ts",
       "src/lib/api/modelCatalog.ts",
+      "src/lib/api/profileAssets.ts",
       "src/lib/api/usageStats.ts",
       "src/lib/api/providerRuntime.ts",
       "src/lib/api/serverTools.ts",
+      "src/lib/api/voiceTools.ts",
     ],
     rules: {
       "no-restricted-syntax": "off",

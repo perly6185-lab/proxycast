@@ -13,20 +13,34 @@
  */
 export type WorkspaceType =
   | "persistent" // 持久化项目
+  | "temporary" // 临时项目
   | "social-media" // 社交媒体
   | "blog" // 博客
   | "novel" // 小说
-  | "general"; // 通用
+  | "general" // 通用
+  | "poster" // 图文海报
+  | "music" // 歌词曲谱
+  | "knowledge" // 知识探索
+  | "planning" // 计划规划
+  | "document" // 办公文档
+  | "video"; // 短视频
 
 /**
  * Workspace 类型显示名称映射
  */
 export const WorkspaceTypeLabels: Record<WorkspaceType, string> = {
   persistent: "持久化",
+  temporary: "临时",
   "social-media": "社交媒体",
   blog: "博客",
   novel: "小说",
   general: "通用",
+  poster: "图文海报",
+  music: "歌词曲谱",
+  knowledge: "知识探索",
+  planning: "计划规划",
+  document: "办公文档",
+  video: "短视频",
 };
 
 /** 媒体生成偏好设置 */

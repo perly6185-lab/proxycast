@@ -593,16 +593,24 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           messages: currentState.messages.map((message) => {
             if (message.id !== msgId) return message;
 
-            const nextToolCalls = (message.toolCalls || []).map((toolCall) =>
-              toolCall.id === event.tool_id
-                ? {
-                    ...toolCall,
-                    status: event.result.success ? "completed" : "failed",
-                    result: event.result,
-                    endTime: new Date(),
-                  }
-                : toolCall,
-            );
+            const nextToolCalls = (message.toolCalls || []).map((toolCall) => {
+              if (toolCall.id !== event.tool_id) {
+                return toolCall;
+              }
+
+              const nextStatus: "completed" | "failed" = event.result.success
+                ? "completed"
+                : "failed";
+
+              const updatedToolCall: ToolCallState = {
+                ...toolCall,
+                status: nextStatus,
+                result: event.result,
+                endTime: new Date(),
+              };
+
+              return updatedToolCall;
+            });
 
             const nextContentParts = (message.contentParts || []).map(
               (part) => {
@@ -613,14 +621,19 @@ export const useAgentStore = create<AgentState>((set, get) => ({
                   return part;
                 }
 
+                const nextStatus: "completed" | "failed" = event.result.success
+                  ? "completed"
+                  : "failed";
+                const updatedToolCall: ToolCallState = {
+                  ...part.toolCall,
+                  status: nextStatus,
+                  result: event.result,
+                  endTime: new Date(),
+                };
+
                 return {
                   ...part,
-                  toolCall: {
-                    ...part.toolCall,
-                    status: event.result.success ? "completed" : "failed",
-                    result: event.result,
-                    endTime: new Date(),
-                  },
+                  toolCall: updatedToolCall,
                 };
               },
             );

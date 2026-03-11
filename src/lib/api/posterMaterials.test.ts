@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import {
   createPosterMetadata,
   deletePosterMetadata,
@@ -10,8 +10,8 @@ import {
   updatePosterMetadata,
 } from "./posterMaterials";
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+vi.mock("@/lib/dev-bridge", () => ({
+  safeInvoke: vi.fn(),
 }));
 
 describe("posterMaterials API", () => {
@@ -20,18 +20,18 @@ describe("posterMaterials API", () => {
   });
 
   it("应获取单个海报素材", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({ id: "m1", type: "image" });
+    vi.mocked(safeInvoke).mockResolvedValueOnce({ id: "m1", type: "image" });
 
     await expect(getPosterMaterial("m1")).resolves.toEqual(
       expect.objectContaining({ id: "m1" }),
     );
-    expect(invoke).toHaveBeenCalledWith("get_poster_material", {
+    expect(safeInvoke).toHaveBeenCalledWith("get_poster_material", {
       materialId: "m1",
     });
   });
 
   it("应代理海报素材元数据写操作", async () => {
-    vi.mocked(invoke)
+    vi.mocked(safeInvoke)
       .mockResolvedValueOnce({ materialId: "m2" })
       .mockResolvedValueOnce({ materialId: "m2" })
       .mockResolvedValueOnce(undefined);
@@ -52,7 +52,7 @@ describe("posterMaterials API", () => {
   });
 
   it("应代理不同维度的海报素材查询", async () => {
-    vi.mocked(invoke)
+    vi.mocked(safeInvoke)
       .mockResolvedValueOnce([{ id: "img-1" }])
       .mockResolvedValueOnce([{ id: "layout-1" }])
       .mockResolvedValueOnce([{ id: "color-1" }]);

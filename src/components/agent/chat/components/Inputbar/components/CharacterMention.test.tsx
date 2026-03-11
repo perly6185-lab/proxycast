@@ -215,6 +215,7 @@ function createSkill(name: string, key: string, installed: boolean): Skill {
     description: "测试技能",
     directory: `${key}-dir`,
     installed,
+    sourceKind: "builtin",
   };
 }
 

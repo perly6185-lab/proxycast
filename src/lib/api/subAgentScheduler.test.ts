@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import { cancelSubAgentTasks, executeSubAgentTasks } from "./subAgentScheduler";
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+vi.mock("@/lib/dev-bridge", () => ({
+  safeInvoke: vi.fn(),
 }));
 
 describe("subAgentScheduler API", () => {
@@ -12,7 +12,7 @@ describe("subAgentScheduler API", () => {
   });
 
   it("应透传执行任务请求", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({
+    vi.mocked(safeInvoke).mockResolvedValueOnce({
       success: true,
       results: [],
       totalDurationMs: 0,
@@ -34,7 +34,7 @@ describe("subAgentScheduler API", () => {
       ),
     ).resolves.toEqual(expect.objectContaining({ success: true }));
 
-    expect(invoke).toHaveBeenCalledWith("execute_subagent_tasks", {
+    expect(safeInvoke).toHaveBeenCalledWith("execute_subagent_tasks", {
       tasks: [{ id: "task-1", taskType: "code", prompt: "检查入口" }],
       config: { maxConcurrency: 2 },
       sessionId: "session-1",
@@ -42,9 +42,9 @@ describe("subAgentScheduler API", () => {
   });
 
   it("应代理取消任务", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    vi.mocked(safeInvoke).mockResolvedValueOnce(undefined);
 
     await expect(cancelSubAgentTasks()).resolves.toBeUndefined();
-    expect(invoke).toHaveBeenCalledWith("cancel_subagent_tasks");
+    expect(safeInvoke).toHaveBeenCalledWith("cancel_subagent_tasks");
   });
 });

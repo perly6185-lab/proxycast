@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 
 export interface SubAgentTask {
   id: string;
@@ -80,7 +80,7 @@ export async function executeSubAgentTasks(
   config?: SchedulerConfig,
   sessionId?: string | null,
 ): Promise<SchedulerExecutionResult> {
-  return invoke<SchedulerExecutionResult>("execute_subagent_tasks", {
+  return safeInvoke<SchedulerExecutionResult>("execute_subagent_tasks", {
     tasks,
     config,
     sessionId,
@@ -88,5 +88,5 @@ export async function executeSubAgentTasks(
 }
 
 export async function cancelSubAgentTasks(): Promise<void> {
-  await invoke("cancel_subagent_tasks");
+  await safeInvoke<void>("cancel_subagent_tasks");
 }

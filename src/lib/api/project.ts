@@ -4,7 +4,7 @@
  * 提供项目（Project）和内容（Content）的 CRUD 操作
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import type { WorkspaceSettings } from "@/types/workspace";
 
 // ==================== 类型定义 ====================
@@ -219,6 +219,7 @@ export interface CreateProjectRequest {
 /** 更新项目请求 */
 export interface UpdateProjectRequest {
   name?: string;
+  rootPath?: string;
   settings?: WorkspaceSettings;
   icon?: string;
   color?: string;
@@ -277,23 +278,23 @@ export interface ListContentQuery {
 export async function createProject(
   request: CreateProjectRequest,
 ): Promise<Project> {
-  const project = await invoke<RawProject>("workspace_create", { request });
+  const project = await safeInvoke<RawProject>("workspace_create", { request });
   return normalizeProject(project);
 }
 
 /** 获取统一 workspace 项目根目录 */
 export async function getWorkspaceProjectsRoot(): Promise<string> {
-  return invoke<string>("workspace_get_projects_root");
+  return safeInvoke<string>("workspace_get_projects_root");
 }
 
 /** 按项目名称解析固定项目目录 */
 export async function resolveProjectRootPath(name: string): Promise<string> {
-  return invoke<string>("workspace_resolve_project_path", { name });
+  return safeInvoke<string>("workspace_resolve_project_path", { name });
 }
 
 /** 获取项目列表 */
 export async function listProjects(): Promise<Project[]> {
-  const projects = await invoke<RawProject[]>("workspace_list");
+  const projects = await safeInvoke<RawProject[]>("workspace_list");
   // 防御性编程：确保返回数组
   if (!Array.isArray(projects)) {
     console.warn("listProjects 返回非数组值:", projects);
@@ -304,7 +305,7 @@ export async function listProjects(): Promise<Project[]> {
 
 /** 获取默认项目 */
 export async function getDefaultProject(): Promise<Project | null> {
-  const project = await invoke<RawProject | null>("workspace_get_default");
+  const project = await safeInvoke<RawProject | null>("workspace_get_default");
   return project ? normalizeProject(project) : null;
 }
 
@@ -331,22 +332,24 @@ export async function requireDefaultProjectId(
 export async function ensureWorkspaceReady(
   id: string,
 ): Promise<WorkspaceEnsureResult> {
-  return invoke<WorkspaceEnsureResult>("workspace_ensure_ready", { id });
+  return safeInvoke<WorkspaceEnsureResult>("workspace_ensure_ready", { id });
 }
 
 /** 确保默认工作区目录就绪 */
 export async function ensureDefaultWorkspaceReady(): Promise<WorkspaceEnsureResult | null> {
-  return invoke<WorkspaceEnsureResult | null>("workspace_ensure_default_ready");
+  return safeInvoke<WorkspaceEnsureResult | null>(
+    "workspace_ensure_default_ready",
+  );
 }
 
 /** 设置默认项目 */
 export async function setDefaultProject(id: string): Promise<void> {
-  await invoke("workspace_set_default", { id });
+  await safeInvoke<void>("workspace_set_default", { id });
 }
 
 /** 获取或创建默认项目 */
 export async function getOrCreateDefaultProject(): Promise<Project> {
-  const project = await invoke<RawProject>("get_or_create_default_project");
+  const project = await safeInvoke<RawProject>("get_or_create_default_project");
   return normalizeProject(project);
 }
 
@@ -354,7 +357,7 @@ export async function getOrCreateDefaultProject(): Promise<Project> {
 export async function getProjectByRootPath(
   rootPath: string,
 ): Promise<Project | null> {
-  const project = await invoke<RawProject | null>("workspace_get_by_path", {
+  const project = await safeInvoke<RawProject | null>("workspace_get_by_path", {
     rootPath,
   });
   return project ? normalizeProject(project) : null;
@@ -362,7 +365,7 @@ export async function getProjectByRootPath(
 
 /** 获取项目详情 */
 export async function getProject(id: string): Promise<Project | null> {
-  const project = await invoke<RawProject | null>("workspace_get", { id });
+  const project = await safeInvoke<RawProject | null>("workspace_get", { id });
   return project ? normalizeProject(project) : null;
 }
 
@@ -371,7 +374,10 @@ export async function updateProject(
   id: string,
   request: UpdateProjectRequest,
 ): Promise<Project> {
-  const project = await invoke<RawProject>("workspace_update", { id, request });
+  const project = await safeInvoke<RawProject>("workspace_update", {
+    id,
+    request,
+  });
   return normalizeProject(project);
 }
 
@@ -380,7 +386,7 @@ export async function deleteProject(
   id: string,
   deleteDirectory?: boolean,
 ): Promise<boolean> {
-  return invoke("workspace_delete", { id, deleteDirectory });
+  return safeInvoke<boolean>("workspace_delete", { id, deleteDirectory });
 }
 
 // ==================== 内容 API ====================
@@ -389,19 +395,22 @@ export async function deleteProject(
 export async function createContent(
   request: CreateContentRequest,
 ): Promise<ContentDetail> {
-  return invoke("content_create", { request });
+  return safeInvoke<ContentDetail>("content_create", { request });
 }
 
 /** 获取内容详情 */
 export async function getContent(id: string): Promise<ContentDetail | null> {
-  return invoke("content_get", { id });
+  return safeInvoke<ContentDetail | null>("content_get", { id });
 }
 
 /** 获取主题工作台文稿版本状态（后端解析 content.metadata） */
 export async function getThemeWorkbenchDocumentState(
   id: string,
 ): Promise<ThemeWorkbenchDocumentState | null> {
-  return invoke("content_get_theme_workbench_document_state", { id });
+  return safeInvoke<ThemeWorkbenchDocumentState | null>(
+    "content_get_theme_workbench_document_state",
+    { id },
+  );
 }
 
 /** 获取项目的内容列表 */
@@ -409,7 +418,7 @@ export async function listContents(
   projectId: string,
   query?: ListContentQuery,
 ): Promise<ContentListItem[]> {
-  const contents = await invoke<ContentListItem[]>("content_list", {
+  const contents = await safeInvoke<ContentListItem[]>("content_list", {
     projectId,
     query,
   });
@@ -426,12 +435,12 @@ export async function updateContent(
   id: string,
   request: UpdateContentRequest,
 ): Promise<ContentDetail> {
-  return invoke("content_update", { id, request });
+  return safeInvoke<ContentDetail>("content_update", { id, request });
 }
 
 /** 删除内容 */
 export async function deleteContent(id: string): Promise<boolean> {
-  return invoke("content_delete", { id });
+  return safeInvoke<boolean>("content_delete", { id });
 }
 
 /** 重新排序内容 */
@@ -439,14 +448,14 @@ export async function reorderContents(
   projectId: string,
   contentIds: string[],
 ): Promise<void> {
-  return invoke("content_reorder", { projectId, contentIds });
+  return safeInvoke<void>("content_reorder", { projectId, contentIds });
 }
 
 /** 获取项目内容统计 */
 export async function getContentStats(
   projectId: string,
 ): Promise<[number, number, number]> {
-  return invoke("content_stats", { projectId });
+  return safeInvoke<[number, number, number]>("content_stats", { projectId });
 }
 
 // ==================== 辅助函数 ====================

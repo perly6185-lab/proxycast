@@ -293,7 +293,7 @@ function summarizeSchedulerEvent(event: SchedulerEvent): string {
     case "cancelled":
       return "调度已取消";
     default:
-      return event.type;
+      return (event as { type: string }).type;
   }
 }
 

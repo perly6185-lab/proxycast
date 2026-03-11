@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import {
   deleteMaterial,
   getMaterialContent,
@@ -11,8 +11,8 @@ import {
   uploadMaterial,
 } from "./materials";
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+vi.mock("@/lib/dev-bridge", () => ({
+  safeInvoke: vi.fn(),
 }));
 
 describe("materials API", () => {
@@ -48,7 +48,7 @@ describe("materials API", () => {
   });
 
   it("listMaterials 应返回规范化后的素材数组", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce([
+    vi.mocked(safeInvoke).mockResolvedValueOnce([
       {
         id: "m1",
         project_id: "project-1",
@@ -66,7 +66,7 @@ describe("materials API", () => {
       }),
     ]);
 
-    expect(invoke).toHaveBeenCalledWith("list_materials", {
+    expect(safeInvoke).toHaveBeenCalledWith("list_materials", {
       projectId: "project-1",
       project_id: "project-1",
       filter: null,
@@ -74,17 +74,17 @@ describe("materials API", () => {
   });
 
   it("getMaterialCount 应调用统计命令", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce(3);
+    vi.mocked(safeInvoke).mockResolvedValueOnce(3);
 
     await expect(getMaterialCount("project-2")).resolves.toBe(3);
-    expect(invoke).toHaveBeenCalledWith("get_material_count", {
+    expect(safeInvoke).toHaveBeenCalledWith("get_material_count", {
       projectId: "project-2",
       project_id: "project-2",
     });
   });
 
   it("uploadMaterial 应发送兼容字段并规范化返回值", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({
+    vi.mocked(safeInvoke).mockResolvedValueOnce({
       id: "m2",
       project_id: "project-3",
       material_type: "image",
@@ -108,7 +108,7 @@ describe("materials API", () => {
       }),
     );
 
-    expect(invoke).toHaveBeenCalledWith("upload_material", {
+    expect(safeInvoke).toHaveBeenCalledWith("upload_material", {
       req: expect.objectContaining({
         projectId: "project-3",
         project_id: "project-3",
@@ -119,7 +119,7 @@ describe("materials API", () => {
   });
 
   it("importMaterialFromUrl 应统一走网关请求格式", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({ id: "m3" });
+    vi.mocked(safeInvoke).mockResolvedValueOnce({ id: "m3" });
 
     await expect(
       importMaterialFromUrl({
@@ -131,7 +131,7 @@ describe("materials API", () => {
       }),
     ).resolves.toEqual({ id: "m3" });
 
-    expect(invoke).toHaveBeenCalledWith("import_material_from_url", {
+    expect(safeInvoke).toHaveBeenCalledWith("import_material_from_url", {
       req: expect.objectContaining({
         projectId: "project-4",
         project_id: "project-4",
@@ -141,7 +141,7 @@ describe("materials API", () => {
   });
 
   it("updateMaterial / deleteMaterial / getMaterialContent 应代理到对应命令", async () => {
-    vi.mocked(invoke)
+    vi.mocked(safeInvoke)
       .mockResolvedValueOnce({
         id: "m4",
         projectId: "project-5",
@@ -160,14 +160,14 @@ describe("materials API", () => {
     await expect(deleteMaterial("m4")).resolves.toBeUndefined();
     await expect(getMaterialContent("m4")).resolves.toBe("hello");
 
-    expect(invoke).toHaveBeenNthCalledWith(1, "update_material", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(1, "update_material", {
       id: "m4",
       update: { name: "new-name" },
     });
-    expect(invoke).toHaveBeenNthCalledWith(2, "delete_material", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(2, "delete_material", {
       id: "m4",
     });
-    expect(invoke).toHaveBeenNthCalledWith(3, "get_material_content", {
+    expect(safeInvoke).toHaveBeenNthCalledWith(3, "get_material_content", {
       id: "m4",
     });
   });

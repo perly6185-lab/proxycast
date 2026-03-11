@@ -1,11 +1,11 @@
-import type { Project as ApiProject } from "@/lib/api/project";
+import type { Project as ApiProject, ProjectType } from "@/lib/api/project";
 import type { Project } from "@/types/project";
 
 export function toProjectView(project: ApiProject): Project {
   return {
     id: project.id,
     name: project.name,
-    workspaceType: project.workspaceType,
+    workspaceType: project.workspaceType as ProjectType,
     rootPath: project.rootPath,
     isDefault: project.isDefault,
     settings: project.settings,
