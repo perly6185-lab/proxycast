@@ -1,6 +1,12 @@
-import type { ToolCallState, TokenUsage } from "@/lib/api/agentStream";
-import type { ContextTraceStep } from "@/lib/api/agentStream";
+import type {
+  ContextTraceStep,
+  ToolCallState,
+  TokenUsage,
+} from "@/lib/api/agentStream";
+import type { Artifact, ArtifactStatus } from "@/lib/artifact/types";
 import { safeInvoke } from "@/lib/dev-bridge";
+
+export type { AgentThreadItem, AgentThreadTurn } from "@/lib/api/agentStream";
 
 export interface MessageImage {
   data: string;
@@ -78,6 +84,22 @@ export interface ConfirmResponse {
   userData?: unknown;
 }
 
+export interface WriteArtifactContext {
+  artifact?: Artifact;
+  artifactId?: string;
+  source?: "tool_start" | "artifact_snapshot" | "tool_result" | "message_content";
+  sourceMessageId?: string;
+  status?: ArtifactStatus;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentRuntimeStatus {
+  phase: "preparing" | "routing" | "context";
+  title: string;
+  detail: string;
+  checkpoints?: string[];
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant";
@@ -102,6 +124,10 @@ export interface Message {
   contentParts?: ContentPart[];
   /** 上下文准备轨迹（可选） */
   contextTrace?: ContextTraceStep[];
+  /** 与当前消息关联的产物列表 */
+  artifacts?: Artifact[];
+  /** 首个流式事件到达前的本地运行态 */
+  runtimeStatus?: AgentRuntimeStatus;
   /** 消息用途（用于跳过特定副作用） */
   purpose?: "content_review" | "text_stylize" | "style_rewrite" | "style_audit";
 }

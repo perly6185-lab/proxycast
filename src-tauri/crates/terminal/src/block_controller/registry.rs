@@ -22,6 +22,7 @@ use super::traits::BlockController;
 /// 使用 HashMap + RwLock 实现线程安全的控制器管理。
 pub struct ControllerRegistry {
     /// 控制器映射表: block_id -> BlockController
+    #[allow(clippy::type_complexity)]
     controllers: RwLock<HashMap<String, Arc<RwLock<Box<dyn BlockController>>>>>,
 }
 

@@ -263,10 +263,11 @@ impl std::str::FromStr for SSHOpts {
 /// 表示 SSH 连接的当前状态。
 ///
 /// _Requirements: 7.2_
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionState {
     /// 初始状态
+    #[default]
     Init,
     /// 正在连接
     Connecting,
@@ -276,12 +277,6 @@ pub enum ConnectionState {
     Disconnected,
     /// 错误状态
     Error,
-}
-
-impl Default for ConnectionState {
-    fn default() -> Self {
-        Self::Init
-    }
 }
 
 impl fmt::Display for ConnectionState {

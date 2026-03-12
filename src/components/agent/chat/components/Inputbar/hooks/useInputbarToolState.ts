@@ -4,6 +4,8 @@ import { toast } from "sonner";
 export interface InputbarToolStates {
   webSearch: boolean;
   thinking: boolean;
+  task: boolean;
+  subagent: boolean;
 }
 
 interface UseInputbarToolStateParams {
@@ -23,6 +25,8 @@ interface UseInputbarToolStateParams {
 const DEFAULT_INPUTBAR_TOOL_STATES: InputbarToolStates = {
   webSearch: false,
   thinking: false,
+  task: false,
+  subagent: false,
 };
 
 export function useInputbarToolState({
@@ -47,14 +51,24 @@ export function useInputbarToolState({
   const webSearchEnabled =
     toolStates?.webSearch ?? localToolStates.webSearch;
   const thinkingEnabled = toolStates?.thinking ?? localToolStates.thinking;
+  const taskEnabled = toolStates?.task ?? localToolStates.task;
+  const subagentEnabled = toolStates?.subagent ?? localToolStates.subagent;
 
   const activeTools = useMemo<Record<string, boolean>>(
     () => ({
       ...localActiveTools,
       web_search: webSearchEnabled,
       thinking: thinkingEnabled,
+      task_mode: taskEnabled,
+      subagent_mode: subagentEnabled,
     }),
-    [localActiveTools, thinkingEnabled, webSearchEnabled],
+    [
+      localActiveTools,
+      thinkingEnabled,
+      webSearchEnabled,
+      taskEnabled,
+      subagentEnabled,
+    ],
   );
 
   const updateToolStates = useCallback(
@@ -62,11 +76,19 @@ export function useInputbarToolState({
       setLocalToolStates((prev) => ({
         webSearch: toolStates?.webSearch ?? next.webSearch ?? prev.webSearch,
         thinking: toolStates?.thinking ?? next.thinking ?? prev.thinking,
+        task: toolStates?.task ?? next.task ?? prev.task,
+        subagent: toolStates?.subagent ?? next.subagent ?? prev.subagent,
       }));
       onToolStatesChange?.(next);
       return next;
     },
-    [onToolStatesChange, toolStates?.thinking, toolStates?.webSearch],
+    [
+      onToolStatesChange,
+      toolStates?.subagent,
+      toolStates?.task,
+      toolStates?.thinking,
+      toolStates?.webSearch,
+    ],
   );
 
   const handleToolClick = useCallback(
@@ -77,6 +99,8 @@ export function useInputbarToolState({
           updateToolStates({
             webSearch: webSearchEnabled,
             thinking: nextThinking,
+            task: taskEnabled,
+            subagent: subagentEnabled,
           });
           toast.info(`深度思考${nextThinking ? "已开启" : "已关闭"}`);
           break;
@@ -86,8 +110,32 @@ export function useInputbarToolState({
           updateToolStates({
             webSearch: nextWebSearch,
             thinking: thinkingEnabled,
+            task: taskEnabled,
+            subagent: subagentEnabled,
           });
           toast.info(`联网搜索${nextWebSearch ? "已开启" : "已关闭"}`);
+          break;
+        }
+        case "task_mode": {
+          const nextTask = !taskEnabled;
+          updateToolStates({
+            webSearch: webSearchEnabled,
+            thinking: thinkingEnabled,
+            task: nextTask,
+            subagent: subagentEnabled,
+          });
+          toast.info(`后台任务${nextTask ? "偏好已开启" : "偏好已关闭"}`);
+          break;
+        }
+        case "subagent_mode": {
+          const nextSubagent = !subagentEnabled;
+          updateToolStates({
+            webSearch: webSearchEnabled,
+            thinking: thinkingEnabled,
+            task: taskEnabled,
+            subagent: nextSubagent,
+          });
+          toast.info(`多代理${nextSubagent ? "偏好已开启" : "偏好已关闭"}`);
           break;
         }
         case "execution_strategy":
@@ -154,6 +202,8 @@ export function useInputbarToolState({
       setExecutionStrategy,
       setInput,
       thinkingEnabled,
+      subagentEnabled,
+      taskEnabled,
       updateToolStates,
       webSearchEnabled,
     ],
@@ -164,6 +214,8 @@ export function useInputbarToolState({
     handleToolClick,
     isFullscreen,
     thinkingEnabled,
+    taskEnabled,
+    subagentEnabled,
     webSearchEnabled,
   };
 }

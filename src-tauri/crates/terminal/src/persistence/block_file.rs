@@ -111,7 +111,7 @@ impl BlockFile {
     /// # 参数
     /// - `block_id`: 块 ID
     /// - `base_dir`: 基础目录路径
-    pub fn with_default_size(block_id: &str, base_dir: &PathBuf) -> Result<Self, TerminalError> {
+    pub fn with_default_size(block_id: &str, base_dir: &Path) -> Result<Self, TerminalError> {
         Self::new(block_id, base_dir, DEFAULT_TERM_MAX_FILE_SIZE)
     }
 

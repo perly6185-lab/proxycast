@@ -4,7 +4,7 @@
  * 基于文件系统的持久化记忆系统，解决 AI Agent 的上下文丢失、目标漂移、错误重复问题
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 
 export interface MemoryEntry {
   id: string;
@@ -64,7 +64,7 @@ export class ContextMemoryAPI {
    * 保存记忆条目
    */
   static async saveMemoryEntry(request: SaveMemoryRequest): Promise<void> {
-    return invoke("save_memory_entry", { request });
+    return safeInvoke<void>("save_memory_entry", { request });
   }
 
   /**
@@ -74,7 +74,7 @@ export class ContextMemoryAPI {
     sessionId: string,
     fileType?: MemoryFileType,
   ): Promise<MemoryEntry[]> {
-    return invoke("get_session_memories", {
+    return safeInvoke<MemoryEntry[]>("get_session_memories", {
       sessionId,
       fileType: fileType || null,
     });
@@ -84,14 +84,14 @@ export class ContextMemoryAPI {
    * 获取记忆上下文（用于 AI 上下文）
    */
   static async getMemoryContext(sessionId: string): Promise<string> {
-    return invoke("get_memory_context", { sessionId });
+    return safeInvoke<string>("get_memory_context", { sessionId });
   }
 
   /**
    * 记录错误
    */
   static async recordError(request: RecordErrorRequest): Promise<void> {
-    return invoke("record_error", { request });
+    return safeInvoke<void>("record_error", { request });
   }
 
   /**
@@ -101,7 +101,7 @@ export class ContextMemoryAPI {
     sessionId: string,
     operationDescription: string,
   ): Promise<boolean> {
-    return invoke("should_avoid_operation", {
+    return safeInvoke<boolean>("should_avoid_operation", {
       sessionId,
       operationDescription,
     });
@@ -111,21 +111,21 @@ export class ContextMemoryAPI {
    * 标记错误已解决
    */
   static async markErrorResolved(request: ResolveErrorRequest): Promise<void> {
-    return invoke("mark_error_resolved", { request });
+    return safeInvoke<void>("mark_error_resolved", { request });
   }
 
   /**
    * 获取记忆统计信息
    */
   static async getMemoryStats(sessionId: string): Promise<MemoryStats> {
-    return invoke("get_memory_stats", { sessionId });
+    return safeInvoke<MemoryStats>("get_memory_stats", { sessionId });
   }
 
   /**
    * 清理过期记忆
    */
   static async cleanupExpiredMemories(): Promise<void> {
-    return invoke("cleanup_expired_memories");
+    return safeInvoke<void>("cleanup_expired_memories");
   }
 
   /**

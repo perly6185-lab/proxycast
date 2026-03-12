@@ -6,7 +6,7 @@
  * 封装所有统一对话相关的 Tauri 命令调用
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import type {
   ChatMode,
   ChatMessage,
@@ -17,6 +17,8 @@ import type {
   ToolCall,
   ToolEndEvent,
   FinalDoneEvent,
+  HarnessArtifactSnapshot,
+  HarnessEventPayload,
 } from "@/types/chat";
 
 // ============================================================================
@@ -29,7 +31,7 @@ import type {
 export async function createSession(
   request: CreateSessionRequest,
 ): Promise<SessionResponse> {
-  return invoke<SessionResponse>("chat_create_session", { request });
+  return safeInvoke<SessionResponse>("chat_create_session", { request });
 }
 
 /**
@@ -38,21 +40,21 @@ export async function createSession(
 export async function listSessions(
   mode?: ChatMode,
 ): Promise<SessionResponse[]> {
-  return invoke<SessionResponse[]>("chat_list_sessions", { mode });
+  return safeInvoke<SessionResponse[]>("chat_list_sessions", { mode });
 }
 
 /**
  * 获取会话详情
  */
 export async function getSession(sessionId: string): Promise<SessionResponse> {
-  return invoke<SessionResponse>("chat_get_session", { sessionId });
+  return safeInvoke<SessionResponse>("chat_get_session", { sessionId });
 }
 
 /**
  * 删除会话
  */
 export async function deleteSession(sessionId: string): Promise<boolean> {
-  return invoke<boolean>("chat_delete_session", { sessionId });
+  return safeInvoke<boolean>("chat_delete_session", { sessionId });
 }
 
 /**
@@ -62,7 +64,7 @@ export async function renameSession(
   sessionId: string,
   title: string,
 ): Promise<void> {
-  return invoke<void>("chat_rename_session", { sessionId, title });
+  return safeInvoke<void>("chat_rename_session", { sessionId, title });
 }
 
 // ============================================================================
@@ -76,7 +78,7 @@ export async function getMessages(
   sessionId: string,
   limit?: number,
 ): Promise<ChatMessage[]> {
-  const messages = await invoke<
+  const messages = await safeInvoke<
     Array<{
       id: number;
       session_id: string;
@@ -97,14 +99,14 @@ export async function getMessages(
  * 发送消息（流式）
  */
 export async function sendMessage(request: SendMessageRequest): Promise<void> {
-  return invoke<void>("chat_send_message", { request });
+  return safeInvoke<void>("chat_send_message", { request });
 }
 
 /**
  * 停止生成
  */
 export async function stopGeneration(sessionId: string): Promise<boolean> {
-  return invoke<boolean>("chat_stop_generation", { sessionId });
+  return safeInvoke<boolean>("chat_stop_generation", { sessionId });
 }
 
 /**
@@ -115,7 +117,7 @@ export async function configureProvider(
   providerType: string,
   model: string,
 ): Promise<void> {
-  return invoke<void>("chat_configure_provider", {
+  return safeInvoke<void>("chat_configure_provider", {
     sessionId,
     providerType,
     model,
@@ -268,6 +270,45 @@ export function parseStreamEvent(payload: unknown): StreamEvent | null {
         type: "tool_end",
         tool_id: String(event.tool_id || event.id || ""),
         result: event.result as ToolEndEvent["result"],
+      };
+
+    case "HarnessEvent":
+    case "harness_event":
+      return {
+        type: "harness_event",
+        event: {
+          kind: String(event.kind || event.event_kind || "unknown"),
+          sessionId:
+            (event.session_id as string) || (event.sessionId as string),
+          runId: (event.run_id as string) || (event.runId as string),
+          correlationId:
+            (event.correlation_id as string) ||
+            (event.correlationId as string),
+          theme: event.theme as string,
+          stage: event.stage as string,
+          summary: event.summary as string,
+          artifact: (event.artifact ||
+            (event.snapshot as HarnessArtifactSnapshot) ||
+            undefined) as HarnessArtifactSnapshot | undefined,
+          metadata: event.metadata as HarnessEventPayload["metadata"],
+        },
+      };
+
+    case "ArtifactSnapshot":
+    case "artifact_snapshot":
+      return {
+        type: "artifact_snapshot",
+        artifact: {
+          artifactId: String(
+            event.artifact_id ||
+              event.artifactId ||
+              event.id ||
+              "artifact-unknown",
+          ),
+          filePath: (event.file_path as string) || (event.filePath as string),
+          content: event.content as string,
+          metadata: event.metadata as Record<string, unknown>,
+        },
       };
 
     case "ActionRequired":

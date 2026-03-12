@@ -1,4 +1,5 @@
 use crate::workspace::{Workspace, WorkspaceManager, WorkspaceUpdate};
+use proxycast_core::app_paths;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -117,11 +118,7 @@ pub fn ensure_workspace_ready_with_auto_relocate(
 }
 
 fn build_workspace_fallback_root(workspace: &Workspace) -> Result<PathBuf, String> {
-    let home_dir = dirs::home_dir().ok_or_else(|| "无法获取主目录".to_string())?;
-    let recovered_root = home_dir
-        .join(".proxycast")
-        .join("projects")
-        .join("recovered");
+    let recovered_root = app_paths::resolve_projects_dir()?.join("recovered");
     let workspace_name = sanitize_path_segment(&workspace.name);
     let short_id: String = workspace.id.chars().take(8).collect();
     let dir_name = if short_id.is_empty() {

@@ -8,6 +8,7 @@ use crate::services::memory_rules_loader_service::load_rules;
 use proxycast_agent::{
     resolve_durable_memory_root, to_virtual_memory_path, DURABLE_MEMORY_VIRTUAL_ROOT,
 };
+use proxycast_core::app_paths;
 use proxycast_core::config::{Config, MemoryConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -758,10 +759,8 @@ fn expand_path(path: &str, working_dir: Option<&Path>) -> PathBuf {
 }
 
 fn default_user_memory_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".proxycast")
-        .join("AGENTS.md")
+    app_paths::resolve_user_memory_path()
+        .unwrap_or_else(|_| app_paths::best_effort_app_data_file("AGENTS.md"))
 }
 
 fn default_managed_policy_path() -> PathBuf {

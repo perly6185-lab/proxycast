@@ -17,7 +17,7 @@ AI 返回带 <write_file> 标签的响应
      ↓
 StreamingRenderer 解析标签 → 调用 onWriteFile
      ↓
-AgentChatPage.handleWriteFile → 更新画布状态
+AgentChatPage.handleWriteFile → 映射为社媒 harness 产物 / 版本链
      ↓
 右侧画布自动打开，显示文档内容
 ```
@@ -44,8 +44,10 @@ src/components/
 │   │   └── MessageList.tsx      # 消息列表
 │   └── index.tsx                # AgentChatPage
 └── general-chat/
-    └── store/
-        └── useGeneralChatStore.ts # 通用对话 Store
+    ├── bridge.ts                # 兼容桥接层
+    ├── canvas/
+    │   └── CanvasPanel.tsx      # 复用画布面板
+    └── types.ts                 # CanvasState / DEFAULT_CANVAS_STATE
 ```
 
 ## 核心组件
@@ -216,6 +218,10 @@ const handleWriteFile = useCallback(
 | framework | 框架模式 | 用户提供框架，AI 按框架填充 |
 
 ## 注意事项
+
+- 社媒主题已不再把 `write_file` 仅视为“文件覆盖”，而是映射为带阶段语义的版本链产物
+- `brief / draft / polished / platform variant / publish package` 应分别作为不同产物语义处理
+- 日志、运行轨迹、正文产物三层分离：`harness` 产生命名事件，日志只做投影，正文仍由画布/产物承载
 
 ### Aster 框架限制
 

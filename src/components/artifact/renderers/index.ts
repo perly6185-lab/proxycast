@@ -14,6 +14,7 @@ import type { RendererEntry, ArtifactType } from "@/lib/artifact/types";
 // ============================================================================
 
 export { CodeRenderer } from "./CodeRenderer";
+export { DocumentRenderer } from "./DocumentRenderer";
 export { HtmlRenderer } from "./HtmlRenderer";
 export { SvgRenderer } from "./SvgRenderer";
 export { MermaidRenderer } from "./MermaidRenderer";
@@ -27,6 +28,8 @@ export { ReactRenderer } from "./ReactRenderer";
  * 懒加载的代码渲染器
  */
 const LazyCodeRenderer = lazy(() => import("./CodeRenderer"));
+
+const LazyDocumentRenderer = lazy(() => import("./DocumentRenderer"));
 
 /**
  * 懒加载的 HTML 渲染器
@@ -57,6 +60,14 @@ const LazyReactRenderer = lazy(() => import("./ReactRenderer"));
  * 定义所有轻量类型 Artifact 的渲染器配置
  */
 const LIGHTWEIGHT_RENDERER_ENTRIES: RendererEntry[] = [
+  {
+    type: "document" as ArtifactType,
+    displayName: "文档",
+    icon: "file-text",
+    component: LazyDocumentRenderer,
+    canEdit: false,
+    fileExtension: "md",
+  },
   {
     type: "code" as ArtifactType,
     displayName: "代码",

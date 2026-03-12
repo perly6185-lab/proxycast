@@ -405,16 +405,6 @@ export const DEFAULT_PROVIDER_SELECTION_STATE: ProviderSelectionState = {
 // ============================================================================
 
 /**
- * GeneralChatPage 组件属性
- */
-export interface GeneralChatPageProps {
-  /** 初始会话 ID (可选) */
-  initialSessionId?: string;
-  /** 页面导航回调 */
-  onNavigate?: (page: Page, params?: PageParams) => void;
-}
-
-/**
  * ChatPanel 组件属性
  */
 export interface ChatPanelProps {

@@ -31,21 +31,16 @@ use std::path::PathBuf;
 use super::SSHConfigParser;
 
 /// 连接类型
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionConfigType {
     /// 本地终端
+    #[default]
     Local,
     /// SSH 远程连接
     Ssh,
     /// WSL 连接
     Wsl,
-}
-
-impl Default for ConnectionConfigType {
-    fn default() -> Self {
-        Self::Local
-    }
 }
 
 /// 单个连接配置

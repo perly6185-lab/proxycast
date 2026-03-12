@@ -1,7 +1,7 @@
 import React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolCallState } from "@/lib/api/agentStream";
 import { ToolCallDisplay } from "./ToolCallDisplay";
 
@@ -31,19 +31,25 @@ afterEach(() => {
   }
 });
 
-function render(toolCall: ToolCallState): HTMLDivElement {
+function render(
+  toolCall: ToolCallState,
+  options: {
+    onFileClick?: (fileName: string, content: string) => void;
+  } = {},
+): HTMLDivElement {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
 
   act(() => {
     root.render(
-      <ToolCallDisplay
-        toolCall={toolCall}
-        defaultExpanded
-        isMessageStreaming
-      />,
-    );
+        <ToolCallDisplay
+          toolCall={toolCall}
+          defaultExpanded
+          isMessageStreaming
+          onFileClick={options.onFileClick}
+        />,
+      );
   });
 
   mountedRoots.push({ container, root });
@@ -166,5 +172,36 @@ describe("ToolCallDisplay", () => {
     expect(container.textContent).toContain(
       "转存文件: /tmp/proxycast/harness/tool-io/results/tool-offload-1.json",
     );
+  });
+
+  it("存在文件路径时应显示打开图标，并可直接送入画布", () => {
+    const onFileClick = vi.fn();
+    const toolCall: ToolCallState = {
+      id: "tool-open-file-1",
+      name: "Write",
+      status: "completed",
+      startTime: new Date(),
+      endTime: new Date(),
+      result: {
+        success: true,
+        output: "文件已生成",
+        metadata: {
+          output_file: "/tmp/workspace/summary.md",
+        },
+      },
+    };
+
+    const container = render(toolCall, { onFileClick });
+    const openButton = container.querySelector(
+      'button[aria-label="在画布中打开-/tmp/workspace/summary.md"]',
+    ) as HTMLButtonElement | null;
+
+    expect(openButton).not.toBeNull();
+
+    act(() => {
+      openButton?.click();
+    });
+
+    expect(onFileClick).toHaveBeenCalledWith("/tmp/workspace/summary.md", "");
   });
 });

@@ -5,8 +5,12 @@
  */
 
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import type { UnifiedMemory } from "@/lib/api/unifiedMemory";
+import {
+  createUnifiedMemory,
+  deleteUnifiedMemory,
+  listUnifiedMemories,
+  type UnifiedMemory,
+} from "@/lib/api/unifiedMemory";
 
 export default function UnifiedMemoryPage() {
   const [memories, setMemories] = useState<UnifiedMemory[]>([]);
@@ -15,9 +19,7 @@ export default function UnifiedMemoryPage() {
   const loadMemories = async () => {
     setLoading(true);
     try {
-      const result = await invoke<UnifiedMemory[]>("unified_memory_list", {
-        filters: { limit: 50 },
-      });
+      const result = await listUnifiedMemories({ limit: 50 });
       setMemories(result);
       console.log("加载记忆成功:", result);
     } catch (error) {
@@ -39,13 +41,11 @@ export default function UnifiedMemoryPage() {
     }
 
     try {
-      const result = await invoke<UnifiedMemory>("unified_memory_create", {
-        request: {
-          session_id: `session-${Date.now()}`,
-          title,
-          content,
-          summary,
-        },
+      const result = await createUnifiedMemory({
+        session_id: `session-${Date.now()}`,
+        title,
+        content,
+        summary,
       });
 
       console.log("创建成功:", result);
@@ -65,7 +65,7 @@ export default function UnifiedMemoryPage() {
     }
 
     try {
-      const result = await invoke<boolean>("unified_memory_delete", { id });
+      const result = await deleteUnifiedMemory(id);
       console.log("删除成功:", result);
 
       if (result) {

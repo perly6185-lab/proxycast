@@ -8,7 +8,7 @@
  * - 查询表单（按消息/会话）
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 
 /**
  * A2UI 表单记录
@@ -50,7 +50,7 @@ export class A2UIFormAPI {
     a2uiResponseJson: string,
     formDataJson?: string,
   ): Promise<A2UIForm> {
-    return invoke("create_a2ui_form", {
+    return safeInvoke<A2UIForm>("create_a2ui_form", {
       messageId,
       sessionId,
       a2uiResponseJson,
@@ -62,21 +62,21 @@ export class A2UIFormAPI {
    * 获取单个表单
    */
   static async get(id: string): Promise<A2UIForm | null> {
-    return invoke("get_a2ui_form", { id });
+    return safeInvoke<A2UIForm | null>("get_a2ui_form", { id });
   }
 
   /**
    * 根据消息 ID 获取表单列表
    */
   static async getByMessage(messageId: number): Promise<A2UIForm[]> {
-    return invoke("get_a2ui_forms_by_message", { messageId });
+    return safeInvoke<A2UIForm[]>("get_a2ui_forms_by_message", { messageId });
   }
 
   /**
    * 根据会话 ID 获取所有表单
    */
   static async getBySession(sessionId: string): Promise<A2UIForm[]> {
-    return invoke("get_a2ui_forms_by_session", { sessionId });
+    return safeInvoke<A2UIForm[]>("get_a2ui_forms_by_session", { sessionId });
   }
 
   /**
@@ -89,7 +89,7 @@ export class A2UIFormAPI {
     id: string,
     formDataJson: string,
   ): Promise<A2UIForm> {
-    return invoke("save_a2ui_form_data", { id, formDataJson });
+    return safeInvoke<A2UIForm>("save_a2ui_form_data", { id, formDataJson });
   }
 
   /**
@@ -99,14 +99,14 @@ export class A2UIFormAPI {
    * @param formDataJson 最终表单数据 JSON
    */
   static async submit(id: string, formDataJson: string): Promise<A2UIForm> {
-    return invoke("submit_a2ui_form", { id, formDataJson });
+    return safeInvoke<A2UIForm>("submit_a2ui_form", { id, formDataJson });
   }
 
   /**
    * 删除表单
    */
   static async delete(id: string): Promise<void> {
-    return invoke("delete_a2ui_form", { id });
+    return safeInvoke<void>("delete_a2ui_form", { id });
   }
 
   /**

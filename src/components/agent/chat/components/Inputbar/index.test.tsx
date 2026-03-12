@@ -254,6 +254,8 @@ describe("Inputbar", () => {
     expect(onToolStatesChange).toHaveBeenCalledWith({
       webSearch: true,
       thinking: false,
+      task: false,
+      subagent: false,
     });
   });
 

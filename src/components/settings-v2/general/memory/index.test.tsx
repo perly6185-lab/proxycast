@@ -24,9 +24,12 @@ const {
   mockGetProjectMemory: vi.fn(),
 }));
 
-vi.mock("@/hooks/useTauri", () => ({
+vi.mock("@/lib/api/appConfig", () => ({
   getConfig: mockGetConfig,
   saveConfig: mockSaveConfig,
+}));
+
+vi.mock("@/lib/api/memoryRuntime", () => ({
   getMemoryOverview: mockGetMemoryOverview,
   getMemoryEffectiveSources: mockGetMemoryEffectiveSources,
   getMemoryAutoIndex: mockGetMemoryAutoIndex,

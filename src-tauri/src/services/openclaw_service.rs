@@ -105,7 +105,23 @@ pub struct EnvironmentStatus {
     pub recommended_action: String,
     pub summary: String,
     #[serde(default)]
+    pub diagnostics: EnvironmentDiagnostics,
+    #[serde(default)]
     pub temp_artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentDiagnostics {
+    pub npm_path: Option<String>,
+    pub npm_global_prefix: Option<String>,
+    pub openclaw_package_path: Option<String>,
+    #[serde(default)]
+    pub where_candidates: Vec<String>,
+    #[serde(default)]
+    pub supplemental_search_dirs: Vec<String>,
+    #[serde(default)]
+    pub supplemental_command_candidates: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,8 +269,9 @@ impl OpenClawService {
         let node = inspect_node_dependency_status().await?;
         let git = inspect_git_dependency_status().await?;
         let openclaw = inspect_openclaw_dependency_status().await?;
+        let diagnostics = collect_environment_diagnostics().await;
 
-        Ok(build_environment_status(node, git, openclaw))
+        Ok(build_environment_status(node, git, openclaw, diagnostics))
     }
 
     pub async fn check_installed(&self) -> Result<BinaryInstallStatus, String> {
@@ -311,6 +328,16 @@ impl OpenClawService {
 
     pub async fn install(&mut self, app: &AppHandle) -> Result<ActionResult, String> {
         emit_install_progress(app, "开始准备 OpenClaw 环境。", "info");
+
+        #[cfg(target_os = "windows")]
+        {
+            let node_status = self.inspect_dependency_status(DependencyKind::Node).await?;
+            let git_status = self.inspect_dependency_status(DependencyKind::Git).await?;
+            if let Some(result) = windows_install_block_result(&node_status, &git_status) {
+                emit_install_progress(app, &result.message, "warn");
+                return Ok(result);
+            }
+        }
 
         let node_result = self
             .ensure_dependency_ready(app, DependencyKind::Node)
@@ -382,6 +409,34 @@ impl OpenClawService {
             "git" => DependencyKind::Git,
             _ => return Err(format!("不支持的依赖类型: {kind}")),
         };
+
+        #[cfg(target_os = "windows")]
+        {
+            let status = self.inspect_dependency_status(dependency).await?;
+            if status.status == "ok" {
+                emit_install_progress(
+                    app,
+                    &format!(
+                        "{} 已就绪{}。",
+                        dependency.label(),
+                        status
+                            .version
+                            .as_deref()
+                            .map(|version| format!(" · {version}"))
+                            .unwrap_or_default()
+                    ),
+                    "info",
+                );
+                return Ok(ActionResult {
+                    success: true,
+                    message: format!("{} 已满足要求。", dependency.label()),
+                });
+            }
+
+            let result = windows_dependency_action_result(dependency, &status);
+            emit_install_progress(app, &result.message, "warn");
+            return Ok(result);
+        }
 
         self.ensure_dependency_ready(app, dependency).await
     }
@@ -1603,6 +1658,91 @@ fn openclaw_proxycast_config_path() -> PathBuf {
     openclaw_config_dir().join("openclaw.proxycast.json")
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn windows_dependency_setup_message(
+    dependency: DependencyKind,
+    status: &DependencyStatus,
+) -> String {
+    let guidance = match dependency {
+        DependencyKind::Node => format!(
+            "Windows 下请先从 nodejs.org 安装或升级 Node.js {}+，完成后点击“重新检测”，再安装 OpenClaw。",
+            NODE_MIN_VERSION.0
+        ),
+        DependencyKind::Git => {
+            "Windows 下请先从 git-scm.com 安装 Git（安装时请勾选加入 PATH），完成后点击“重新检测”，再安装 OpenClaw。"
+                .to_string()
+        }
+    };
+
+    format!("{} {}", status.message, guidance)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_dependency_action_result(
+    dependency: DependencyKind,
+    status: &DependencyStatus,
+) -> ActionResult {
+    ActionResult {
+        success: false,
+        message: windows_dependency_setup_message(dependency, status),
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_install_block_result(
+    node_status: &DependencyStatus,
+    git_status: &DependencyStatus,
+) -> Option<ActionResult> {
+    if node_status.status != "ok" {
+        return Some(windows_dependency_action_result(
+            DependencyKind::Node,
+            node_status,
+        ));
+    }
+
+    if git_status.status != "ok" {
+        return Some(windows_dependency_action_result(
+            DependencyKind::Git,
+            git_status,
+        ));
+    }
+
+    None
+}
+
+fn dependency_setup_summary(dependency: DependencyKind) -> String {
+    if cfg!(target_os = "windows") {
+        return match dependency {
+            DependencyKind::Node => format!(
+                "当前缺少可用的 Node.js {}+ 运行时，Windows 下请先手动安装 Node.js，完成后点击“重新检测”，再安装 OpenClaw。",
+                NODE_MIN_VERSION.0
+            ),
+            DependencyKind::Git => {
+                "当前缺少可用的 Git，Windows 下请先手动安装 Git（安装时请勾选加入 PATH），完成后点击“重新检测”，再安装 OpenClaw。"
+                    .to_string()
+            }
+        };
+    }
+
+    if cfg!(target_os = "macos") {
+        return match dependency {
+            DependencyKind::Node => format!(
+                "当前缺少可用的 Node.js {}+ 运行时，建议先一键安装或修复 Node.js。",
+                format_semver(NODE_MIN_VERSION)
+            ),
+            DependencyKind::Git => "当前缺少可用的 Git，建议先一键安装或修复 Git。".to_string(),
+        };
+    }
+
+    match dependency {
+        DependencyKind::Node => format!(
+            "当前缺少可用的 Node.js {}+ 运行时，请先手动安装后重新检测。",
+            format_semver(NODE_MIN_VERSION)
+        ),
+        DependencyKind::Git => "当前缺少可用的 Git，请先手动安装后重新检测。".to_string(),
+    }
+}
+
 fn openclaw_installer_download_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let _ = app;
     let app_data_dir = proxycast_core::app_paths::preferred_data_dir()
@@ -1633,6 +1773,7 @@ fn build_environment_status(
     node: DependencyStatus,
     git: DependencyStatus,
     mut openclaw: DependencyStatus,
+    diagnostics: EnvironmentDiagnostics,
 ) -> EnvironmentStatus {
     let node_ready = node.status == "ok";
     let git_ready = git.status == "ok";
@@ -1641,12 +1782,18 @@ fn build_environment_status(
     let (recommended_action, summary) = if !node_ready {
         (
             "install_node".to_string(),
-            "当前缺少可用的 Node.js 22+ 运行时，建议先一键安装或修复 Node.js。".to_string(),
+            dependency_setup_summary(DependencyKind::Node),
         )
     } else if !git_ready {
         (
             "install_git".to_string(),
-            "当前缺少可用的 Git，建议先一键安装或修复 Git。".to_string(),
+            dependency_setup_summary(DependencyKind::Git),
+        )
+    } else if openclaw.status == "needs_reload" {
+        (
+            "refresh_openclaw_env".to_string(),
+            "已检测到 OpenClaw 包，但命令尚未生效；请点击“重新检测”，必要时重启 ProxyCast。"
+                .to_string(),
         )
     } else if openclaw.status != "ok" {
         (
@@ -1666,6 +1813,7 @@ fn build_environment_status(
         openclaw,
         recommended_action,
         summary,
+        diagnostics,
         temp_artifacts: collect_temp_artifact_paths(None)
             .into_iter()
             .filter(|path| path.exists())
@@ -1684,7 +1832,7 @@ async fn inspect_node_dependency_status() -> Result<DependencyStatus, String> {
                 "未检测到 Node.js，需要安装 {}+。",
                 format_semver(NODE_MIN_VERSION)
             ),
-            auto_install_supported: cfg!(target_os = "windows") || cfg!(target_os = "macos"),
+            auto_install_supported: cfg!(target_os = "macos"),
         });
     };
 
@@ -1698,7 +1846,7 @@ async fn inspect_node_dependency_status() -> Result<DependencyStatus, String> {
                 "检测到 Node.js，但无法识别版本：{version_text}。请安装 {}+。",
                 format_semver(NODE_MIN_VERSION)
             ),
-            auto_install_supported: cfg!(target_os = "windows") || cfg!(target_os = "macos"),
+            auto_install_supported: cfg!(target_os = "macos"),
         });
     };
 
@@ -1709,7 +1857,7 @@ async fn inspect_node_dependency_status() -> Result<DependencyStatus, String> {
             version: Some(normalized.clone()),
             path: Some(path),
             message: format!("Node.js 已就绪：{normalized}"),
-            auto_install_supported: cfg!(target_os = "windows") || cfg!(target_os = "macos"),
+            auto_install_supported: cfg!(target_os = "macos"),
         })
     } else {
         Ok(DependencyStatus {
@@ -1720,7 +1868,7 @@ async fn inspect_node_dependency_status() -> Result<DependencyStatus, String> {
                 "Node.js 版本过低：{normalized}，需要 {}+。",
                 format_semver(NODE_MIN_VERSION)
             ),
-            auto_install_supported: cfg!(target_os = "windows") || cfg!(target_os = "macos"),
+            auto_install_supported: cfg!(target_os = "macos"),
         })
     }
 }
@@ -1751,6 +1899,10 @@ async fn inspect_git_dependency_status() -> Result<DependencyStatus, String> {
 
 async fn inspect_openclaw_dependency_status() -> Result<DependencyStatus, String> {
     let Some(path) = find_command_in_shell("openclaw").await? else {
+        if let Some(status) = inspect_openclaw_package_reload_status().await? {
+            return Ok(status);
+        }
+
         return Ok(DependencyStatus {
             status: "missing".to_string(),
             version: None,
@@ -1778,18 +1930,41 @@ async fn inspect_openclaw_dependency_status() -> Result<DependencyStatus, String
     })
 }
 
-async fn git_auto_install_supported() -> Result<bool, String> {
-    #[cfg(target_os = "windows")]
-    {
-        Ok(find_command_in_shell("winget").await?.is_some())
-    }
+async fn inspect_openclaw_package_reload_status() -> Result<Option<DependencyStatus>, String> {
+    let Some(npm_path) = find_command_in_standard_locations("npm").await? else {
+        return Ok(None);
+    };
+    let Some(prefix) = detect_npm_global_prefix(&npm_path).await else {
+        return Ok(None);
+    };
+    let Some(package) = find_installed_openclaw_package_details(&prefix) else {
+        return Ok(None);
+    };
 
+    let version_suffix = package
+        .version
+        .as_deref()
+        .map(|item| format!("（{item}）"))
+        .unwrap_or_default();
+
+    Ok(Some(DependencyStatus {
+        status: "needs_reload".to_string(),
+        version: package.version.clone(),
+        path: Some(prefix.clone()),
+        message: format!(
+            "已在 npm 全局目录检测到 {}{}，但当前进程尚未解析到 openclaw 命令。请点击“重新检测”；若仍失败，请重启 ProxyCast，或确认 {prefix} 已加入 PATH。", package.name, version_suffix
+        ),
+        auto_install_supported: false,
+    }))
+}
+
+async fn git_auto_install_supported() -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
         Ok(true)
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     {
         Ok(false)
     }
@@ -2426,6 +2601,32 @@ fn apply_windows_no_window(_command: &mut Command) {
 }
 
 async fn find_command_in_shell(command_name: &str) -> Result<Option<String>, String> {
+    let mut candidates = collect_standard_command_candidates(command_name).await?;
+
+    if command_name == "openclaw" {
+        candidates.extend(find_commands_via_npm_global_prefix(command_name).await?);
+    }
+
+    Ok(select_command_path(command_name, candidates)
+        .await?
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
+async fn find_command_in_standard_locations(command_name: &str) -> Result<Option<String>, String> {
+    Ok(select_command_path(
+        command_name,
+        collect_standard_command_candidates(command_name).await?,
+    )
+    .await?
+    .map(|path| path.to_string_lossy().to_string()))
+}
+
+async fn collect_standard_command_candidates(command_name: &str) -> Result<Vec<PathBuf>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = refresh_windows_path_from_registry();
+    }
+
     let mut candidates = Vec::new();
 
     #[cfg(target_os = "windows")]
@@ -2435,6 +2636,13 @@ async fn find_command_in_shell(command_name: &str) -> Result<Option<String>, Str
 
     candidates.extend(find_all_commands_in_known_locations(command_name));
 
+    Ok(candidates)
+}
+
+async fn select_command_path(
+    command_name: &str,
+    candidates: Vec<PathBuf>,
+) -> Result<Option<PathBuf>, String> {
     let mut deduped = Vec::with_capacity(candidates.len());
     let mut seen = HashSet::new();
     for candidate in candidates {
@@ -2443,9 +2651,7 @@ async fn find_command_in_shell(command_name: &str) -> Result<Option<String>, Str
         }
     }
 
-    Ok(select_command_candidate(command_name, deduped)
-        .await?
-        .map(|path| path.to_string_lossy().to_string()))
+    select_command_candidate(command_name, deduped).await
 }
 
 #[cfg(target_os = "windows")]
@@ -2494,6 +2700,11 @@ async fn select_command_candidate(
 }
 
 fn find_all_commands_in_known_locations(command_name: &str) -> Vec<PathBuf> {
+    let search_dirs = collect_known_command_search_dirs();
+    find_all_commands_in_paths(command_name, &search_dirs)
+}
+
+fn collect_known_command_search_dirs() -> Vec<PathBuf> {
     let mut search_dirs = Vec::new();
     let mut seen = HashSet::new();
 
@@ -2536,6 +2747,13 @@ fn find_all_commands_in_known_locations(command_name: &str) -> Vec<PathBuf> {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        for dir in windows_known_command_dirs_from_env() {
+            push_dir(dir);
+        }
+    }
+
     if cfg!(target_os = "macos") {
         push_dir(PathBuf::from("/opt/homebrew/bin"));
         push_dir(PathBuf::from("/usr/local/bin"));
@@ -2543,7 +2761,42 @@ fn find_all_commands_in_known_locations(command_name: &str) -> Vec<PathBuf> {
         push_dir(PathBuf::from("/bin"));
     }
 
-    find_all_commands_in_paths(command_name, &search_dirs)
+    search_dirs
+}
+
+#[cfg(target_os = "windows")]
+fn windows_known_command_dirs_from_env() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        dirs.push(PathBuf::from(appdata).join("npm"));
+    }
+
+    if let Some(localappdata) = std::env::var_os("LOCALAPPDATA") {
+        let localappdata = PathBuf::from(localappdata);
+        dirs.push(localappdata.join("Programs").join("nodejs"));
+        dirs.push(localappdata.join("Volta").join("bin"));
+    }
+
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        dirs.push(PathBuf::from(program_files).join("nodejs"));
+    }
+
+    if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+        dirs.push(PathBuf::from(program_files_x86).join("nodejs"));
+    }
+
+    if let Some(home) = home_dir() {
+        dirs.push(home.join("AppData").join("Roaming").join("npm"));
+        dirs.push(
+            home.join("AppData")
+                .join("Local")
+                .join("Programs")
+                .join("nodejs"),
+        );
+    }
+
+    dirs
 }
 
 fn find_all_commands_in_paths(command_name: &str, search_dirs: &[PathBuf]) -> Vec<PathBuf> {
@@ -2570,6 +2823,170 @@ fn find_all_commands_in_paths(command_name: &str, search_dirs: &[PathBuf]) -> Ve
     }
 
     matches
+}
+
+async fn find_commands_via_npm_global_prefix(command_name: &str) -> Result<Vec<PathBuf>, String> {
+    let Some(npm_path) = find_command_in_standard_locations("npm").await? else {
+        return Ok(Vec::new());
+    };
+    let Some(prefix) = detect_npm_global_prefix(&npm_path).await else {
+        return Ok(Vec::new());
+    };
+
+    Ok(find_all_commands_in_paths(
+        command_name,
+        &npm_global_command_dirs(&prefix),
+    ))
+}
+
+fn npm_global_command_dirs(prefix: &str) -> Vec<PathBuf> {
+    npm_global_command_dirs_for(current_shell_platform(), prefix)
+}
+
+fn npm_global_command_dirs_for(platform: ShellPlatform, prefix: &str) -> Vec<PathBuf> {
+    let prefix_path = PathBuf::from(prefix);
+
+    match platform {
+        ShellPlatform::Windows => vec![prefix_path],
+        ShellPlatform::Unix => vec![prefix_path.join("bin"), prefix_path],
+    }
+}
+
+fn npm_global_node_modules_dirs_for(platform: ShellPlatform, prefix: &str) -> Vec<PathBuf> {
+    let prefix_path = PathBuf::from(prefix);
+
+    match platform {
+        ShellPlatform::Windows => vec![prefix_path.join("node_modules")],
+        ShellPlatform::Unix => vec![
+            prefix_path.join("lib").join("node_modules"),
+            prefix_path.join("node_modules"),
+        ],
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstalledOpenClawPackage {
+    name: &'static str,
+    version: Option<String>,
+    path: PathBuf,
+}
+
+#[cfg(test)]
+fn find_installed_openclaw_package(prefix: &str) -> Option<(&'static str, Option<String>)> {
+    find_installed_openclaw_package_details(prefix).map(|package| (package.name, package.version))
+}
+
+fn find_installed_openclaw_package_details(prefix: &str) -> Option<InstalledOpenClawPackage> {
+    for node_modules_dir in npm_global_node_modules_dirs_for(current_shell_platform(), prefix) {
+        let openclaw_manifest = node_modules_dir.join("openclaw").join("package.json");
+        if openclaw_manifest.is_file() {
+            return Some(InstalledOpenClawPackage {
+                name: "openclaw",
+                version: read_package_version(&openclaw_manifest),
+                path: openclaw_manifest,
+            });
+        }
+
+        let zh_manifest = node_modules_dir
+            .join("@qingchencloud")
+            .join("openclaw-zh")
+            .join("package.json");
+        if zh_manifest.is_file() {
+            return Some(InstalledOpenClawPackage {
+                name: "@qingchencloud/openclaw-zh",
+                version: read_package_version(&zh_manifest),
+                path: zh_manifest,
+            });
+        }
+    }
+
+    None
+}
+
+fn read_package_version(manifest_path: &Path) -> Option<String> {
+    #[derive(Deserialize)]
+    struct PackageManifest {
+        version: Option<String>,
+    }
+
+    let content = std::fs::read_to_string(manifest_path).ok()?;
+    let manifest = serde_json::from_str::<PackageManifest>(&content).ok()?;
+    manifest.version.filter(|item| !item.trim().is_empty())
+}
+
+async fn collect_environment_diagnostics() -> EnvironmentDiagnostics {
+    let npm_path = find_command_in_standard_locations("npm")
+        .await
+        .ok()
+        .flatten();
+    let npm_global_prefix = match npm_path.as_deref() {
+        Some(path) => detect_npm_global_prefix(path).await,
+        None => None,
+    };
+
+    #[cfg(target_os = "windows")]
+    let where_candidates = find_commands_via_where("openclaw")
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect();
+
+    #[cfg(not(target_os = "windows"))]
+    let where_candidates = Vec::new();
+
+    let supplemental_search_dirs =
+        collect_supplemental_openclaw_search_dirs(npm_global_prefix.as_deref());
+    let supplemental_command_candidates =
+        find_all_commands_in_paths("openclaw", &supplemental_search_dirs)
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect();
+    let openclaw_package_path = npm_global_prefix
+        .as_deref()
+        .and_then(find_installed_openclaw_package_details)
+        .map(|package| package.path.display().to_string());
+
+    EnvironmentDiagnostics {
+        npm_path,
+        npm_global_prefix,
+        openclaw_package_path,
+        where_candidates,
+        supplemental_search_dirs: supplemental_search_dirs
+            .into_iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+        supplemental_command_candidates,
+    }
+}
+
+fn collect_supplemental_openclaw_search_dirs(npm_global_prefix: Option<&str>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut push_dir = |dir: PathBuf| {
+        if dir.as_os_str().is_empty() || !dir.exists() {
+            return;
+        }
+        if seen.insert(dir.clone()) {
+            dirs.push(dir);
+        }
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        for dir in windows_known_command_dirs_from_env() {
+            push_dir(dir);
+        }
+    }
+
+    if let Some(prefix) = npm_global_prefix {
+        for dir in npm_global_command_dirs(prefix) {
+            push_dir(dir);
+        }
+    }
+
+    dirs
 }
 
 async fn select_best_node_candidate(candidates: Vec<PathBuf>) -> Result<Option<PathBuf>, String> {
@@ -2861,17 +3278,21 @@ mod tests {
     use super::{
         apply_gateway_runtime_defaults, build_environment_status, build_openclaw_cleanup_command,
         build_openclaw_install_command, build_winget_install_command, command_bin_dir_for,
-        determine_api_type, extract_gateway_auth_token, format_gateway_start_failure_message,
-        format_provider_base_url, gateway_start_args, has_api_version, parse_semver_from_text,
-        resolve_windows_dependency_install_plan, select_best_semver_candidate,
-        select_preferred_path_candidate, shell_command_escape_for, shell_npm_prefix_assignment_for,
-        shell_path_assignment_for, trim_trailing_slash, windows_manual_install_message,
-        DependencyKind, DependencyStatus, ShellPlatform, WindowsDependencyInstallPlan,
+        determine_api_type, extract_gateway_auth_token, find_installed_openclaw_package,
+        format_gateway_start_failure_message, format_provider_base_url, gateway_start_args,
+        has_api_version, npm_global_command_dirs_for, npm_global_node_modules_dirs_for,
+        parse_semver_from_text, resolve_windows_dependency_install_plan,
+        select_best_semver_candidate, select_preferred_path_candidate, shell_command_escape_for,
+        shell_npm_prefix_assignment_for, shell_path_assignment_for, trim_trailing_slash,
+        windows_dependency_action_result, windows_dependency_setup_message,
+        windows_install_block_result, windows_manual_install_message, DependencyKind,
+        DependencyStatus, EnvironmentDiagnostics, ShellPlatform, WindowsDependencyInstallPlan,
         NPM_MIRROR_CN, OPENCLAW_CN_PACKAGE, OPENCLAW_DEFAULT_PACKAGE,
     };
     use crate::database::dao::api_key_provider::{ApiKeyProvider, ApiProviderType, ProviderGroup};
     use chrono::Utc;
     use serde_json::{json, Value};
+    use std::fs;
     use std::path::PathBuf;
 
     fn build_provider(provider_type: ApiProviderType, api_host: &str) -> ApiKeyProvider {
@@ -3108,10 +3529,42 @@ mod tests {
                 message: "openclaw missing".to_string(),
                 auto_install_supported: false,
             },
+            EnvironmentDiagnostics::default(),
         );
 
         assert_eq!(env.recommended_action, "install_node");
         assert_eq!(env.openclaw.auto_install_supported, false);
+    }
+
+    #[test]
+    fn environment_status_uses_reload_summary_when_openclaw_command_not_ready() {
+        let env = build_environment_status(
+            DependencyStatus {
+                status: "ok".to_string(),
+                version: Some("22.0.0".to_string()),
+                path: Some("/usr/local/bin/node".to_string()),
+                message: "node ok".to_string(),
+                auto_install_supported: true,
+            },
+            DependencyStatus {
+                status: "ok".to_string(),
+                version: Some("2.44.0".to_string()),
+                path: Some("/usr/bin/git".to_string()),
+                message: "git ok".to_string(),
+                auto_install_supported: true,
+            },
+            DependencyStatus {
+                status: "needs_reload".to_string(),
+                version: Some("0.3.0".to_string()),
+                path: Some("/mock/prefix".to_string()),
+                message: "reload openclaw".to_string(),
+                auto_install_supported: false,
+            },
+            EnvironmentDiagnostics::default(),
+        );
+
+        assert_eq!(env.recommended_action, "refresh_openclaw_env");
+        assert!(env.summary.contains("重新检测"));
     }
 
     #[test]
@@ -3245,6 +3698,58 @@ mod tests {
     }
 
     #[test]
+    fn windows_npm_global_command_dirs_use_prefix_root() {
+        assert_eq!(
+            npm_global_command_dirs_for(
+                ShellPlatform::Windows,
+                r"C:\Users\demo\AppData\Roaming\npm"
+            ),
+            vec![PathBuf::from(r"C:\Users\demo\AppData\Roaming\npm")]
+        );
+    }
+
+    #[test]
+    fn unix_npm_global_command_dirs_include_bin_directory() {
+        assert_eq!(
+            npm_global_command_dirs_for(ShellPlatform::Unix, "/Users/demo/.npm-global"),
+            vec![
+                PathBuf::from("/Users/demo/.npm-global/bin"),
+                PathBuf::from("/Users/demo/.npm-global")
+            ]
+        );
+    }
+
+    #[test]
+    fn windows_npm_global_node_modules_dirs_use_prefix_node_modules() {
+        assert_eq!(
+            npm_global_node_modules_dirs_for(
+                ShellPlatform::Windows,
+                r"C:\Users\demo\AppData\Roaming\npm"
+            ),
+            vec![PathBuf::from(r"C:\Users\demo\AppData\Roaming\npm").join("node_modules")]
+        );
+    }
+
+    #[test]
+    fn finds_openclaw_package_from_global_npm_prefix() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("proxycast-openclaw-test-{}", std::process::id()));
+        let package_dir = temp_dir.join("node_modules").join("openclaw");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("package.json"),
+            r#"{"name":"openclaw","version":"0.4.1"}"#,
+        )
+        .unwrap();
+
+        let detected = find_installed_openclaw_package(temp_dir.to_str().unwrap());
+
+        fs::remove_dir_all(&temp_dir).unwrap();
+
+        assert_eq!(detected, Some(("openclaw", Some("0.4.1".to_string()))));
+    }
+
+    #[test]
     fn windows_node_prefers_winget_when_available() {
         assert_eq!(
             resolve_windows_dependency_install_plan(DependencyKind::Node, true),
@@ -3282,6 +3787,104 @@ mod tests {
             windows_manual_install_message(DependencyKind::Git),
             "当前系统缺少 winget，暂时无法一键安装 Git，请点击“手动下载 Git”完成安装后重试。"
         );
+    }
+
+    #[test]
+    fn windows_git_setup_message_points_to_manual_download() {
+        let message = windows_dependency_setup_message(
+            DependencyKind::Git,
+            &DependencyStatus {
+                status: "missing".to_string(),
+                version: None,
+                path: None,
+                message: "未检测到 Git。".to_string(),
+                auto_install_supported: false,
+            },
+        );
+
+        assert!(message.contains("git-scm.com"));
+        assert!(message.contains("加入 PATH"));
+    }
+
+    #[test]
+    fn windows_node_setup_message_points_to_nodejs_download() {
+        let message = windows_dependency_setup_message(
+            DependencyKind::Node,
+            &DependencyStatus {
+                status: "missing".to_string(),
+                version: None,
+                path: None,
+                message: "未检测到 Node.js，需要安装 22.0.0+。".to_string(),
+                auto_install_supported: false,
+            },
+        );
+
+        assert!(message.contains("nodejs.org"));
+        assert!(message.contains("Node.js 22+"));
+    }
+
+    #[test]
+    fn windows_dependency_action_result_returns_failure_message() {
+        let result = windows_dependency_action_result(
+            DependencyKind::Git,
+            &DependencyStatus {
+                status: "missing".to_string(),
+                version: None,
+                path: None,
+                message: "未检测到 Git。".to_string(),
+                auto_install_supported: false,
+            },
+        );
+
+        assert!(!result.success);
+        assert!(result.message.contains("git-scm.com"));
+    }
+
+    #[test]
+    fn windows_install_block_result_prioritizes_node_before_git() {
+        let result = windows_install_block_result(
+            &DependencyStatus {
+                status: "missing".to_string(),
+                version: None,
+                path: None,
+                message: "未检测到 Node.js，需要安装 22.0.0+。".to_string(),
+                auto_install_supported: false,
+            },
+            &DependencyStatus {
+                status: "missing".to_string(),
+                version: None,
+                path: None,
+                message: "未检测到 Git。".to_string(),
+                auto_install_supported: false,
+            },
+        )
+        .expect("应返回 Windows 阻断结果");
+
+        assert!(!result.success);
+        assert!(result.message.contains("nodejs.org"));
+        assert!(!result.message.contains("git-scm.com"));
+    }
+
+    #[test]
+    fn windows_install_block_result_returns_none_when_dependencies_ready() {
+        let result = windows_install_block_result(
+            &DependencyStatus {
+                status: "ok".to_string(),
+                version: Some("22.0.0".to_string()),
+                path: Some("C:\\Program Files\\nodejs\\node.exe".to_string()),
+                message: "Node.js 已就绪：22.0.0".to_string(),
+                auto_install_supported: false,
+            },
+            &DependencyStatus {
+                status: "ok".to_string(),
+                version: Some("2.44.0".to_string()),
+                path: Some("C:\\Program Files\\Git\\cmd\\git.exe".to_string()),
+                message: "Git 已就绪：2.44.0".to_string(),
+                auto_install_supported: false,
+            },
+        );
+
+        assert!(result.is_none());
     }
 
     #[test]

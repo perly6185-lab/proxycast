@@ -11,17 +11,18 @@ const { mockGetConfig } = vi.hoisted(() => ({
   mockGetConfig: vi.fn(async () => ({})),
 }));
 
-const mockCharacterMention = vi.fn<
-  (props: {
-    characters?: Character[];
-    skills?: Skill[];
-    onSelectSkill?: (skill: Skill) => void;
-    value: string;
-    onChange: (value: string) => void;
-  }) => React.ReactNode
->();
+const mockCharacterMention =
+  vi.fn<
+    (props: {
+      characters?: Character[];
+      skills?: Skill[];
+      onSelectSkill?: (skill: Skill) => void;
+      value: string;
+      onChange: (value: string) => void;
+    }) => React.ReactNode
+  >();
 
-vi.mock("@/hooks/useTauri", () => ({
+vi.mock("@/lib/api/appConfig", () => ({
   getConfig: mockGetConfig,
 }));
 
@@ -33,7 +34,11 @@ vi.mock("../utils/entryPromptComposer", () => ({
   composeEntryPrompt: vi.fn(() => ""),
   createDefaultEntrySlotValues: vi.fn(() => ({})),
   formatEntryTaskPreview: vi.fn(() => ""),
-  getEntryTaskTemplate: vi.fn(() => ({ slots: [], description: "", label: "" })),
+  getEntryTaskTemplate: vi.fn(() => ({
+    slots: [],
+    description: "",
+    label: "",
+  })),
   SOCIAL_MEDIA_ENTRY_TASKS: [],
   validateEntryTaskSlots: vi.fn(() => ({ valid: true, missing: [] })),
 }));
@@ -95,11 +100,15 @@ vi.mock("@/components/ui/textarea", () => {
 });
 
 vi.mock("@/components/ui/select", () => ({
-  Select: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  Select: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
   SelectContent: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
-  SelectItem: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  SelectItem: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
   SelectTrigger: ({ children }: { children: React.ReactNode }) => (
     <button type="button">{children}</button>
   ),
@@ -107,7 +116,9 @@ vi.mock("@/components/ui/select", () => ({
 }));
 
 vi.mock("@/components/ui/popover", () => ({
-  Popover: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  Popover: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
   PopoverContent: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
@@ -159,7 +170,9 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderEmptyState(props?: Partial<React.ComponentProps<typeof EmptyState>>) {
+function renderEmptyState(
+  props?: Partial<React.ComponentProps<typeof EmptyState>>,
+) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -219,11 +232,15 @@ describe("EmptyState", () => {
       await Promise.resolve();
     });
 
-    const mention = container.querySelector('[data-testid="character-mention-stub"]');
+    const mention = container.querySelector(
+      '[data-testid="character-mention-stub"]',
+    );
     expect(mention).toBeTruthy();
     expect(mockCharacterMention.mock.calls.length).toBeGreaterThan(0);
     const latestCall =
-      mockCharacterMention.mock.calls[mockCharacterMention.mock.calls.length - 1][0];
+      mockCharacterMention.mock.calls[
+        mockCharacterMention.mock.calls.length - 1
+      ][0];
     expect(latestCall.characters).toEqual(characters);
     expect(latestCall.skills).toEqual(skills);
 
@@ -234,13 +251,14 @@ describe("EmptyState", () => {
   });
 
   it("选择技能后发送应自动附加 skill 前缀，且发送后清除激活技能", async () => {
-    const onSend = vi.fn<
-      (
-        value: string,
-        executionStrategy?: "react" | "code_orchestrated" | "auto",
-        images?: unknown[],
-      ) => void
-    >();
+    const onSend =
+      vi.fn<
+        (
+          value: string,
+          executionStrategy?: "react" | "code_orchestrated" | "auto",
+          images?: unknown[],
+        ) => void
+      >();
     const skill: Skill = {
       key: "canvas-design",
       name: "canvas-design",
@@ -260,7 +278,9 @@ describe("EmptyState", () => {
     });
 
     const latestCall =
-      mockCharacterMention.mock.calls[mockCharacterMention.mock.calls.length - 1][0];
+      mockCharacterMention.mock.calls[
+        mockCharacterMention.mock.calls.length - 1
+      ][0];
     expect(typeof latestCall.onSelectSkill).toBe("function");
 
     act(() => {
@@ -310,13 +330,14 @@ describe("EmptyState", () => {
   });
 
   it("社媒主题发送时应默认走 social_post_with_cover skill", async () => {
-    const onSend = vi.fn<
-      (
-        value: string,
-        executionStrategy?: "react" | "code_orchestrated" | "auto",
-        images?: unknown[],
-      ) => void
-    >();
+    const onSend =
+      vi.fn<
+        (
+          value: string,
+          executionStrategy?: "react" | "code_orchestrated" | "auto",
+          images?: unknown[],
+        ) => void
+      >();
     vi.mocked(composeEntryPrompt).mockReturnValue("请输出一篇新品社媒文案");
 
     const container = renderEmptyState({
@@ -349,13 +370,14 @@ describe("EmptyState", () => {
     }));
     vi.mocked(composeEntryPrompt).mockReturnValue("请输出一篇用户访谈纪要");
 
-    const onSend = vi.fn<
-      (
-        value: string,
-        executionStrategy?: "react" | "code_orchestrated" | "auto",
-        images?: unknown[],
-      ) => void
-    >();
+    const onSend =
+      vi.fn<
+        (
+          value: string,
+          executionStrategy?: "react" | "code_orchestrated" | "auto",
+          images?: unknown[],
+        ) => void
+      >();
     const container = renderEmptyState({
       activeTheme: "social-media",
       onSend,
@@ -381,13 +403,14 @@ describe("EmptyState", () => {
   });
 
   it("社媒主题手动选择 skill 时应优先使用手动 skill", async () => {
-    const onSend = vi.fn<
-      (
-        value: string,
-        executionStrategy?: "react" | "code_orchestrated" | "auto",
-        images?: unknown[],
-      ) => void
-    >();
+    const onSend =
+      vi.fn<
+        (
+          value: string,
+          executionStrategy?: "react" | "code_orchestrated" | "auto",
+          images?: unknown[],
+        ) => void
+      >();
     vi.mocked(composeEntryPrompt).mockReturnValue("请输出一篇品牌故事");
     const skill: Skill = {
       key: "custom-social-skill",
@@ -408,7 +431,9 @@ describe("EmptyState", () => {
     });
 
     const latestCall =
-      mockCharacterMention.mock.calls[mockCharacterMention.mock.calls.length - 1][0];
+      mockCharacterMention.mock.calls[
+        mockCharacterMention.mock.calls.length - 1
+      ][0];
     act(() => {
       latestCall.onSelectSkill?.(skill);
     });
@@ -429,12 +454,18 @@ describe("EmptyState", () => {
     );
   });
 
-  it("通用主题工具栏应包含附件和深度思考开关", async () => {
+  it("通用主题工具栏应包含附件、思考、后台任务与多代理开关", async () => {
     const onThinkingEnabledChange = vi.fn<(enabled: boolean) => void>();
+    const onTaskEnabledChange = vi.fn<(enabled: boolean) => void>();
+    const onSubagentEnabledChange = vi.fn<(enabled: boolean) => void>();
     const container = renderEmptyState({
       activeTheme: "general",
       thinkingEnabled: false,
       onThinkingEnabledChange,
+      taskEnabled: false,
+      onTaskEnabledChange,
+      subagentEnabled: false,
+      onSubagentEnabledChange,
     });
     await act(async () => {
       await Promise.resolve();
@@ -449,11 +480,27 @@ describe("EmptyState", () => {
       'button[title="开启深度思考"]',
     ) as HTMLButtonElement | null;
     expect(thinkingButton).toBeTruthy();
+    const taskButton = container.querySelector(
+      'button[title="开启后台任务偏好"]',
+    ) as HTMLButtonElement | null;
+    expect(taskButton).toBeTruthy();
+    const subagentButton = container.querySelector(
+      'button[title="开启多代理偏好"]',
+    ) as HTMLButtonElement | null;
+    expect(subagentButton).toBeTruthy();
 
     act(() => {
       thinkingButton?.click();
     });
+    act(() => {
+      taskButton?.click();
+    });
+    act(() => {
+      subagentButton?.click();
+    });
 
     expect(onThinkingEnabledChange).toHaveBeenCalledWith(true);
+    expect(onTaskEnabledChange).toHaveBeenCalledWith(true);
+    expect(onSubagentEnabledChange).toHaveBeenCalledWith(true);
   });
 });

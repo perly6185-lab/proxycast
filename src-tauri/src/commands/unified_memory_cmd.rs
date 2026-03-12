@@ -4,7 +4,7 @@
 
 use crate::config::GlobalConfigManagerState;
 use crate::database::DbConnection;
-use chrono::{Local, TimeZone};
+use crate::services::chat_history_service::{load_memory_source_candidates, MemorySourceCandidate};
 use proxycast_memory::extractor::{self, ExtractionContext};
 use proxycast_memory::gatekeeper::ChatMessage;
 use proxycast_memory::{MemoryCategory, MemoryMetadata, MemorySource, MemoryType, UnifiedMemory};
@@ -79,14 +79,6 @@ pub struct MemoryAnalysisResult {
     pub analyzed_messages: u32,
     pub generated_entries: u32,
     pub deduplicated_entries: u32,
-}
-
-#[derive(Debug, Clone)]
-struct MemorySourceCandidate {
-    session_id: String,
-    role: String,
-    content: String,
-    created_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -908,92 +900,13 @@ fn load_memory_candidates(
     from_timestamp: Option<i64>,
     to_timestamp: Option<i64>,
 ) -> Result<Vec<MemorySourceCandidate>, String> {
-    let mut candidates = Vec::new();
-
-    let mut push_candidate =
-        |session_id: String, role: String, content: String, created_at: i64| {
-            let normalized = normalize_candidate_content(&content);
-            if normalized.len() < MIN_MESSAGE_LENGTH {
-                return;
-            }
-
-            let normalized_role = role.to_lowercase();
-            if normalized_role != "user" && normalized_role != "assistant" {
-                return;
-            }
-
-            candidates.push(MemorySourceCandidate {
-                session_id,
-                role: normalized_role,
-                content: normalized,
-                created_at: normalize_timestamp(created_at),
-            });
-        };
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT session_id, role, content, created_at
-             FROM general_chat_messages
-             WHERE (?1 IS NULL OR created_at >= ?1)
-               AND (?2 IS NULL OR created_at <= ?2)
-             ORDER BY created_at DESC
-             LIMIT ?3",
-        )
-        .map_err(|e| format!("查询 general_chat_messages 失败: {e}"))?;
-
-    let rows = stmt
-        .query_map(
-            params![from_timestamp, to_timestamp, MAX_SOURCE_MESSAGES as i64],
-            |row| {
-                let session_id: String = row.get(0)?;
-                let role: String = row.get(1)?;
-                let content: String = row.get(2)?;
-                let created_at: i64 = row.get(3)?;
-                Ok((session_id, role, content, created_at))
-            },
-        )
-        .map_err(|e| format!("读取 general_chat_messages 失败: {e}"))?;
-
-    for row in rows.flatten() {
-        push_candidate(row.0, row.1, row.2, row.3);
-    }
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT session_id, role, content_json, timestamp
-             FROM agent_messages
-             ORDER BY timestamp DESC
-             LIMIT ?1",
-        )
-        .map_err(|e| format!("查询 agent_messages 失败: {e}"))?;
-
-    let rows = stmt
-        .query_map(params![MAX_SOURCE_MESSAGES as i64], |row| {
-            let session_id: String = row.get(0)?;
-            let role: String = row.get(1)?;
-            let content_json: String = row.get(2)?;
-            let timestamp: String = row.get(3)?;
-            Ok((session_id, role, content_json, timestamp))
-        })
-        .map_err(|e| format!("读取 agent_messages 失败: {e}"))?;
-
-    for row in rows.flatten() {
-        if let Some(timestamp_ms) = parse_rfc3339_to_timestamp(&row.3) {
-            if from_timestamp.is_some_and(|from| timestamp_ms < from)
-                || to_timestamp.is_some_and(|to| timestamp_ms > to)
-            {
-                continue;
-            }
-
-            let text = extract_text_from_content_json(&row.2);
-            push_candidate(row.0, row.1, text, timestamp_ms);
-        }
-    }
-
-    candidates.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    candidates.truncate(MAX_SOURCE_MESSAGES);
-
-    Ok(candidates)
+    load_memory_source_candidates(
+        conn,
+        from_timestamp,
+        to_timestamp,
+        MAX_SOURCE_MESSAGES,
+        MIN_MESSAGE_LENGTH,
+    )
 }
 
 fn build_rule_entry_fields(candidate: &MemorySourceCandidate) -> (String, String, MemoryCategory) {
@@ -1150,14 +1063,6 @@ fn normalize_tags(tags: Vec<String>) -> Vec<String> {
     normalized
 }
 
-fn normalize_candidate_content(content: &str) -> String {
-    content
-        .replace('\n', " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn normalize_text(input: &str) -> String {
     input
         .trim()
@@ -1251,76 +1156,6 @@ fn normalize_timestamp(ts: i64) -> i64 {
     } else {
         ts * 1000
     }
-}
-
-fn parse_rfc3339_to_timestamp(value: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|dt| dt.timestamp_millis())
-        .or_else(|| parse_datetime_or_timestamp_to_millis(value))
-}
-
-fn parse_datetime_or_timestamp_to_millis(value: &str) -> Option<i64> {
-    if let Ok(v) = value.parse::<i64>() {
-        if v > 1_000_000_000_000 {
-            return Some(v);
-        }
-        return Some(v * 1000);
-    }
-
-    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
-        .ok()
-        .and_then(|naive| {
-            Local
-                .from_local_datetime(&naive)
-                .single()
-                .map(|dt| dt.timestamp_millis())
-        })
-}
-
-fn extract_text_from_content_json(content_json: &str) -> String {
-    if let Ok(text) = serde_json::from_str::<String>(content_json) {
-        return text;
-    }
-
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(content_json) {
-        match value {
-            serde_json::Value::Array(items) => {
-                let texts = items
-                    .iter()
-                    .filter_map(extract_text_from_json_item)
-                    .collect::<Vec<_>>();
-                if !texts.is_empty() {
-                    return texts.join(" ");
-                }
-            }
-            serde_json::Value::Object(_) => {
-                if let Some(text) = extract_text_from_json_item(&value) {
-                    return text;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    content_json.to_string()
-}
-
-fn extract_text_from_json_item(value: &serde_json::Value) -> Option<String> {
-    if let Some(text) = value.get("Text").and_then(|v| v.as_str()) {
-        return Some(text.to_string());
-    }
-
-    if value.get("type").and_then(|v| v.as_str()) == Some("text") {
-        if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
-            return Some(text.to_string());
-        }
-    }
-
-    value
-        .get("text")
-        .and_then(|v| v.as_str())
-        .map(|v| v.to_string())
 }
 
 fn format_timestamp(timestamp_ms: i64) -> String {

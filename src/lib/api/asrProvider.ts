@@ -4,7 +4,7 @@
  * 定义语音识别服务相关的类型，与 Rust 后端保持一致。
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 
 // ============ ASR Provider 类型 ============
 
@@ -117,74 +117,77 @@ export interface AudioDeviceInfo {
 
 /** 获取所有可用的麦克风设备 */
 export async function listAudioDevices(): Promise<AudioDeviceInfo[]> {
-  return invoke<AudioDeviceInfo[]>("list_audio_devices");
+  return safeInvoke<AudioDeviceInfo[]>("list_audio_devices");
 }
 
 /** 获取 ASR 凭证列表 */
 export async function getAsrCredentials(): Promise<AsrCredentialEntry[]> {
-  return invoke<AsrCredentialEntry[]>("get_asr_credentials");
+  return safeInvoke<AsrCredentialEntry[]>("get_asr_credentials");
 }
 
 /** 添加 ASR 凭证 */
 export async function addAsrCredential(
   entry: Omit<AsrCredentialEntry, "id">,
 ): Promise<AsrCredentialEntry> {
-  return invoke<AsrCredentialEntry>("add_asr_credential", { entry });
+  return safeInvoke<AsrCredentialEntry>("add_asr_credential", { entry });
 }
 
 /** 更新 ASR 凭证 */
 export async function updateAsrCredential(
   entry: AsrCredentialEntry,
 ): Promise<void> {
-  return invoke("update_asr_credential", { entry });
+  return safeInvoke<void>("update_asr_credential", { entry });
 }
 
 /** 删除 ASR 凭证 */
 export async function deleteAsrCredential(id: string): Promise<void> {
-  return invoke("delete_asr_credential", { id });
+  return safeInvoke<void>("delete_asr_credential", { id });
 }
 
 /** 设置默认 ASR 凭证 */
 export async function setDefaultAsrCredential(id: string): Promise<void> {
-  return invoke("set_default_asr_credential", { id });
+  return safeInvoke<void>("set_default_asr_credential", { id });
 }
 
 /** 测试 ASR 凭证连通性 */
 export async function testAsrCredential(
   id: string,
 ): Promise<{ success: boolean; message: string }> {
-  return invoke("test_asr_credential", { id });
+  return safeInvoke<{ success: boolean; message: string }>(
+    "test_asr_credential",
+    { id },
+  );
 }
 
 // ============ 语音输入配置命令 ============
 
 /** 获取语音输入配置 */
 export async function getVoiceInputConfig(): Promise<VoiceInputConfig> {
-  return invoke<VoiceInputConfig>("get_voice_input_config");
+  return safeInvoke<VoiceInputConfig>("get_voice_input_config");
 }
 
 /** 保存语音输入配置 */
 export async function saveVoiceInputConfig(
   config: VoiceInputConfig,
 ): Promise<void> {
-  return invoke("save_voice_input_config", { voiceConfig: config });
+  return safeInvoke<void>("save_voice_input_config", { voiceConfig: config });
 }
 
 /** 获取指令列表 */
 export async function getVoiceInstructions(): Promise<VoiceInstruction[]> {
-  return invoke<VoiceInstruction[]>("get_voice_instructions");
+  return safeInvoke<VoiceInstruction[]>("get_voice_instructions");
 }
 
 /** 保存指令 */
 export async function saveVoiceInstruction(
   instruction: VoiceInstruction,
 ): Promise<void> {
-  return invoke("save_voice_instruction", { instruction });
+  return safeInvoke<void>("save_voice_instruction", { instruction });
 }
 
 /** 删除指令 */
 export async function deleteVoiceInstruction(id: string): Promise<void> {
-  return invoke("delete_voice_instruction", { id });
+  return safeInvoke<void>("delete_voice_instruction", { id });
 }
 
 // ============ 语音识别和润色命令 ============
@@ -207,7 +210,7 @@ export async function transcribeAudio(
   sampleRate: number,
   credentialId?: string,
 ): Promise<TranscribeResult> {
-  return invoke<TranscribeResult>("transcribe_audio", {
+  return safeInvoke<TranscribeResult>("transcribe_audio", {
     audioData: Array.from(audioData),
     sampleRate,
     credentialId,
@@ -219,7 +222,7 @@ export async function polishVoiceText(
   text: string,
   instructionId?: string,
 ): Promise<PolishResult> {
-  return invoke<PolishResult>("polish_voice_text", {
+  return safeInvoke<PolishResult>("polish_voice_text", {
     text,
     instructionId,
   });
@@ -227,12 +230,12 @@ export async function polishVoiceText(
 
 /** 打开语音输入窗口 */
 export async function openVoiceWindow(): Promise<void> {
-  return invoke("open_voice_window");
+  return safeInvoke<void>("open_voice_window");
 }
 
 /** 关闭语音输入窗口 */
 export async function closeVoiceWindow(): Promise<void> {
-  return invoke("close_voice_window");
+  return safeInvoke<void>("close_voice_window");
 }
 
 /** 输出文本到系统 */
@@ -240,7 +243,7 @@ export async function outputVoiceText(
   text: string,
   mode?: "type" | "clipboard" | "both",
 ): Promise<void> {
-  return invoke("output_voice_text", { text, mode });
+  return safeInvoke<void>("output_voice_text", { text, mode });
 }
 
 // ============ 录音控制命令 ============
@@ -267,25 +270,25 @@ export interface StopRecordingResult {
 
 /** 开始录音 */
 export async function startRecording(deviceId?: string): Promise<void> {
-  return invoke("start_recording", { deviceId });
+  return safeInvoke<void>("start_recording", { deviceId });
 }
 
 /** 停止录音并返回音频数据 */
 export async function stopRecording(): Promise<StopRecordingResult> {
-  return invoke<StopRecordingResult>("stop_recording");
+  return safeInvoke<StopRecordingResult>("stop_recording");
 }
 
 /** 取消录音 */
 export async function cancelRecording(): Promise<void> {
-  return invoke("cancel_recording");
+  return safeInvoke<void>("cancel_recording");
 }
 
 /** 获取录音状态 */
 export async function getRecordingStatus(): Promise<RecordingStatus> {
-  return invoke<RecordingStatus>("get_recording_status");
+  return safeInvoke<RecordingStatus>("get_recording_status");
 }
 
 /** 打开带预填文本的输入框 */
 export async function openInputWithText(text: string): Promise<void> {
-  return invoke("open_input_with_text", { text });
+  return safeInvoke<void>("open_input_with_text", { text });
 }

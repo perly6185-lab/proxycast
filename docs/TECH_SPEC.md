@@ -8,13 +8,13 @@ ProxyCast 是一个桌面端 AI API 代理工具，将各种大模型客户端 A
 
 基于 pubcast 项目技术栈：
 
-| 类别 | 技术 |
-|------|------|
-| 框架 | Tauri 2.0 (Rust + Web) |
-| 前端 | React 18 + TypeScript |
-| 构建 | Vite 5 |
-| UI | Tailwind CSS + Radix UI |
-| 图标 | Lucide React |
+| 类别 | 技术                    |
+| ---- | ----------------------- |
+| 框架 | Tauri 2.0 (Rust + Web)  |
+| 前端 | React 18 + TypeScript   |
+| 构建 | Vite 5                  |
+| UI   | Tailwind CSS + Radix UI |
+| 图标 | Lucide React            |
 
 ### 核心依赖
 
@@ -32,15 +32,15 @@ ProxyCast 是一个桌面端 AI API 代理工具，将各种大模型客户端 A
 
 参考 AIClient-2-API，需支持以下渠道：
 
-| Provider | 协议 | 说明 |
-|----------|------|------|
-| `claude-kiro-oauth` | OpenAI/Claude | Kiro OAuth 访问 Claude Sonnet 4.5 |
-| `gemini-cli-oauth` | OpenAI/Claude/Gemini | Gemini CLI OAuth |
-| `openai-qwen-oauth` | OpenAI/Claude | 通义千问 OAuth |
-| `openai-custom` | OpenAI | 自定义 OpenAI 兼容 API |
-| `claude-custom` | Claude | 自定义 Claude API |
-| `gemini-antigravity` | Gemini | Antigravity 协议 |
-| `openaiResponses-custom` | OpenAI Responses | 结构化对话 |
+| Provider                 | 协议                 | 说明                              |
+| ------------------------ | -------------------- | --------------------------------- |
+| `claude-kiro-oauth`      | OpenAI/Claude        | Kiro OAuth 访问 Claude Sonnet 4.5 |
+| `gemini-cli-oauth`       | OpenAI/Claude/Gemini | Gemini CLI OAuth                  |
+| `openai-qwen-oauth`      | OpenAI/Claude        | 通义千问 OAuth                    |
+| `openai-custom`          | OpenAI               | 自定义 OpenAI 兼容 API            |
+| `claude-custom`          | Claude               | 自定义 Claude API                 |
+| `gemini-antigravity`     | Gemini               | Antigravity 协议                  |
+| `openaiResponses-custom` | OpenAI Responses     | 结构化对话                        |
 
 ## 核心功能模块
 
@@ -74,9 +74,9 @@ src/
 │   ├── TokenManager.tsx  # Token 管理
 │   ├── LogViewer.tsx     # 日志查看
 │   └── ui/               # 通用 UI 组件
-├── hooks/
-│   └── useTauri.ts       # Tauri API hooks
+├── hooks/                # 领域 Hook（不再承载统一 Tauri 聚合层）
 └── lib/
+    ├── api/             # 前端 API 网关
     └── utils.ts
 ```
 
@@ -91,12 +91,12 @@ http://localhost:8999/{provider}/v1/messages
 
 ### 支持的端点
 
-| 端点 | 协议 | 说明 |
-|------|------|------|
-| `/v1/chat/completions` | OpenAI | 聊天补全 |
-| `/v1/messages` | Claude | Anthropic 消息 |
-| `/v1/models` | OpenAI | 模型列表 |
-| `/health` | - | 健康检查 |
+| 端点                   | 协议   | 说明           |
+| ---------------------- | ------ | -------------- |
+| `/v1/chat/completions` | OpenAI | 聊天补全       |
+| `/v1/messages`         | Claude | Anthropic 消息 |
+| `/v1/models`           | OpenAI | 模型列表       |
+| `/health`              | -      | 健康检查       |
 
 ## 配置文件结构
 
@@ -139,12 +139,12 @@ http://localhost:8999/{provider}/v1/messages
 
 ## Token 凭证路径
 
-| 服务 | 默认路径 |
-|------|----------|
-| Kiro | `~/.aws/sso/cache/kiro-auth-token.json` |
-| Gemini | `~/.gemini/oauth_creds.json` |
-| Qwen | `~/.qwen/oauth_creds.json` |
-| Antigravity | `~/.antigravity/oauth_creds.json` |
+| 服务        | 默认路径                                |
+| ----------- | --------------------------------------- |
+| Kiro        | `~/.aws/sso/cache/kiro-auth-token.json` |
+| Gemini      | `~/.gemini/oauth_creds.json`            |
+| Qwen        | `~/.qwen/oauth_creds.json`              |
+| Antigravity | `~/.antigravity/oauth_creds.json`       |
 
 ## 协议转换
 
@@ -156,13 +156,13 @@ OpenAI <---> Claude <---> Gemini
 
 ### 转换矩阵
 
-| 输入协议 | 输出 Provider | 说明 |
-|----------|---------------|------|
-| OpenAI | kiro | OpenAI -> CodeWhisperer |
-| OpenAI | gemini | OpenAI -> Gemini |
-| Claude | kiro | Claude -> CodeWhisperer |
-| Claude | gemini | Claude -> Gemini |
-| Claude | openai | Claude -> OpenAI |
+| 输入协议 | 输出 Provider | 说明                    |
+| -------- | ------------- | ----------------------- |
+| OpenAI   | kiro          | OpenAI -> CodeWhisperer |
+| OpenAI   | gemini        | OpenAI -> Gemini        |
+| Claude   | kiro          | Claude -> CodeWhisperer |
+| Claude   | gemini        | Claude -> Gemini        |
+| Claude   | openai        | Claude -> OpenAI        |
 
 ## UI 功能
 
@@ -175,21 +175,25 @@ OpenAI <---> Claude <---> Gemini
 ## 开发计划
 
 ### Phase 1: 基础框架
+
 - [ ] Tauri 项目初始化
 - [ ] 基础 UI 布局
 - [ ] 配置管理
 
 ### Phase 2: Kiro Provider
+
 - [ ] Kiro OAuth Token 读取
 - [ ] CodeWhisperer API 调用
 - [ ] OpenAI/Claude 协议支持
 
 ### Phase 3: 其他 Provider
+
 - [ ] Gemini CLI OAuth
 - [ ] Qwen OAuth
 - [ ] OpenAI/Claude Custom
 
 ### Phase 4: 高级功能
+
 - [ ] Provider Pool 管理
 - [ ] 自动 Token 刷新
 - [ ] 请求日志/统计

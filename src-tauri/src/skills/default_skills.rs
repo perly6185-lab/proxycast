@@ -1,6 +1,10 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+#[cfg(test)]
+use std::path::PathBuf;
+
+use proxycast_core::app_paths;
 use proxycast_core::models::{
     BROADCAST_GENERATE_SKILL_DIRECTORY, COVER_GENERATE_SKILL_DIRECTORY,
     IMAGE_GENERATE_SKILL_DIRECTORY, LIBRARY_SKILL_DIRECTORY, MODAL_RESOURCE_SEARCH_SKILL_DIRECTORY,
@@ -61,8 +65,9 @@ fn default_skills() -> [(&'static str, &'static str); 10] {
     ]
 }
 
-fn skills_root_from_home(home_dir: &Path) -> PathBuf {
-    home_dir.join(".proxycast").join("skills")
+#[cfg(test)]
+fn skills_root_from_base(base_dir: &Path) -> PathBuf {
+    base_dir.join("skills")
 }
 
 /// 从 SKILL.md 内容中提取版本号，返回 (major, minor, patch)
@@ -83,8 +88,7 @@ fn parse_skill_version(content: &str) -> Option<(u32, u32, u32)> {
     None
 }
 
-fn ensure_default_local_skills_in_home(home_dir: &Path) -> Result<Vec<String>, String> {
-    let skills_root = skills_root_from_home(home_dir);
+fn ensure_default_local_skills_in_dir(skills_root: &Path) -> Result<Vec<String>, String> {
     fs::create_dir_all(&skills_root)
         .map_err(|e| format!("创建技能目录失败 {}: {e}", skills_root.display()))?;
 
@@ -120,8 +124,8 @@ fn ensure_default_local_skills_in_home(home_dir: &Path) -> Result<Vec<String>, S
 }
 
 pub fn ensure_default_local_skills() -> Result<Vec<String>, String> {
-    let home_dir = dirs::home_dir().ok_or_else(|| "无法获取用户 Home 目录".to_string())?;
-    ensure_default_local_skills_in_home(&home_dir)
+    let skills_root = app_paths::resolve_skills_dir()?;
+    ensure_default_local_skills_in_dir(&skills_root)
 }
 
 #[cfg(test)]
@@ -131,13 +135,11 @@ mod tests {
     #[test]
     fn should_install_default_skill_when_missing() {
         let temp = tempfile::tempdir().expect("create temp dir");
-        let installed = ensure_default_local_skills_in_home(temp.path()).expect("install");
+        let skills_root = skills_root_from_base(temp.path());
+        let installed = ensure_default_local_skills_in_dir(&skills_root).expect("install");
         assert!(installed.contains(&SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY.to_string()));
 
-        let skill_md_path = temp
-            .path()
-            .join(".proxycast")
-            .join("skills")
+        let skill_md_path = skills_root
             .join(SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY)
             .join("SKILL.md");
         assert!(skill_md_path.exists());
@@ -146,18 +148,15 @@ mod tests {
     #[test]
     fn should_not_overwrite_existing_skill() {
         let temp = tempfile::tempdir().expect("create temp dir");
-        let skill_dir = temp
-            .path()
-            .join(".proxycast")
-            .join("skills")
-            .join(SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY);
+        let skills_root = skills_root_from_base(temp.path());
+        let skill_dir = skills_root.join(SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY);
         fs::create_dir_all(&skill_dir).expect("create skill dir");
         let skill_md_path = skill_dir.join("SKILL.md");
         // 无版本号的自定义内容不应被覆盖
         let existing_content = "custom skill content";
         fs::write(&skill_md_path, existing_content).expect("write custom skill");
 
-        let installed = ensure_default_local_skills_in_home(temp.path()).expect("install");
+        let installed = ensure_default_local_skills_in_dir(&skills_root).expect("install");
         assert!(
             !installed.contains(&SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY.to_string()),
             "无版本信息的已存在 skill 不应被重新安装"
@@ -170,18 +169,15 @@ mod tests {
     #[test]
     fn should_upgrade_skill_when_newer_version_available() {
         let temp = tempfile::tempdir().expect("create temp dir");
-        let skill_dir = temp
-            .path()
-            .join(".proxycast")
-            .join("skills")
-            .join(SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY);
+        let skills_root = skills_root_from_base(temp.path());
+        let skill_dir = skills_root.join(SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY);
         fs::create_dir_all(&skill_dir).expect("create skill dir");
         let skill_md_path = skill_dir.join("SKILL.md");
         // 旧版本内容
         let old_content = "---\nname: social_post_with_cover\nversion: 1.0.0\n---\nold content";
         fs::write(&skill_md_path, old_content).expect("write old skill");
 
-        let installed = ensure_default_local_skills_in_home(temp.path()).expect("install");
+        let installed = ensure_default_local_skills_in_dir(&skills_root).expect("install");
         assert!(
             installed.contains(&SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY.to_string()),
             "内置版本更新时应自动升级"

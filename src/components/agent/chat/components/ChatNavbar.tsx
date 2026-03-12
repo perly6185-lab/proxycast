@@ -33,6 +33,7 @@ interface ChatNavbarProps {
   onToggleHarnessPanel?: () => void;
   harnessPendingCount?: number;
   harnessAttentionLevel?: "idle" | "active" | "warning";
+  harnessToggleLabel?: string;
   novelCanvasControls?: {
     chapterListCollapsed: boolean;
     onToggleChapterList: () => void;
@@ -58,6 +59,7 @@ export const ChatNavbar: React.FC<ChatNavbarProps> = ({
   onToggleHarnessPanel,
   harnessPendingCount = 0,
   harnessAttentionLevel = "idle",
+  harnessToggleLabel = "Harness",
   novelCanvasControls = null,
 }) => {
   return (
@@ -173,15 +175,19 @@ export const ChatNavbar: React.FC<ChatNavbarProps> = ({
             )}
             onClick={onToggleHarnessPanel}
             aria-label={
-              harnessPanelVisible ? "收起 Harness 面板" : "展开 Harness 面板"
+              harnessPanelVisible
+                ? `收起${harnessToggleLabel}`
+                : `展开${harnessToggleLabel}`
             }
             aria-expanded={harnessPanelVisible}
             title={
-              harnessPanelVisible ? "收起 Harness 面板" : "展开 Harness 面板"
+              harnessPanelVisible
+                ? `收起${harnessToggleLabel}`
+                : `展开${harnessToggleLabel}`
             }
           >
             <Sparkles size={14} />
-            <span>Harness</span>
+            <span>{harnessToggleLabel}</span>
             {harnessPendingCount > 0 ? (
               <span className="rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-medium leading-none text-destructive-foreground">
                 {harnessPendingCount > 99 ? "99+" : harnessPendingCount}

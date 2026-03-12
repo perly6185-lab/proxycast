@@ -13,10 +13,12 @@ import type {
   OpenClawDependencyStatus,
   OpenClawEnvironmentStatus,
 } from "@/lib/api/openclaw";
+import type { DesktopPlatform } from "@/lib/crashDiagnostic";
 import { OpenClawMark } from "./OpenClawMark";
 
 interface OpenClawInstallPageProps {
   environmentStatus: OpenClawEnvironmentStatus | null;
+  desktopPlatform: DesktopPlatform;
   busy: boolean;
   installing: boolean;
   installingNode: boolean;
@@ -36,6 +38,8 @@ function resolveStatusTone(status: OpenClawDependencyStatus["status"]): string {
   switch (status) {
     case "ok":
       return "text-emerald-600";
+    case "needs_reload":
+      return "text-amber-600";
     case "version_low":
       return "text-amber-600";
     case "missing":
@@ -51,6 +55,8 @@ function resolveStatusLabel(
   switch (status) {
     case "ok":
       return "已就绪";
+    case "needs_reload":
+      return "待刷新";
     case "version_low":
       return "版本过低";
     case "missing":
@@ -67,6 +73,7 @@ function DependencyCard({
   busy,
   primaryLabel,
   onPrimaryAction,
+  disablePrimaryAction,
   secondaryLabel,
   onSecondaryAction,
 }: {
@@ -76,6 +83,7 @@ function DependencyCard({
   busy: boolean;
   primaryLabel?: string;
   onPrimaryAction?: () => void;
+  disablePrimaryAction?: boolean;
   secondaryLabel?: string;
   onSecondaryAction?: () => void;
 }) {
@@ -117,7 +125,7 @@ function DependencyCard({
             <button
               type="button"
               onClick={onPrimaryAction}
-              disabled={busy}
+              disabled={busy || disablePrimaryAction}
               className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs hover:bg-muted disabled:opacity-60"
             >
               {busy ? (
@@ -146,6 +154,7 @@ function DependencyCard({
 
 export function OpenClawInstallPage({
   environmentStatus,
+  desktopPlatform,
   busy,
   installing,
   installingNode,
@@ -163,11 +172,40 @@ export function OpenClawInstallPage({
   const nodeReady = environmentStatus?.node.status === "ok";
   const gitReady = environmentStatus?.git.status === "ok";
   const openclawReady = environmentStatus?.openclaw.status === "ok";
+  const openclawNeedsReload =
+    environmentStatus?.openclaw.status === "needs_reload";
+  const missingDependencies = environmentStatus
+    ? [
+        !nodeReady ? "Node.js" : null,
+        !gitReady ? "Git" : null,
+      ].filter(Boolean)
+    : [];
+  const installBlockedByPlatform =
+    desktopPlatform === "windows" && missingDependencies.length > 0;
+  const installBlocked = installBlockedByPlatform || openclawNeedsReload;
   const installLabel = openclawReady
     ? "重新安装 OpenClaw"
-    : nodeReady && gitReady
-      ? "安装 OpenClaw"
-      : "一键修复环境并安装 OpenClaw";
+    : openclawNeedsReload
+      ? "请先重新检测 OpenClaw"
+    : installBlockedByPlatform
+      ? `请先安装 ${missingDependencies.join(" / ")}`
+      : nodeReady && gitReady
+        ? "安装 OpenClaw"
+        : "一键修复环境并安装 OpenClaw";
+  const openclawInstallLabel = !openclawReady && !openclawNeedsReload
+    ? installBlockedByPlatform
+      ? `请先安装 ${missingDependencies.join(" / ")}`
+      : "安装 OpenClaw"
+    : undefined;
+  const diagnostics = environmentStatus?.diagnostics;
+  const hasDiagnostics = Boolean(
+    diagnostics?.npmPath ||
+      diagnostics?.npmGlobalPrefix ||
+      diagnostics?.openclawPackagePath ||
+      diagnostics?.whereCandidates?.length ||
+      diagnostics?.supplementalSearchDirs?.length ||
+      diagnostics?.supplementalCommandCandidates?.length,
+  );
 
   return (
     <div className="flex min-h-0 flex-col items-center px-6 py-10">
@@ -186,7 +224,7 @@ export function OpenClawInstallPage({
             <button
               type="button"
               onClick={onInstall}
-              disabled={busy}
+              disabled={busy || installBlocked}
               className="inline-flex min-w-[220px] items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm text-primary-foreground disabled:opacity-60"
             >
               {installing ? (
@@ -227,6 +265,18 @@ export function OpenClawInstallPage({
               查看文档
             </button>
           </div>
+
+          {installBlockedByPlatform ? (
+            <p className="mt-3 max-w-2xl text-xs leading-6 text-muted-foreground">
+              Windows 下请先手动安装 {missingDependencies.join(" / ")}
+              ，完成后点击“重新检测”，再安装 OpenClaw。
+            </p>
+          ) : openclawNeedsReload ? (
+            <p className="mt-3 max-w-2xl text-xs leading-6 text-muted-foreground">
+              已检测到 OpenClaw 包，但命令尚未生效。请先点击“重新检测”；若仍失败，请重启
+              ProxyCast 后再试。
+            </p>
+          ) : null}
         </div>
 
         <div className="grid gap-4 md:grid-cols-3">
@@ -267,8 +317,9 @@ export function OpenClawInstallPage({
             icon={<Package className="h-4 w-4" />}
             status={environmentStatus?.openclaw ?? null}
             busy={busy && installing}
-            primaryLabel={!openclawReady ? "安装 OpenClaw" : undefined}
+            primaryLabel={openclawInstallLabel}
             onPrimaryAction={!openclawReady ? onInstall : undefined}
+            disablePrimaryAction={installBlockedByPlatform}
           />
         </div>
 
@@ -280,6 +331,12 @@ export function OpenClawInstallPage({
               -
               缺失依赖时，优先尝试应用内一键安装；若当前平台不支持，则自动降级到手动下载引导。
             </p>
+            {desktopPlatform === "windows" ? (
+              <p>
+                - Windows 下会优先引导手动安装 Node.js / Git，环境就绪后再继续安装
+                OpenClaw，避免混合安装流程中途退出。
+              </p>
+            ) : null}
             <p>- 安装完成后会自动重新检测环境，并继续执行 OpenClaw 安装。</p>
           </div>
 
@@ -298,6 +355,80 @@ export function OpenClawInstallPage({
             </div>
           ) : null}
         </section>
+
+        {hasDiagnostics ? (
+          <section className="rounded-2xl border bg-card p-5 shadow-sm">
+            <div className="text-sm font-medium">检测诊断</div>
+            <div className="mt-3 grid gap-3 text-xs leading-6 text-muted-foreground md:grid-cols-2">
+              <div className="rounded-xl bg-muted/50 px-4 py-3">
+                <div className="font-medium text-foreground">npm 命令</div>
+                <div className="mt-1 break-all">
+                  {diagnostics?.npmPath || "未检测到"}
+                </div>
+              </div>
+              <div className="rounded-xl bg-muted/50 px-4 py-3">
+                <div className="font-medium text-foreground">npm 全局前缀</div>
+                <div className="mt-1 break-all">
+                  {diagnostics?.npmGlobalPrefix || "未检测到"}
+                </div>
+              </div>
+              <div className="rounded-xl bg-muted/50 px-4 py-3 md:col-span-2">
+                <div className="font-medium text-foreground">
+                  OpenClaw 包路径
+                </div>
+                <div className="mt-1 break-all">
+                  {diagnostics?.openclawPackagePath || "未检测到"}
+                </div>
+              </div>
+              <div className="rounded-xl bg-muted/50 px-4 py-3">
+                <div className="font-medium text-foreground">
+                  `where openclaw` 命中
+                </div>
+                <div className="mt-1 space-y-1">
+                  {diagnostics?.whereCandidates?.length ? (
+                    diagnostics.whereCandidates.map((item) => (
+                      <div key={item} className="break-all">
+                        {item}
+                      </div>
+                    ))
+                  ) : (
+                    <div>未命中</div>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-xl bg-muted/50 px-4 py-3">
+                <div className="font-medium text-foreground">补充搜索目录</div>
+                <div className="mt-1 space-y-1">
+                  {diagnostics?.supplementalSearchDirs?.length ? (
+                    diagnostics.supplementalSearchDirs.map((item) => (
+                      <div key={item} className="break-all">
+                        {item}
+                      </div>
+                    ))
+                  ) : (
+                    <div>无</div>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-xl bg-muted/50 px-4 py-3 md:col-span-2">
+                <div className="font-medium text-foreground">
+                  补充目录中的 OpenClaw 命中
+                </div>
+                <div className="mt-1 space-y-1">
+                  {diagnostics?.supplementalCommandCandidates?.length ? (
+                    diagnostics.supplementalCommandCandidates.map((item) => (
+                      <div key={item} className="break-all">
+                        {item}
+                      </div>
+                    ))
+                  ) : (
+                    <div>未命中</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
       </div>
     </div>
   );

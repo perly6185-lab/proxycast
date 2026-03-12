@@ -39,21 +39,111 @@ pub fn legacy_database_path() -> Result<PathBuf, String> {
 }
 
 pub fn resolve_database_path() -> Result<PathBuf, String> {
-    let preferred_root = preferred_data_dir()?;
-    let legacy_root = legacy_home_dir()?;
-    resolve_database_path_from_roots(&preferred_root, &legacy_root)
+    with_app_roots(resolve_database_path_from_roots)
 }
 
 pub fn resolve_logs_dir() -> Result<PathBuf, String> {
-    let preferred_root = preferred_data_dir()?;
-    let legacy_root = legacy_home_dir()?;
-    resolve_subdir_with_legacy_copy_from_roots(&preferred_root, &legacy_root, "logs")
+    resolve_runtime_subdir("logs")
 }
 
 pub fn resolve_request_logs_dir() -> Result<PathBuf, String> {
+    resolve_runtime_subdir("request_logs")
+}
+
+pub fn resolve_projects_dir() -> Result<PathBuf, String> {
+    resolve_runtime_subdir("projects")
+}
+
+pub fn resolve_sessions_dir() -> Result<PathBuf, String> {
+    resolve_runtime_subdir("sessions")
+}
+
+pub fn resolve_skills_dir() -> Result<PathBuf, String> {
+    resolve_runtime_subdir("skills")
+}
+
+pub fn resolve_user_memory_path() -> Result<PathBuf, String> {
+    with_app_roots(resolve_user_memory_path_from_roots)
+}
+
+pub fn resolve_default_project_dir() -> Result<PathBuf, String> {
+    with_app_roots(resolve_default_project_dir_from_roots)
+}
+
+pub fn best_effort_runtime_subdir(subdir: &str) -> PathBuf {
+    resolve_runtime_subdir(subdir).unwrap_or_else(|_| fallback_runtime_subdir(subdir))
+}
+
+pub fn best_effort_app_data_file(file_name: &str) -> PathBuf {
+    preferred_data_dir()
+        .unwrap_or_else(|_| fallback_app_data_dir())
+        .join(file_name)
+}
+
+fn with_app_roots<T>(
+    resolver: impl FnOnce(&Path, &Path) -> Result<T, String>,
+) -> Result<T, String> {
     let preferred_root = preferred_data_dir()?;
     let legacy_root = legacy_home_dir()?;
-    resolve_subdir_with_legacy_copy_from_roots(&preferred_root, &legacy_root, "request_logs")
+    resolver(&preferred_root, &legacy_root)
+}
+
+fn resolve_runtime_subdir(subdir: &str) -> Result<PathBuf, String> {
+    with_app_roots(|preferred_root, legacy_root| {
+        resolve_subdir_with_legacy_copy_from_roots(preferred_root, legacy_root, subdir)
+    })
+}
+
+fn fallback_runtime_subdir(subdir: &str) -> PathBuf {
+    fallback_app_data_dir().join(subdir)
+}
+
+fn fallback_app_data_dir() -> PathBuf {
+    std::env::temp_dir().join(APP_DATA_DIR_NAME)
+}
+
+fn resolve_default_project_dir_from_roots(
+    preferred_root: &Path,
+    legacy_root: &Path,
+) -> Result<PathBuf, String> {
+    let default_dir =
+        resolve_subdir_with_legacy_copy_from_roots(preferred_root, legacy_root, "projects")?
+            .join("default");
+    fs::create_dir_all(&default_dir)
+        .map_err(|e| format!("无法创建默认项目目录 {}: {e}", default_dir.display()))?;
+    Ok(default_dir)
+}
+
+fn resolve_user_memory_path_from_roots(
+    preferred_root: &Path,
+    legacy_root: &Path,
+) -> Result<PathBuf, String> {
+    let preferred_path = preferred_root.join("AGENTS.md");
+    if preferred_path.exists() {
+        return Ok(preferred_path);
+    }
+
+    let legacy_path = legacy_root.join("AGENTS.md");
+    if !legacy_path.exists() {
+        return Ok(preferred_path);
+    }
+
+    if let Some(parent) = preferred_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("无法创建用户记忆目录 {}: {e}", parent.display()))?;
+    }
+
+    match fs::copy(&legacy_path, &preferred_path) {
+        Ok(_) => Ok(preferred_path),
+        Err(error) => {
+            tracing::warn!(
+                "[路径迁移] 用户记忆文件迁移失败，回退旧路径 {}: {}",
+                legacy_path.display(),
+                error
+            );
+            Ok(legacy_path)
+        }
+    }
 }
 
 fn resolve_database_path_from_roots(
@@ -400,6 +490,110 @@ mod tests {
             fs::read_to_string(resolved.join("proxycast.log")).unwrap(),
             "legacy log"
         );
+    }
+
+    #[test]
+    fn resolve_projects_dir_copies_legacy_project_directories() {
+        let temp = tempdir().unwrap();
+        let preferred_root = temp.path().join("appdata").join("proxycast");
+        let legacy_root = temp.path().join("home").join(".proxycast");
+        let legacy_project_dir = legacy_root.join("projects").join("legacy-project");
+        fs::create_dir_all(&legacy_project_dir).unwrap();
+        fs::write(legacy_project_dir.join("note.md"), "legacy project").unwrap();
+
+        let resolved =
+            resolve_subdir_with_legacy_copy_from_roots(&preferred_root, &legacy_root, "projects")
+                .unwrap();
+
+        assert_eq!(resolved, preferred_root.join("projects"));
+        assert_eq!(
+            fs::read_to_string(resolved.join("legacy-project").join("note.md")).unwrap(),
+            "legacy project"
+        );
+    }
+
+    #[test]
+    fn resolve_sessions_dir_copies_legacy_session_directories() {
+        let temp = tempdir().unwrap();
+        let preferred_root = temp.path().join("appdata").join("proxycast");
+        let legacy_root = temp.path().join("home").join(".proxycast");
+        let legacy_session_dir = legacy_root
+            .join("sessions")
+            .join("legacy-session")
+            .join("files");
+        fs::create_dir_all(&legacy_session_dir).unwrap();
+        fs::write(legacy_session_dir.join("note.md"), "legacy session").unwrap();
+
+        let resolved =
+            resolve_subdir_with_legacy_copy_from_roots(&preferred_root, &legacy_root, "sessions")
+                .unwrap();
+
+        assert_eq!(resolved, preferred_root.join("sessions"));
+        assert_eq!(
+            fs::read_to_string(
+                resolved
+                    .join("legacy-session")
+                    .join("files")
+                    .join("note.md")
+            )
+            .unwrap(),
+            "legacy session"
+        );
+    }
+
+    #[test]
+    fn resolve_skills_dir_copies_legacy_skill_directories() {
+        let temp = tempdir().unwrap();
+        let preferred_root = temp.path().join("appdata").join("proxycast");
+        let legacy_root = temp.path().join("home").join(".proxycast");
+        let legacy_skill_dir = legacy_root.join("skills").join("legacy-skill");
+        fs::create_dir_all(&legacy_skill_dir).unwrap();
+        fs::write(legacy_skill_dir.join("SKILL.md"), "legacy skill").unwrap();
+
+        let resolved =
+            resolve_subdir_with_legacy_copy_from_roots(&preferred_root, &legacy_root, "skills")
+                .unwrap();
+
+        assert_eq!(resolved, preferred_root.join("skills"));
+        assert_eq!(
+            fs::read_to_string(resolved.join("legacy-skill").join("SKILL.md")).unwrap(),
+            "legacy skill"
+        );
+    }
+
+    #[test]
+    fn resolve_user_memory_path_copies_legacy_agents_file() {
+        let temp = tempdir().unwrap();
+        let preferred_root = temp.path().join("appdata").join("proxycast");
+        let legacy_root = temp.path().join("home").join(".proxycast");
+        fs::create_dir_all(&legacy_root).unwrap();
+        fs::write(legacy_root.join("AGENTS.md"), "legacy agents").unwrap();
+
+        let resolved = resolve_user_memory_path_from_roots(&preferred_root, &legacy_root).unwrap();
+
+        let expected = preferred_root.join("AGENTS.md");
+        assert_eq!(resolved, expected);
+        assert_eq!(fs::read_to_string(expected).unwrap(), "legacy agents");
+    }
+
+    #[test]
+    fn resolve_default_project_dir_creates_default_subdirectory() {
+        let temp = tempdir().unwrap();
+        let preferred_root = temp.path().join("appdata").join("proxycast");
+        let legacy_root = temp.path().join("home").join(".proxycast");
+
+        let resolved =
+            resolve_default_project_dir_from_roots(&preferred_root, &legacy_root).unwrap();
+
+        assert_eq!(resolved, preferred_root.join("projects").join("default"));
+        assert!(resolved.exists());
+        assert!(resolved.is_dir());
+    }
+
+    #[test]
+    fn fallback_runtime_subdir_uses_proxycast_temp_namespace() {
+        let fallback = fallback_runtime_subdir("logs");
+        assert!(fallback.ends_with(Path::new(APP_DATA_DIR_NAME).join("logs")));
     }
 
     #[test]

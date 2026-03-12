@@ -184,6 +184,106 @@ const defaultMocks: Record<string, any> = {
     summary_message: null,
   }),
 
+  // OpenClaw 相关
+  openclaw_check_installed: () => ({
+    installed: false,
+    path: null,
+  }),
+  openclaw_get_environment_status: () => ({
+    node: {
+      status: "ok",
+      version: "22.0.0",
+      path: "/opt/homebrew/bin/node",
+      message: "Node.js 已就绪：22.0.0",
+      autoInstallSupported: true,
+    },
+    git: {
+      status: "ok",
+      version: "2.44.0",
+      path: "/usr/bin/git",
+      message: "Git 已就绪：2.44.0",
+      autoInstallSupported: true,
+    },
+    openclaw: {
+      status: "missing",
+      version: null,
+      path: null,
+      message: "未检测到 OpenClaw，可在环境就绪后一键安装。",
+      autoInstallSupported: false,
+    },
+    recommendedAction: "install_openclaw",
+    summary: "运行环境已就绪，可以继续一键安装 OpenClaw。",
+    diagnostics: {
+      npmPath: "/opt/homebrew/bin/npm",
+      npmGlobalPrefix: "/opt/homebrew",
+      openclawPackagePath: null,
+      whereCandidates: [],
+      supplementalSearchDirs: ["/opt/homebrew/bin", "/usr/local/bin"],
+      supplementalCommandCandidates: [],
+    },
+    tempArtifacts: [],
+  }),
+  openclaw_check_node_version: () => ({
+    status: "ok",
+    version: "22.0.0",
+    path: "/opt/homebrew/bin/node",
+  }),
+  openclaw_check_git_available: () => ({
+    available: true,
+    path: "/usr/bin/git",
+  }),
+  openclaw_get_node_download_url: () => "https://nodejs.org/en/download",
+  openclaw_get_git_download_url: () => "https://git-scm.com/downloads",
+  openclaw_install: () => ({
+    success: true,
+    message: "OpenClaw 安装请求已在浏览器 mock 模式下完成。",
+  }),
+  openclaw_install_dependency: (args: any) => ({
+    success: true,
+    message: `${args?.kind === "git" ? "Git" : "Node.js"} 安装请求已在浏览器 mock 模式下完成。`,
+  }),
+  openclaw_get_command_preview: (args: any) => ({
+    title: "Mock OpenClaw 命令预览",
+    command: `mock ${args?.operation ?? "install"}`,
+  }),
+  openclaw_uninstall: () => ({
+    success: true,
+    message: "OpenClaw 卸载请求已在浏览器 mock 模式下完成。",
+  }),
+  openclaw_cleanup_temp_artifacts: () => ({
+    success: true,
+    message: "未发现需要清理的 OpenClaw 临时文件。",
+  }),
+  openclaw_start_gateway: () => ({
+    success: true,
+    message: "Gateway 已在浏览器 mock 模式下启动。",
+  }),
+  openclaw_stop_gateway: () => ({
+    success: true,
+    message: "Gateway 已在浏览器 mock 模式下停止。",
+  }),
+  openclaw_restart_gateway: () => ({
+    success: true,
+    message: "Gateway 已在浏览器 mock 模式下重启。",
+  }),
+  openclaw_get_status: () => ({
+    status: "stopped",
+    port: 18790,
+  }),
+  openclaw_check_health: () => ({
+    status: "unhealthy",
+    gatewayPort: 18790,
+    uptime: null,
+    version: null,
+  }),
+  openclaw_get_dashboard_url: () => "http://127.0.0.1:18790/#token=mock-openclaw",
+  openclaw_get_channels: () => [],
+  openclaw_get_progress_logs: () => [],
+  openclaw_sync_provider_config: () => ({
+    success: true,
+    message: "Provider 配置已同步到浏览器 mock 环境。",
+  }),
+
   // 服务器相关
   get_server_status: () => ({
     running: false,
@@ -556,6 +656,14 @@ const defaultMocks: Record<string, any> = {
   aster_session_get: () => ({ id: "mock", messages: [] }),
   aster_agent_confirm: () => ({}),
   aster_agent_submit_elicitation_response: () => ({}),
+  agent_runtime_submit_turn: () => ({}),
+  agent_runtime_interrupt_turn: () => true,
+  agent_runtime_create_session: () => "mock-aster-session",
+  agent_runtime_list_sessions: () => [],
+  agent_runtime_get_session: () => ({ id: "mock", messages: [] }),
+  agent_runtime_update_session: () => ({}),
+  agent_runtime_delete_session: () => ({}),
+  agent_runtime_respond_action: () => ({}),
 
   // 终端相关
   create_terminal_session: () => ({ uuid: "mock-terminal-uuid" }),
@@ -632,9 +740,6 @@ const defaultMocks: Record<string, any> = {
   update_provider_sort_orders: () => ({ success: true }),
   export_api_key_providers: () => ({ config: "{}" }),
   import_api_key_providers: () => ({ success: true }),
-  get_legacy_api_key_credentials: () => [],
-  migrate_legacy_api_key_credentials: () => ({ success: true }),
-  delete_legacy_api_key_credential: () => ({ success: true }),
   get_local_kiro_credential_uuid: () => null,
   create_video_generation_task: (args: any) => {
     const request = args?.request ?? {};
@@ -680,14 +785,25 @@ const defaultMocks: Record<string, any> = {
     style_guide: null,
     outline: [],
   }),
-  get_conversation_memory_overview: () => ({
+  memory_runtime_get_overview: () => ({
     stats: { total_entries: 0, storage_used: 0, memory_count: 0 },
+    categories: [],
     entries: [],
   }),
-  get_conversation_memory_stats: () => ({
+  memory_runtime_get_stats: () => ({
     total_entries: 0,
     storage_used: 0,
     memory_count: 0,
+  }),
+  memory_runtime_request_analysis: () => ({
+    analyzed_sessions: 0,
+    analyzed_messages: 0,
+    generated_entries: 0,
+    deduplicated_entries: 0,
+  }),
+  memory_runtime_cleanup: () => ({
+    cleaned_entries: 0,
+    freed_space: 0,
   }),
 
   session_files_get_or_create: (args: any) => ({
@@ -889,7 +1005,6 @@ const defaultMocks: Record<string, any> = {
   import_prompt_from_file: () => ({ success: true }),
   get_current_prompt_file_content: () => ({ content: "" }),
   auto_import_prompt: () => ({ success: true }),
-  switch_prompt: () => ({ success: true }),
 
   // Window 相关
   get_window_size: () => ({ width: 1280, height: 800 }),
@@ -902,6 +1017,10 @@ const defaultMocks: Record<string, any> = {
   restore_window_size: () => ({}),
   toggle_window_size: () => ({}),
   center_window: () => ({}),
+  close_webview_panel: () => true,
+  get_webview_panels: () => [],
+  focus_webview_panel: () => true,
+  navigate_webview_panel: () => true,
 
   // Usage 相关
   get_kiro_usage: () => ({ usage: {} }),
@@ -1172,7 +1291,13 @@ const defaultMocks: Record<string, any> = {
     current_gate_key: "idle",
     queue_items: [],
     latest_terminal: null,
+    recent_terminals: [],
     updated_at: new Date().toISOString(),
+  }),
+  execution_run_list_theme_workbench_history: () => ({
+    items: [],
+    has_more: false,
+    next_offset: null,
   }),
   content_workflow_get_by_content: () => null,
   content_workflow_create: () => null,

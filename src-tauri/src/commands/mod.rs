@@ -18,7 +18,6 @@ pub mod external_tools_cmd;
 pub mod file_upload_cmd;
 pub mod gateway_channel_cmd;
 pub mod gateway_tunnel_cmd;
-pub mod general_chat_cmd;
 pub mod heartbeat_cmd;
 pub mod image_search_cmd;
 pub mod image_upload_cmd;

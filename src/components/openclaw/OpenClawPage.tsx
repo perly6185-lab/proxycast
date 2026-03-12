@@ -5,6 +5,10 @@ import type { ConfiguredProvider } from "@/hooks/useConfiguredProviders";
 import { useProviderModels } from "@/hooks/useProviderModels";
 import { useApiKeyProvider } from "@/hooks/useApiKeyProvider";
 import { getRegistryIdFromType } from "@/lib/constants/providerMappings";
+import {
+  detectDesktopPlatform,
+  type DesktopPlatform,
+} from "@/lib/crashDiagnostic";
 import type { EnhancedModelMetadata } from "@/lib/types/modelRegistry";
 import type {
   OpenClawPageParams,
@@ -277,6 +281,11 @@ export function OpenClawPage({
   onNavigate,
   isActive = false,
 }: OpenClawPageProps) {
+  const desktopPlatform = useMemo<DesktopPlatform>(
+    () => detectDesktopPlatform(),
+    [],
+  );
+  const isWindowsPlatform = desktopPlatform === "windows";
   const {
     providers,
     loading: providersLoading,
@@ -367,6 +376,27 @@ export function OpenClawPage({
   const canSync = installed && hasSelectedConfig;
   const canStartFromConfigure =
     canStartGateway && (hasSelectedConfig || !!lastSynced);
+  const missingInstallDependencies = useMemo(() => {
+    if (!environmentStatus) {
+      return [] as string[];
+    }
+
+    return [
+      environmentStatus.node.status !== "ok" ? "Node.js" : null,
+      environmentStatus.git.status !== "ok" ? "Git" : null,
+    ].filter(Boolean) as string[];
+  }, [environmentStatus]);
+  const installBlockMessage = useMemo(() => {
+    if (environmentStatus?.openclaw.status === "needs_reload") {
+      return environmentStatus.openclaw.message;
+    }
+
+    if (!isWindowsPlatform || missingInstallDependencies.length === 0) {
+      return null;
+    }
+
+    return `Windows 下请先手动安装 ${missingInstallDependencies.join(" / ")}，完成后点击“重新检测”，再安装 OpenClaw。`;
+  }, [environmentStatus, isWindowsPlatform, missingInstallDependencies]);
   const {
     dashboardLoading,
     dashboardUrl,
@@ -765,24 +795,50 @@ export function OpenClawPage({
     [navigateSubpage, refreshAll],
   );
 
+  const handleDownloadNode = useCallback(async () => {
+    try {
+      const url = await openclawApi.getNodeDownloadUrl();
+      await openUrl(url);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  const handleDownloadGit = useCallback(async () => {
+    try {
+      const url = await openclawApi.getGitDownloadUrl();
+      await openUrl(url);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
   const handleInstall = useCallback(async () => {
+    if (installBlockMessage) {
+      toast.error(installBlockMessage);
+      return;
+    }
+
     await runProgressOperation({
       kind: "install",
       target: "openclaw",
-      title: "正在修复环境并安装 OpenClaw",
-      description:
-        "ProxyCast 会先自动检查并修复 Node.js / Git，再继续安装 OpenClaw。",
+      title: isWindowsPlatform ? "正在安装 OpenClaw" : "正在修复环境并安装 OpenClaw",
+      description: isWindowsPlatform
+        ? "当前环境已通过检测，正在继续安装 OpenClaw。"
+        : "ProxyCast 会先自动检查并修复 Node.js / Git，再继续安装 OpenClaw。",
       action: () => openclawApi.install(),
       successSubpage: "runtime",
       returnSubpage: "install",
       initialLogs: [
         {
           level: "info",
-          message: "已发送安装请求，正在检查并修复 OpenClaw 运行环境...",
+          message: isWindowsPlatform
+            ? "已发送安装请求，正在安装 OpenClaw..."
+            : "已发送安装请求，正在检查并修复 OpenClaw 运行环境...",
         },
       ],
     });
-  }, [runProgressOperation]);
+  }, [installBlockMessage, isWindowsPlatform, runProgressOperation]);
 
   const handleUninstall = useCallback(async () => {
     if (!window.confirm("确定要卸载 OpenClaw 吗？")) {
@@ -855,6 +911,12 @@ export function OpenClawPage({
   }, [closeDashboardWindowSilently, gatewayPort, runProgressOperation]);
 
   const handleInstallNode = useCallback(async () => {
+    if (isWindowsPlatform) {
+      toast.info("Windows 下请先手动下载安装 Node.js 22+，安装完成后重新检测。");
+      await handleDownloadNode();
+      return;
+    }
+
     await runProgressOperation({
       kind: "repair",
       target: "node",
@@ -870,9 +932,17 @@ export function OpenClawPage({
         },
       ],
     });
-  }, [runProgressOperation]);
+  }, [handleDownloadNode, isWindowsPlatform, runProgressOperation]);
 
   const handleInstallGit = useCallback(async () => {
+    if (isWindowsPlatform) {
+      toast.info(
+        "Windows 下请先手动下载安装 Git，并在安装时勾选加入 PATH，完成后重新检测。",
+      );
+      await handleDownloadGit();
+      return;
+    }
+
     await runProgressOperation({
       kind: "repair",
       target: "git",
@@ -888,7 +958,7 @@ export function OpenClawPage({
         },
       ],
     });
-  }, [runProgressOperation]);
+  }, [handleDownloadGit, isWindowsPlatform, runProgressOperation]);
 
   const handleSync = useCallback(async () => {
     await syncProviderConfig();
@@ -1217,6 +1287,7 @@ export function OpenClawPage({
     return (
       <OpenClawInstallPage
         environmentStatus={environmentStatus}
+        desktopPlatform={desktopPlatform}
         busy={operationState.running}
         installing={
           operationState.running &&
@@ -1240,18 +1311,8 @@ export function OpenClawPage({
         onRefresh={() => void refreshAll()}
         onCleanupTemp={() => void handleCleanupTempArtifacts()}
         onOpenDocs={() => void openUrl(OPENCLAW_DOCS_URL)}
-        onDownloadNode={() =>
-          void openclawApi
-            .getNodeDownloadUrl()
-            .then((url) => openUrl(url))
-            .catch((error) => toast.error(String(error)))
-        }
-        onDownloadGit={() =>
-          void openclawApi
-            .getGitDownloadUrl()
-            .then((url) => openUrl(url))
-            .catch((error) => toast.error(String(error)))
-        }
+        onDownloadNode={() => void handleDownloadNode()}
+        onDownloadGit={() => void handleDownloadGit()}
       />
     );
   }
@@ -1292,6 +1353,7 @@ export function OpenClawPage({
     return (
       <OpenClawInstallPage
         environmentStatus={environmentStatus}
+        desktopPlatform={desktopPlatform}
         busy={operationState.running}
         installing={
           operationState.running &&
@@ -1315,18 +1377,8 @@ export function OpenClawPage({
         onRefresh={() => void refreshAll()}
         onCleanupTemp={() => void handleCleanupTempArtifacts()}
         onOpenDocs={() => void openUrl(OPENCLAW_DOCS_URL)}
-        onDownloadNode={() =>
-          void openclawApi
-            .getNodeDownloadUrl()
-            .then((url) => openUrl(url))
-            .catch((error) => toast.error(String(error)))
-        }
-        onDownloadGit={() =>
-          void openclawApi
-            .getGitDownloadUrl()
-            .then((url) => openUrl(url))
-            .catch((error) => toast.error(String(error)))
-        }
+        onDownloadNode={() => void handleDownloadNode()}
+        onDownloadGit={() => void handleDownloadGit()}
       />
     );
   }

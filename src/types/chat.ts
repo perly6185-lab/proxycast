@@ -234,6 +234,27 @@ export interface SessionResponse {
   messageCount: number;
 }
 
+/** Harness 产物快照 */
+export interface HarnessArtifactSnapshot {
+  artifactId: string;
+  filePath?: string;
+  content?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** Harness 领域事件 */
+export interface HarnessEventPayload {
+  kind: string;
+  sessionId?: string;
+  runId?: string;
+  correlationId?: string;
+  theme?: string;
+  stage?: string;
+  summary?: string;
+  artifact?: HarnessArtifactSnapshot;
+  metadata?: Record<string, unknown>;
+}
+
 // ============================================================================
 // 流式事件类型
 // ============================================================================
@@ -244,6 +265,8 @@ export type StreamEventType =
   | "thinking_delta"
   | "tool_start"
   | "tool_end"
+  | "harness_event"
+  | "artifact_snapshot"
   | "action_required"
   | "done"
   | "final_done"
@@ -292,6 +315,18 @@ export interface ActionRequiredEvent {
   requested_schema?: unknown;
 }
 
+/** Harness 事件 */
+export interface HarnessEvent {
+  type: "harness_event";
+  event: HarnessEventPayload;
+}
+
+/** 产物快照事件 */
+export interface ArtifactSnapshotEvent {
+  type: "artifact_snapshot";
+  artifact: HarnessArtifactSnapshot;
+}
+
 /** 完成事件 */
 export interface DoneEvent {
   type: "done";
@@ -318,6 +353,8 @@ export type StreamEvent =
   | ThinkingDeltaEvent
   | ToolStartEvent
   | ToolEndEvent
+  | HarnessEvent
+  | ArtifactSnapshotEvent
   | ActionRequiredEvent
   | DoneEvent
   | FinalDoneEvent
@@ -343,6 +380,12 @@ export interface UseUnifiedChatOptions {
   onCanvasUpdate?: (path: string, content: string) => void;
   /** 文件写入回调 */
   onWriteFile?: (content: string, fileName: string) => void;
+  /** Harness 配置 */
+  harnessConfig?: Record<string, unknown>;
+  /** Harness 事件回调 */
+  onHarnessEvent?: (event: HarnessEventPayload) => void;
+  /** 产物更新回调 */
+  onArtifactUpdate?: (artifact: HarnessArtifactSnapshot) => void;
   /** 错误回调 */
   onError?: (error: ChatError) => void;
 }

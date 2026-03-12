@@ -3,6 +3,7 @@
 //! 提供自动记忆目录定位、入口索引读取与笔记更新能力。
 
 use chrono::Local;
+use proxycast_core::app_paths;
 use proxycast_core::config::{MemoryAutoConfig, MemoryConfig};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -131,10 +132,7 @@ pub fn resolve_auto_memory_root(working_dir: &Path, auto: &MemoryAutoConfig) -> 
         slug
     };
 
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".proxycast")
-        .join("projects")
+    app_paths::best_effort_runtime_subdir("projects")
         .join(project_slug)
         .join("memory")
 }

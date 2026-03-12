@@ -31,25 +31,25 @@ export type {
 export async function getMemoryOverview(
   limit?: number,
 ): Promise<MemoryOverviewResponse> {
-  return safeInvoke("get_conversation_memory_overview", { limit });
+  return safeInvoke("memory_runtime_get_overview", { limit });
 }
 
 export async function getMemoryStats(): Promise<MemoryStatsResponse> {
-  return safeInvoke("get_conversation_memory_stats");
+  return safeInvoke("memory_runtime_get_stats");
 }
 
 export async function requestMemoryAnalysis(
   fromTimestamp?: number,
   toTimestamp?: number,
 ): Promise<MemoryAnalysisResult> {
-  return safeInvoke("request_conversation_memory_analysis", {
+  return safeInvoke("memory_runtime_request_analysis", {
     fromTimestamp,
     toTimestamp,
   });
 }
 
 export async function cleanupMemory(): Promise<CleanupMemoryResult> {
-  return safeInvoke("cleanup_conversation_memory");
+  return safeInvoke("memory_runtime_cleanup");
 }
 
 export async function getMemoryEffectiveSources(

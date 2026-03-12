@@ -1,6 +1,11 @@
 //! 记忆管理命令
 //!
-//! 提供对话记忆的统计和管理功能
+//! 提供记忆相关的统计、治理与自动记忆配置能力。
+//!
+//! 其中：
+//! - `memory_runtime_*` 属于当前 runtime / 上下文记忆主入口
+//! - `memory_get_*` / `memory_toggle_auto` / `memory_update_auto_note`
+//!   属于当前仍在演进的记忆治理配置入口
 
 use crate::commands::context_memory::ContextMemoryServiceState;
 use crate::config::GlobalConfigManagerState;
@@ -8,12 +13,14 @@ use crate::database::DbConnection;
 use crate::services::auto_memory_service::{
     get_auto_memory_index, update_auto_memory_note, AutoMemoryIndexResponse,
 };
+use crate::services::chat_history_service::{load_memory_source_candidates, MemorySourceCandidate};
 use crate::services::memory_source_resolver_service::{
     resolve_effective_sources, EffectiveMemorySourcesResponse,
 };
 use chrono::{Local, NaiveDateTime, TimeZone};
+use proxycast_core::app_paths;
 use proxycast_services::context_memory_service::{MemoryEntry, MemoryFileType};
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -127,9 +134,7 @@ const MAX_GENERATED_PER_REQUEST_CAP: usize = 2000;
 const MAX_GENERATED_PER_SESSION: usize = 40;
 const MIN_MESSAGE_LENGTH: usize = 18;
 
-/// 获取对话记忆统计信息
-#[tauri::command]
-pub async fn get_conversation_memory_stats() -> Result<MemoryStatsResponse, String> {
+async fn memory_runtime_get_stats_impl() -> Result<MemoryStatsResponse, String> {
     info!("[记忆管理] 获取记忆统计信息");
 
     let memory_dir = resolve_memory_dir();
@@ -137,9 +142,13 @@ pub async fn get_conversation_memory_stats() -> Result<MemoryStatsResponse, Stri
     Ok(overview.stats)
 }
 
-/// 获取对话记忆总览（分类 + 条目）
+/// 获取 runtime / 上下文记忆统计信息
 #[tauri::command]
-pub async fn get_conversation_memory_overview(
+pub async fn memory_runtime_get_stats() -> Result<MemoryStatsResponse, String> {
+    memory_runtime_get_stats_impl().await
+}
+
+async fn memory_runtime_get_overview_impl(
     limit: Option<u32>,
 ) -> Result<MemoryOverviewResponse, String> {
     info!("[记忆管理] 获取记忆总览, limit={:?}", limit);
@@ -154,9 +163,15 @@ pub async fn get_conversation_memory_overview(
     Ok(overview)
 }
 
-/// 从历史对话中抽取记忆条目
+/// 获取 runtime / 上下文记忆总览（分类 + 条目）
 #[tauri::command]
-pub async fn request_conversation_memory_analysis(
+pub async fn memory_runtime_get_overview(
+    limit: Option<u32>,
+) -> Result<MemoryOverviewResponse, String> {
+    memory_runtime_get_overview_impl(limit).await
+}
+
+async fn memory_runtime_request_analysis_impl(
     memory_service: State<'_, ContextMemoryServiceState>,
     db: State<'_, DbConnection>,
     global_config: State<'_, GlobalConfigManagerState>,
@@ -263,11 +278,26 @@ pub async fn request_conversation_memory_analysis(
     })
 }
 
-/// 清理过期对话记忆
-///
-/// 清理超过保留天数的记忆条目
+/// 从历史对话中抽取 runtime / 上下文记忆条目
 #[tauri::command]
-pub async fn cleanup_conversation_memory(
+pub async fn memory_runtime_request_analysis(
+    memory_service: State<'_, ContextMemoryServiceState>,
+    db: State<'_, DbConnection>,
+    global_config: State<'_, GlobalConfigManagerState>,
+    from_timestamp: Option<i64>,
+    to_timestamp: Option<i64>,
+) -> Result<MemoryAnalysisResult, String> {
+    memory_runtime_request_analysis_impl(
+        memory_service,
+        db,
+        global_config,
+        from_timestamp,
+        to_timestamp,
+    )
+    .await
+}
+
+async fn memory_runtime_cleanup_impl(
     memory_service: State<'_, ContextMemoryServiceState>,
     global_config: State<'_, GlobalConfigManagerState>,
 ) -> Result<CleanupMemoryResult, String> {
@@ -287,7 +317,6 @@ pub async fn cleanup_conversation_memory(
     let memory_dir = resolve_memory_dir();
     let before = collect_memory_overview(&memory_dir)?;
 
-    // 使用 ContextMemoryService 的清理功能
     memory_service
         .0
         .cleanup_expired_memories_with_retention_days(retention_days)?;
@@ -307,6 +336,15 @@ pub async fn cleanup_conversation_memory(
         cleaned_entries,
         freed_space,
     })
+}
+
+/// 清理 runtime / 上下文记忆
+#[tauri::command]
+pub async fn memory_runtime_cleanup(
+    memory_service: State<'_, ContextMemoryServiceState>,
+    global_config: State<'_, GlobalConfigManagerState>,
+) -> Result<CleanupMemoryResult, String> {
+    memory_runtime_cleanup_impl(memory_service, global_config).await
 }
 
 /// 获取当前会话可见的有效记忆来源（含 AGENTS、规则、自动记忆）
@@ -375,9 +413,7 @@ pub async fn memory_update_auto_note(
 }
 
 fn resolve_memory_dir() -> PathBuf {
-    dirs::home_dir()
-        .map(|p| p.join(".proxycast").join("memory"))
-        .unwrap_or_else(|| PathBuf::from(".proxycast/memory"))
+    app_paths::best_effort_runtime_subdir("memory")
 }
 
 fn resolve_working_dir(working_dir: Option<String>) -> Result<PathBuf, String> {
@@ -833,211 +869,18 @@ fn truncate_text(input: &str, max_chars: usize) -> String {
     }
 }
 
-#[derive(Debug, Clone)]
-struct MemorySourceCandidate {
-    session_id: String,
-    role: String,
-    content: String,
-    created_at: i64,
-}
-
 fn load_memory_candidates(
     conn: &Connection,
     from_timestamp: Option<i64>,
     to_timestamp: Option<i64>,
 ) -> Result<Vec<MemorySourceCandidate>, String> {
-    let mut candidates = Vec::new();
-
-    let mut push_filtered = |session_id: String, role: String, content: String, created_at: i64| {
-        let normalized = normalize_candidate_content(&content);
-        if normalized.len() < MIN_MESSAGE_LENGTH {
-            return;
-        }
-
-        let normalized_role = role.to_lowercase();
-        if normalized_role != "user" && normalized_role != "assistant" {
-            return;
-        }
-
-        candidates.push(MemorySourceCandidate {
-            session_id,
-            role: normalized_role,
-            content: normalized,
-            created_at,
-        });
-    };
-
-    let from_ts = from_timestamp;
-    let to_ts = to_timestamp;
-
-    if from_timestamp.is_some() || to_timestamp.is_some() {
-        let mut stmt = conn
-            .prepare(
-                "SELECT session_id, role, content, created_at
-                 FROM general_chat_messages
-                 WHERE (?1 IS NULL OR created_at >= ?1)
-                   AND (?2 IS NULL OR created_at <= ?2)
-                 ORDER BY created_at DESC
-                 LIMIT ?3",
-            )
-            .map_err(|e| format!("查询 general_chat_messages 失败: {e}"))?;
-
-        let rows = stmt
-            .query_map(
-                params![from_timestamp, to_timestamp, MAX_SOURCE_MESSAGES as i64],
-                |row| {
-                    let session_id: String = row.get(0)?;
-                    let role: String = row.get(1)?;
-                    let content: String = row.get(2)?;
-                    let created_at: i64 = row.get(3)?;
-                    Ok((session_id, role, content, created_at))
-                },
-            )
-            .map_err(|e| format!("读取 general_chat_messages 失败: {e}"))?;
-
-        for row in rows.flatten() {
-            push_filtered(row.0, row.1, row.2, row.3);
-        }
-
-        let mut stmt = conn
-            .prepare(
-                "SELECT session_id, role, content_json, timestamp
-                 FROM agent_messages
-                 ORDER BY timestamp DESC
-                 LIMIT ?1",
-            )
-            .map_err(|e| format!("查询 agent_messages 失败: {e}"))?;
-
-        let rows = stmt
-            .query_map(params![MAX_SOURCE_MESSAGES as i64], |row| {
-                let session_id: String = row.get(0)?;
-                let role: String = row.get(1)?;
-                let content_json: String = row.get(2)?;
-                let timestamp: String = row.get(3)?;
-                Ok((session_id, role, content_json, timestamp))
-            })
-            .map_err(|e| format!("读取 agent_messages 失败: {e}"))?;
-
-        for row in rows.flatten() {
-            if let Some(timestamp_ms) = parse_rfc3339_to_timestamp(&row.3) {
-                if from_ts.is_some_and(|from| timestamp_ms < from)
-                    || to_ts.is_some_and(|to| timestamp_ms > to)
-                {
-                    continue;
-                }
-
-                let text = extract_text_from_content_json(&row.2);
-                push_filtered(row.0, row.1, text, timestamp_ms);
-            }
-        }
-    } else {
-        let mut stmt = conn
-            .prepare(
-                "SELECT session_id, role, content, created_at
-                 FROM general_chat_messages
-                 ORDER BY created_at DESC
-                 LIMIT ?1",
-            )
-            .map_err(|e| format!("查询 general_chat_messages 失败: {e}"))?;
-
-        let rows = stmt
-            .query_map(params![MAX_SOURCE_MESSAGES as i64], |row| {
-                let session_id: String = row.get(0)?;
-                let role: String = row.get(1)?;
-                let content: String = row.get(2)?;
-                let created_at: i64 = row.get(3)?;
-                Ok((session_id, role, content, created_at))
-            })
-            .map_err(|e| format!("读取 general_chat_messages 失败: {e}"))?;
-
-        for row in rows.flatten() {
-            push_filtered(row.0, row.1, row.2, row.3);
-        }
-
-        let mut stmt = conn
-            .prepare(
-                "SELECT session_id, role, content_json, timestamp
-                 FROM agent_messages
-                 ORDER BY timestamp DESC
-                 LIMIT ?1",
-            )
-            .map_err(|e| format!("查询 agent_messages 失败: {e}"))?;
-
-        let rows = stmt
-            .query_map(params![MAX_SOURCE_MESSAGES as i64], |row| {
-                let session_id: String = row.get(0)?;
-                let role: String = row.get(1)?;
-                let content_json: String = row.get(2)?;
-                let timestamp: String = row.get(3)?;
-                Ok((session_id, role, content_json, timestamp))
-            })
-            .map_err(|e| format!("读取 agent_messages 失败: {e}"))?;
-
-        for row in rows.flatten() {
-            if let Some(timestamp_ms) = parse_rfc3339_to_timestamp(&row.3) {
-                let text = extract_text_from_content_json(&row.2);
-                push_filtered(row.0, row.1, text, timestamp_ms);
-            }
-        }
-    }
-
-    candidates.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    candidates.truncate(MAX_SOURCE_MESSAGES);
-
-    Ok(candidates)
-}
-
-fn normalize_candidate_content(content: &str) -> String {
-    content
-        .replace('\n', " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn extract_text_from_content_json(content_json: &str) -> String {
-    if let Ok(text) = serde_json::from_str::<String>(content_json) {
-        return text;
-    }
-
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(content_json) {
-        match value {
-            serde_json::Value::Array(items) => {
-                let texts = items
-                    .iter()
-                    .filter_map(extract_text_from_json_item)
-                    .collect::<Vec<_>>();
-                if !texts.is_empty() {
-                    return texts.join(" ");
-                }
-            }
-            serde_json::Value::Object(_) => {
-                if let Some(text) = extract_text_from_json_item(&value) {
-                    return text;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    content_json.to_string()
-}
-
-fn extract_text_from_json_item(value: &serde_json::Value) -> Option<String> {
-    if let Some(text) = value.get("Text").and_then(|v| v.as_str()) {
-        return Some(text.to_string());
-    }
-
-    if value.get("type").and_then(|v| v.as_str()) == Some("text") {
-        if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
-            return Some(text.to_string());
-        }
-    }
-
-    value
-        .get("text")
-        .and_then(|v| v.as_str())
-        .map(|v| v.to_string())
+    load_memory_source_candidates(
+        conn,
+        from_timestamp,
+        to_timestamp,
+        MAX_SOURCE_MESSAGES,
+        MIN_MESSAGE_LENGTH,
+    )
 }
 
 fn build_fingerprint(content: &str) -> String {
@@ -1127,13 +970,6 @@ fn map_category_display_name(category: &str) -> &'static str {
         "activity" => "活动",
         _ => "记忆",
     }
-}
-
-fn parse_rfc3339_to_timestamp(value: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|dt| dt.timestamp_millis())
-        .or_else(|| parse_datetime_or_timestamp_to_millis(value))
 }
 
 fn format_timestamp(timestamp_ms: i64) -> String {

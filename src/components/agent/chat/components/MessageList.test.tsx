@@ -11,10 +11,22 @@ vi.mock("./MarkdownRenderer", () => ({
   ),
 }));
 
-vi.mock("./StreamingRenderer", () => ({
-  StreamingRenderer: ({ content }: { content: string }) => (
+const mockStreamingRenderer = vi.fn(
+  ({
+    content,
+  }: {
+    content: string;
+    renderA2UIInline?: boolean;
+  }) => (
     <div data-testid="streaming-renderer">{content || "<empty-assistant>"}</div>
   ),
+);
+
+vi.mock("./StreamingRenderer", () => ({
+  StreamingRenderer: (props: {
+    content: string;
+    renderA2UIInline?: boolean;
+  }) => mockStreamingRenderer(props),
 }));
 
 vi.mock("./TokenUsageDisplay", () => ({
@@ -51,13 +63,16 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(messages: Message[]): HTMLDivElement {
+function render(
+  messages: Message[],
+  props?: { renderA2UIInline?: boolean },
+): HTMLDivElement {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
 
   act(() => {
-    root.render(<MessageList messages={messages} />);
+    root.render(<MessageList messages={messages} {...props} />);
   });
 
   mountedRoots.push({ container, root });
@@ -99,5 +114,83 @@ describe("MessageList", () => {
       container.querySelectorAll('[data-testid="streaming-renderer"]'),
     ).map((node) => node.textContent);
     expect(streamingTexts).toEqual(["好的，我继续处理。"]);
+  });
+
+  it("应向助手消息透传内联 A2UI 开关", () => {
+    const now = new Date();
+    const messages: Message[] = [
+      {
+        id: "msg-assistant",
+        role: "assistant",
+        content: "```a2ui\n{}\n```",
+        timestamp: now,
+      },
+    ];
+
+    render(messages);
+    expect(mockStreamingRenderer).toHaveBeenCalledWith(
+      expect.objectContaining({ renderA2UIInline: true }),
+    );
+
+    render(messages, { renderA2UIInline: false });
+    expect(mockStreamingRenderer).toHaveBeenLastCalledWith(
+      expect.objectContaining({ renderA2UIInline: false }),
+    );
+  });
+
+  it("助手消息包含 artifacts 时应渲染产物卡片并响应点击", () => {
+    const now = new Date();
+    const onArtifactClick = vi.fn();
+    const messages: Message[] = [
+      {
+        id: "msg-assistant-artifact",
+        role: "assistant",
+        content: "已生成文档",
+        timestamp: now,
+        artifacts: [
+          {
+            id: "artifact-demo",
+            type: "document",
+            title: "demo.md",
+            content: "# Demo",
+            status: "complete",
+            meta: {
+              filePath: "docs/demo.md",
+              filename: "demo.md",
+            },
+            position: { start: 0, end: 0 },
+            createdAt: now.getTime(),
+            updatedAt: now.getTime(),
+          },
+        ],
+      },
+    ];
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MessageList messages={messages} onArtifactClick={onArtifactClick} />,
+      );
+    });
+
+    mountedRoots.push({ container, root });
+
+    const artifactCard = container.querySelector("button");
+    expect(artifactCard?.textContent).toContain("demo.md");
+    expect(artifactCard?.textContent).toContain("docs/demo.md");
+
+    act(() => {
+      artifactCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onArtifactClick).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "artifact-demo",
+        title: "demo.md",
+      }),
+    );
   });
 });

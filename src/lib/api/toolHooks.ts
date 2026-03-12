@@ -4,7 +4,7 @@
  * 提供工具执行前后的钩子机制，用于自动化上下文记忆管理
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 
 export type HookTrigger =
   | "session_start"
@@ -78,35 +78,35 @@ export class ToolHooksAPI {
    * 执行钩子
    */
   static async executeHooks(request: ExecuteHooksRequest): Promise<void> {
-    return invoke("execute_hooks", { request });
+    return safeInvoke<void>("execute_hooks", { request });
   }
 
   /**
    * 添加钩子规则
    */
   static async addHookRule(rule: HookRule): Promise<void> {
-    return invoke("add_hook_rule", { rule });
+    return safeInvoke<void>("add_hook_rule", { rule });
   }
 
   /**
    * 移除钩子规则
    */
   static async removeHookRule(ruleId: string): Promise<void> {
-    return invoke("remove_hook_rule", { ruleId });
+    return safeInvoke<void>("remove_hook_rule", { ruleId });
   }
 
   /**
    * 启用/禁用钩子规则
    */
   static async toggleHookRule(ruleId: string, enabled: boolean): Promise<void> {
-    return invoke("toggle_hook_rule", { ruleId, enabled });
+    return safeInvoke<void>("toggle_hook_rule", { ruleId, enabled });
   }
 
   /**
    * 获取所有钩子规则
    */
   static async getHookRules(): Promise<HookRule[]> {
-    return invoke("get_hook_rules");
+    return safeInvoke<HookRule[]>("get_hook_rules");
   }
 
   /**
@@ -115,14 +115,16 @@ export class ToolHooksAPI {
   static async getHookExecutionStats(): Promise<
     Record<string, HookExecutionStats>
   > {
-    return invoke("get_hook_execution_stats");
+    return safeInvoke<Record<string, HookExecutionStats>>(
+      "get_hook_execution_stats",
+    );
   }
 
   /**
    * 清理钩子执行统计
    */
   static async clearHookExecutionStats(): Promise<void> {
-    return invoke("clear_hook_execution_stats");
+    return safeInvoke<void>("clear_hook_execution_stats");
   }
 
   /**

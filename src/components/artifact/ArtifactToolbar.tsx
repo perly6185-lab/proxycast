@@ -39,6 +39,7 @@ interface ToolbarButtonProps {
   title: string;
   disabled?: boolean;
   active?: boolean;
+  tone?: "dark" | "light";
   children: React.ReactNode;
 }
 
@@ -47,15 +48,31 @@ interface ToolbarButtonProps {
  * 统一的按钮样式
  */
 const ToolbarButton: React.FC<ToolbarButtonProps> = memo(
-  ({ onClick, title, disabled = false, active = false, children }) => (
+  ({
+    onClick,
+    title,
+    disabled = false,
+    active = false,
+    tone = "dark",
+    children,
+  }) => (
     <button
       onClick={onClick}
       disabled={disabled}
       title={title}
       className={cn(
         "flex items-center justify-center w-7 h-7 rounded transition-all",
-        "hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed",
-        active ? "bg-white/15 text-white" : "text-gray-400 hover:text-white",
+        "disabled:opacity-50 disabled:cursor-not-allowed",
+        tone === "light"
+          ? "hover:bg-black/5"
+          : "hover:bg-white/10",
+        active
+          ? tone === "light"
+            ? "bg-black/5 text-foreground"
+            : "bg-white/15 text-white"
+          : tone === "light"
+            ? "text-muted-foreground hover:text-foreground"
+            : "text-gray-400 hover:text-white",
       )}
     >
       {children}
@@ -70,19 +87,29 @@ ToolbarButton.displayName = "ToolbarButton";
 interface SizeSelectorProps {
   value: PreviewSize;
   onChange: (value: PreviewSize) => void;
+  tone?: "dark" | "light";
 }
 
 const SizeSelector: React.FC<SizeSelectorProps> = memo(
-  ({ value, onChange }) => (
-    <div className="inline-flex items-center rounded bg-white/5 p-0.5">
+  ({ value, onChange, tone = "dark" }) => (
+    <div
+      className={cn(
+        "inline-flex items-center rounded p-0.5",
+        tone === "light" ? "bg-black/5" : "bg-white/5",
+      )}
+    >
       <button
         type="button"
         onClick={() => onChange("mobile")}
         className={cn(
           "p-1 rounded transition-all",
           value === "mobile"
-            ? "bg-white/10 text-white"
-            : "text-gray-500 hover:text-white",
+            ? tone === "light"
+              ? "bg-white text-foreground shadow-sm"
+              : "bg-white/10 text-white"
+            : tone === "light"
+              ? "text-muted-foreground hover:text-foreground"
+              : "text-gray-500 hover:text-white",
         )}
         title="手机"
       >
@@ -94,8 +121,12 @@ const SizeSelector: React.FC<SizeSelectorProps> = memo(
         className={cn(
           "p-1 rounded transition-all",
           value === "tablet"
-            ? "bg-white/10 text-white"
-            : "text-gray-500 hover:text-white",
+            ? tone === "light"
+              ? "bg-white text-foreground shadow-sm"
+              : "bg-white/10 text-white"
+            : tone === "light"
+              ? "text-muted-foreground hover:text-foreground"
+              : "text-gray-500 hover:text-white",
         )}
         title="平板"
       >
@@ -107,8 +138,12 @@ const SizeSelector: React.FC<SizeSelectorProps> = memo(
         className={cn(
           "p-1 rounded transition-all",
           value === "desktop"
-            ? "bg-white/10 text-white"
-            : "text-gray-500 hover:text-white",
+            ? tone === "light"
+              ? "bg-white text-foreground shadow-sm"
+              : "bg-white/10 text-white"
+            : tone === "light"
+              ? "text-muted-foreground hover:text-foreground"
+              : "text-gray-500 hover:text-white",
         )}
         title="桌面"
       >
@@ -141,6 +176,8 @@ export interface ArtifactToolbarProps {
   previewSize?: PreviewSize;
   /** 预览尺寸变更回调 */
   onPreviewSizeChange?: (size: PreviewSize) => void;
+  /** 工具栏色调 */
+  tone?: "dark" | "light";
 }
 
 /**
@@ -290,6 +327,7 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
     onViewModeChange,
     previewSize = "desktop",
     onPreviewSizeChange,
+    tone = "dark",
   }) => {
     const [copied, setCopied] = useState(false);
 
@@ -298,8 +336,10 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
 
     // 判断是否是代码类型且支持预览
     const isCode = artifact.type === "code";
+    const isDocument = artifact.type === "document";
     const language = artifact.meta.language?.toLowerCase() || "";
     const canPreview = isCode && PREVIEWABLE_LANGUAGES.includes(language);
+    const supportsSharedViewMode = isDocument || canPreview;
 
     /**
      * 复制内容到剪贴板
@@ -352,6 +392,20 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
         } else if (isCode && canPreview) {
           // 代码类型的 HTML/SVG 预览
           win.document.write(artifact.content);
+        } else if (isDocument) {
+          win.document.write(`
+            <!DOCTYPE html>
+            <html>
+              <head>
+                <title>${escapeHtml(artifact.title)}</title>
+                <style>
+                  body { margin: 0; padding: 24px; background: #0f1115; color: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+                  pre { margin: 0; white-space: pre-wrap; word-break: break-word; line-height: 1.7; }
+                </style>
+              </head>
+              <body><pre>${escapeHtml(artifact.content)}</pre></body>
+            </html>
+          `);
         } else {
           win.document.write(`
             <!DOCTYPE html>
@@ -369,7 +423,7 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
         }
         win.document.close();
       }
-    }, [artifact, isCode, canPreview]);
+    }, [artifact, isCode, canPreview, isDocument]);
 
     /**
      * 切换源码视图
@@ -388,24 +442,49 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
     }, [onClose]);
 
     // 判断是否支持源码切换（非代码类型才需要切换）
-    const supportsSourceToggle = artifact.type !== "code" && onToggleSource;
+    const supportsSourceToggle =
+      artifact.type !== "code" && artifact.type !== "document" && onToggleSource;
 
     return (
-      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-white/10 bg-[#21252b]">
+      <div
+        className={cn(
+          "flex items-center gap-1 px-2 py-1.5 border-b",
+          tone === "light"
+            ? "border-border bg-background"
+            : "border-white/10 bg-[#21252b]",
+        )}
+      >
         {/* 标题区域 */}
         <div className="flex-1 flex items-center gap-2 min-w-0">
           {/* 类型图标 */}
           {entry && (
-            <span className="text-gray-400 text-xs shrink-0">
+            <span
+              className={cn(
+                "text-xs shrink-0",
+                tone === "light" ? "text-muted-foreground" : "text-gray-400",
+              )}
+            >
               {entry.displayName}
             </span>
           )}
           {/* 语言标签（代码类型） */}
           {isCode && language && (
-            <span className="text-xs text-gray-500 font-mono">{language}</span>
+            <span
+              className={cn(
+                "text-xs font-mono",
+                tone === "light" ? "text-muted-foreground" : "text-gray-500",
+              )}
+            >
+              {language}
+            </span>
           )}
           {/* 标题 */}
-          <span className="text-sm font-medium text-white truncate">
+          <span
+            className={cn(
+              "text-sm font-medium truncate",
+              tone === "light" ? "text-foreground" : "text-white",
+            )}
+          >
             {artifact.title}
           </span>
         </div>
@@ -413,16 +492,25 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
         {/* 操作按钮区域 */}
         <div className="flex items-center gap-0.5 shrink-0">
           {/* 代码预览切换（仅 HTML/SVG 代码） */}
-          {canPreview && onViewModeChange && (
-            <div className="inline-flex items-center rounded bg-white/5 p-0.5 mr-1">
+          {supportsSharedViewMode && onViewModeChange && (
+            <div
+              className={cn(
+                "mr-1 inline-flex items-center rounded p-0.5",
+                tone === "light" ? "bg-black/5" : "bg-white/5",
+              )}
+            >
               <button
                 type="button"
                 onClick={() => onViewModeChange("source")}
                 className={cn(
                   "inline-flex items-center gap-1 px-2 py-1 rounded text-xs transition-all",
                   viewMode === "source"
-                    ? "bg-white/10 text-white"
-                    : "text-gray-400 hover:text-white",
+                    ? tone === "light"
+                      ? "bg-white text-foreground shadow-sm"
+                      : "bg-white/10 text-white"
+                    : tone === "light"
+                      ? "text-muted-foreground hover:text-foreground"
+                      : "text-gray-400 hover:text-white",
                 )}
                 title="源码"
               >
@@ -434,8 +522,12 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
                 className={cn(
                   "inline-flex items-center gap-1 px-2 py-1 rounded text-xs transition-all",
                   viewMode === "preview"
-                    ? "bg-white/10 text-white"
-                    : "text-gray-400 hover:text-white",
+                    ? tone === "light"
+                      ? "bg-white text-foreground shadow-sm"
+                      : "bg-white/10 text-white"
+                    : tone === "light"
+                      ? "text-muted-foreground hover:text-foreground"
+                      : "text-gray-400 hover:text-white",
                 )}
                 title="预览"
               >
@@ -446,13 +538,18 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
 
           {/* 预览尺寸选择器 */}
           {canPreview && viewMode === "preview" && onPreviewSizeChange && (
-            <SizeSelector value={previewSize} onChange={onPreviewSizeChange} />
+            <SizeSelector
+              value={previewSize}
+              onChange={onPreviewSizeChange}
+              tone={tone}
+            />
           )}
 
           {/* 复制按钮 */}
           <ToolbarButton
             onClick={handleCopy}
             title={copied ? "已复制" : "复制内容"}
+            tone={tone}
           >
             {copied ? (
               <Check className="w-4 h-4 text-green-400" />
@@ -462,7 +559,7 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
           </ToolbarButton>
 
           {/* 下载按钮 */}
-          <ToolbarButton onClick={handleDownload} title="下载文件">
+          <ToolbarButton onClick={handleDownload} title="下载文件" tone={tone}>
             <Download className="w-4 h-4" />
           </ToolbarButton>
 
@@ -472,6 +569,7 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
               onClick={handleToggleSource}
               title={showSource ? "显示预览" : "显示源码"}
               active={showSource}
+              tone={tone}
             >
               {showSource ? (
                 <Eye className="w-4 h-4" />
@@ -482,13 +580,17 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
           )}
 
           {/* 新窗口打开按钮 */}
-          <ToolbarButton onClick={handleOpenInWindow} title="在新窗口中打开">
+          <ToolbarButton
+            onClick={handleOpenInWindow}
+            title="在新窗口中打开"
+            tone={tone}
+          >
             <ExternalLink className="w-4 h-4" />
           </ToolbarButton>
 
           {/* 关闭按钮 */}
           {onClose && (
-            <ToolbarButton onClick={handleClose} title="关闭">
+            <ToolbarButton onClick={handleClose} title="关闭" tone={tone}>
               <X className="w-4 h-4" />
             </ToolbarButton>
           )}
@@ -507,6 +609,7 @@ ArtifactToolbar.displayName = "ArtifactToolbar";
  */
 function getMimeType(type: Artifact["type"]): string {
   const mimeTypes: Record<string, string> = {
+    document: "text/markdown",
     code: "text/plain",
     html: "text/html",
     svg: "image/svg+xml",

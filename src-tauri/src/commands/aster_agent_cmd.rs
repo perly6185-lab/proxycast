@@ -17,7 +17,10 @@ use crate::config::{GlobalConfigManager, GlobalConfigManagerState};
 use crate::database::dao::agent::AgentDao;
 use crate::database::DbConnection;
 use crate::mcp::{McpManagerState, McpServerConfig};
-use crate::services::execution_tracker_service::{ExecutionTracker, RunFinalizeOptions, RunSource};
+use crate::services::agent_timeline_service::{
+    build_action_response_value, complete_action_item, AgentTimelineRecorder,
+};
+use crate::services::execution_tracker_service::{ExecutionTracker, RunFinishDecision, RunSource};
 use crate::services::heartbeat_service::HeartbeatServiceState;
 use crate::services::memory_profile_prompt_service::{
     merge_system_prompt_with_memory_profile, merge_system_prompt_with_memory_sources,
@@ -65,7 +68,7 @@ use proxycast_services::video_generation_service::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 use tokio_util::sync::CancellationToken;
@@ -190,7 +193,7 @@ pub struct AsterAgentStatus {
 }
 
 /// Provider 配置请求
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ConfigureProviderRequest {
     #[serde(default)]
     pub provider_id: Option<String>,
@@ -374,6 +377,113 @@ pub struct AsterChatRequest {
     /// 前端传入的 System Prompt（可选，优先级低于项目上下文）
     #[serde(default, alias = "systemPrompt")]
     pub system_prompt: Option<String>,
+    /// 请求级元数据（可选，用于 harness / 主题工作台状态对齐）
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentTurnConfigSnapshot {
+    #[serde(default, alias = "providerConfig")]
+    pub provider_config: Option<ConfigureProviderRequest>,
+    #[serde(default, alias = "executionStrategy")]
+    pub execution_strategy: Option<AsterExecutionStrategy>,
+    #[serde(default, alias = "webSearch")]
+    pub web_search: Option<bool>,
+    #[serde(default, alias = "autoContinue")]
+    pub auto_continue: Option<AutoContinuePayload>,
+    #[serde(default, alias = "systemPrompt")]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentRuntimeSubmitTurnRequest {
+    pub message: String,
+    #[serde(alias = "sessionId")]
+    pub session_id: String,
+    #[serde(alias = "eventName")]
+    pub event_name: String,
+    #[serde(default)]
+    pub images: Option<Vec<ImageInput>>,
+    #[serde(alias = "workspaceId")]
+    pub workspace_id: String,
+    #[serde(default, alias = "turnConfig")]
+    pub turn_config: Option<AgentTurnConfigSnapshot>,
+    #[serde(default, alias = "turnId")]
+    #[allow(dead_code)]
+    pub turn_id: Option<String>,
+}
+
+impl From<AgentRuntimeSubmitTurnRequest> for AsterChatRequest {
+    fn from(request: AgentRuntimeSubmitTurnRequest) -> Self {
+        let turn_config = request.turn_config;
+        Self {
+            message: request.message,
+            session_id: request.session_id,
+            event_name: request.event_name,
+            images: request.images,
+            provider_config: turn_config
+                .as_ref()
+                .and_then(|config| config.provider_config.clone()),
+            project_id: None,
+            workspace_id: request.workspace_id,
+            web_search: turn_config.as_ref().and_then(|config| config.web_search),
+            execution_strategy: turn_config
+                .as_ref()
+                .and_then(|config| config.execution_strategy),
+            auto_continue: turn_config
+                .as_ref()
+                .and_then(|config| config.auto_continue.clone()),
+            system_prompt: turn_config
+                .as_ref()
+                .and_then(|config| config.system_prompt.clone()),
+            metadata: turn_config.and_then(|config| config.metadata),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentRuntimeInterruptTurnRequest {
+    #[serde(alias = "sessionId")]
+    pub session_id: String,
+    #[serde(default, alias = "turnId")]
+    #[allow(dead_code)]
+    pub turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntimeActionType {
+    ToolConfirmation,
+    AskUser,
+    Elicitation,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentRuntimeRespondActionRequest {
+    #[serde(alias = "sessionId")]
+    pub session_id: String,
+    #[serde(alias = "requestId")]
+    pub request_id: String,
+    #[serde(alias = "actionType")]
+    pub action_type: AgentRuntimeActionType,
+    pub confirmed: bool,
+    #[serde(default)]
+    pub response: Option<String>,
+    #[serde(default, alias = "userData")]
+    pub user_data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentRuntimeUpdateSessionRequest {
+    #[serde(alias = "sessionId")]
+    pub session_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, alias = "executionStrategy")]
+    pub execution_strategy: Option<AsterExecutionStrategy>,
 }
 
 /// 自动续写参数
@@ -478,6 +588,609 @@ fn merge_system_prompt_with_auto_continue(
         }
         None => Some(auto_continue_prompt),
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SocialRunArtifactDescriptor {
+    artifact_id: String,
+    artifact_type: String,
+    stage: String,
+    stage_label: String,
+    version_label: String,
+    source_file_name: String,
+    branch_key: String,
+    platform: Option<String>,
+    is_auxiliary: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ChatRunObservation {
+    artifact_paths: Vec<String>,
+    primary_social_artifact: Option<SocialRunArtifactDescriptor>,
+}
+
+impl ChatRunObservation {
+    fn record_event(
+        &mut self,
+        event: &TauriAgentEvent,
+        workspace_root: &str,
+        request_metadata: Option<&serde_json::Value>,
+    ) {
+        match event {
+            TauriAgentEvent::ToolStart {
+                tool_name,
+                arguments,
+                ..
+            } => {
+                if let Some(path) = extract_artifact_path_from_tool_start(
+                    tool_name,
+                    arguments.as_deref(),
+                    workspace_root,
+                ) {
+                    self.record_artifact_path(path, request_metadata);
+                }
+            }
+            TauriAgentEvent::ToolEnd { result, .. } => {
+                if let Some(metadata) = &result.metadata {
+                    for path in
+                        extract_artifact_paths_from_tool_result_metadata(metadata, workspace_root)
+                    {
+                        self.record_artifact_path(path, request_metadata);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn record_artifact_path(&mut self, path: String, request_metadata: Option<&serde_json::Value>) {
+        if path.trim().is_empty() {
+            return;
+        }
+
+        if !self.artifact_paths.iter().any(|item| item == &path) {
+            self.artifact_paths.push(path.clone());
+        }
+
+        if !should_track_social_artifact(request_metadata, path.as_str()) {
+            return;
+        }
+
+        let gate_key = extract_harness_string(request_metadata, &["gate_key", "gateKey"]);
+        let run_title =
+            extract_harness_string(request_metadata, &["run_title", "runTitle", "title"]);
+        let candidate = resolve_social_run_artifact_descriptor(
+            path.as_str(),
+            gate_key.as_deref(),
+            run_title.as_deref(),
+        );
+        let should_replace = match self.primary_social_artifact.as_ref() {
+            None => true,
+            Some(existing) if existing.is_auxiliary && !candidate.is_auxiliary => true,
+            _ => false,
+        };
+        if should_replace {
+            self.primary_social_artifact = Some(candidate);
+        }
+    }
+}
+
+fn normalize_metadata_path(raw: &str, workspace_root: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = trimmed.replace('\\', "/");
+    let normalized_root = workspace_root.trim().replace('\\', "/");
+
+    if !normalized_root.is_empty() && normalized.starts_with(normalized_root.as_str()) {
+        let suffix = normalized
+            .strip_prefix(normalized_root.as_str())
+            .unwrap_or(normalized.as_str())
+            .trim_start_matches('/')
+            .to_string();
+        if !suffix.is_empty() {
+            return Some(suffix);
+        }
+    }
+
+    Some(normalized)
+}
+
+fn parse_tool_arguments(arguments: Option<&str>) -> Option<serde_json::Value> {
+    let raw = arguments?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    serde_json::from_str::<serde_json::Value>(raw).ok()
+}
+
+fn extract_artifact_path_from_tool_start(
+    tool_name: &str,
+    arguments: Option<&str>,
+    workspace_root: &str,
+) -> Option<String> {
+    let normalized_tool_name = tool_name.trim().to_lowercase();
+    if normalized_tool_name.is_empty() {
+        return None;
+    }
+
+    let args = parse_tool_arguments(arguments)?;
+    let object = args.as_object()?;
+
+    for key in ["path", "file_path", "filePath", "output_path", "outputPath"] {
+        let Some(raw_path) = object.get(key).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if normalized_tool_name.contains("write")
+            || normalized_tool_name.contains("create")
+            || normalized_tool_name.contains("output")
+        {
+            return normalize_metadata_path(raw_path, workspace_root);
+        }
+    }
+
+    None
+}
+
+fn push_metadata_path(target: &mut Vec<String>, value: &serde_json::Value, workspace_root: &str) {
+    match value {
+        serde_json::Value::String(path) => {
+            if let Some(normalized) = normalize_metadata_path(path, workspace_root) {
+                if !target.iter().any(|item| item == &normalized) {
+                    target.push(normalized);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                push_metadata_path(target, item, workspace_root);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_artifact_paths_from_tool_result_metadata(
+    metadata: &HashMap<String, serde_json::Value>,
+    workspace_root: &str,
+) -> Vec<String> {
+    let mut paths = Vec::new();
+    for key in [
+        "artifact_paths",
+        "artifact_path",
+        "path",
+        "absolute_path",
+        "output_file",
+        "file_path",
+        "output_path",
+        "article_path",
+        "cover_meta_path",
+        "publish_path",
+    ] {
+        if let Some(value) = metadata.get(key) {
+            push_metadata_path(&mut paths, value, workspace_root);
+        }
+    }
+    paths
+}
+
+fn extract_harness_object(
+    request_metadata: Option<&serde_json::Value>,
+) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    let metadata = request_metadata?;
+    let object = metadata.as_object()?;
+    if let Some(harness) = object.get("harness").and_then(serde_json::Value::as_object) {
+        return Some(harness);
+    }
+    Some(object)
+}
+
+fn extract_harness_string(
+    request_metadata: Option<&serde_json::Value>,
+    keys: &[&str],
+) -> Option<String> {
+    let harness = extract_harness_object(request_metadata)?;
+    keys.iter()
+        .filter_map(|key| harness.get(*key))
+        .find_map(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeChatMode {
+    Agent,
+    Creator,
+    General,
+}
+
+fn resolve_runtime_chat_mode(request_metadata: Option<&serde_json::Value>) -> RuntimeChatMode {
+    if let Some(chat_mode) = extract_harness_string(request_metadata, &["chat_mode", "chatMode"]) {
+        match chat_mode.as_str() {
+            "general" => return RuntimeChatMode::General,
+            "creator" => return RuntimeChatMode::Creator,
+            _ => {}
+        }
+    }
+
+    match extract_harness_string(request_metadata, &["theme", "harness_theme"]).as_deref() {
+        Some("general" | "knowledge" | "planning") => RuntimeChatMode::General,
+        _ => RuntimeChatMode::Agent,
+    }
+}
+
+fn default_web_search_enabled_for_chat_mode(_chat_mode: RuntimeChatMode) -> bool {
+    false
+}
+
+fn extend_map_with_harness_fields(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    request_metadata: Option<&serde_json::Value>,
+) {
+    if let Some(metadata) = request_metadata {
+        target.insert("request_metadata".to_string(), metadata.clone());
+    }
+
+    let Some(harness) = extract_harness_object(request_metadata) else {
+        return;
+    };
+
+    for (source_key, target_key) in [
+        ("theme", "harness_theme"),
+        ("harness_theme", "harness_theme"),
+        ("creation_mode", "creation_mode"),
+        ("creationMode", "creation_mode"),
+        ("chat_mode", "chat_mode"),
+        ("chatMode", "chat_mode"),
+        ("session_mode", "session_mode"),
+        ("sessionMode", "session_mode"),
+        ("gate_key", "gate_key"),
+        ("gateKey", "gate_key"),
+        ("run_title", "run_title"),
+        ("runTitle", "run_title"),
+        ("content_id", "content_id"),
+        ("contentId", "content_id"),
+    ] {
+        if target.contains_key(target_key) {
+            continue;
+        }
+        if let Some(value) = harness.get(source_key) {
+            target.insert(target_key.to_string(), value.clone());
+        }
+    }
+}
+
+fn build_chat_run_metadata_base(
+    request: &AsterChatRequest,
+    workspace_id: &str,
+    effective_strategy: AsterExecutionStrategy,
+    request_tool_policy: &RequestToolPolicy,
+    auto_continue_enabled: bool,
+    auto_continue_metadata: Option<&AutoContinuePayload>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("workspace_id".to_string(), serde_json::json!(workspace_id));
+    metadata.insert(
+        "project_id".to_string(),
+        serde_json::json!(request.project_id.clone()),
+    );
+    metadata.insert(
+        "event_name".to_string(),
+        serde_json::json!(request.event_name.clone()),
+    );
+    metadata.insert(
+        "execution_strategy".to_string(),
+        serde_json::json!(format!("{:?}", effective_strategy).to_lowercase()),
+    );
+    metadata.insert(
+        "message_length".to_string(),
+        serde_json::json!(request.message.chars().count()),
+    );
+    metadata.insert(
+        "web_search_enabled".to_string(),
+        serde_json::json!(request_tool_policy.effective_web_search),
+    );
+    metadata.insert(
+        "auto_continue_enabled".to_string(),
+        serde_json::json!(auto_continue_enabled),
+    );
+    metadata.insert(
+        "auto_continue".to_string(),
+        serde_json::json!(auto_continue_metadata),
+    );
+    extend_map_with_harness_fields(&mut metadata, request.metadata.as_ref());
+    metadata
+}
+
+fn with_string_field(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    if target.contains_key(key) {
+        return;
+    }
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        target.insert(key.to_string(), serde_json::json!(value));
+    }
+}
+
+fn should_track_social_artifact(request_metadata: Option<&serde_json::Value>, path: &str) -> bool {
+    if extract_harness_string(request_metadata, &["theme", "harness_theme"])
+        .map(|theme| theme == "social-media")
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    path.to_lowercase().contains("social")
+}
+
+fn normalize_artifact_file_name(file_name: &str) -> String {
+    file_name.replace('\\', "/").trim().to_string()
+}
+
+fn artifact_base_name(file_name: &str) -> String {
+    normalize_artifact_file_name(file_name)
+        .split('/')
+        .last()
+        .unwrap_or(file_name)
+        .to_string()
+}
+
+fn strip_social_known_suffix(file_name: &str) -> String {
+    let base_name = artifact_base_name(file_name);
+    if let Some(value) = base_name.strip_suffix(".publish-pack.json") {
+        return value.to_string();
+    }
+    if let Some(value) = base_name.strip_suffix(".cover.json") {
+        return value.to_string();
+    }
+    base_name
+        .rsplit_once('.')
+        .map(|(prefix, _)| prefix.to_string())
+        .unwrap_or(base_name)
+}
+
+fn to_social_branch_key(file_name: &str) -> String {
+    let mut branch_key = String::new();
+    let mut last_is_dash = false;
+    for ch in strip_social_known_suffix(file_name).chars() {
+        let keep = ch.is_ascii_alphanumeric() || ('\u{4e00}'..='\u{9fa5}').contains(&ch);
+        if keep {
+            branch_key.push(ch.to_ascii_lowercase());
+            last_is_dash = false;
+        } else if !last_is_dash {
+            branch_key.push('-');
+            last_is_dash = true;
+        }
+    }
+    let branch_key = branch_key.trim_matches('-').to_string();
+    if branch_key.is_empty() {
+        "artifact".to_string()
+    } else {
+        branch_key
+    }
+}
+
+fn infer_social_platform_from_text(text: &str) -> Option<String> {
+    let normalized = text.to_lowercase();
+    if normalized.contains("xiaohongshu") || normalized.contains("xhs") || text.contains("小红书")
+    {
+        return Some("xiaohongshu".to_string());
+    }
+    if normalized.contains("wechat")
+        || normalized.contains("weixin")
+        || normalized.contains("gzh")
+        || text.contains("公众号")
+        || text.contains("微信")
+    {
+        return Some("wechat".to_string());
+    }
+    if normalized.contains("zhihu") || text.contains("知乎") {
+        return Some("zhihu".to_string());
+    }
+    None
+}
+
+fn resolve_social_artifact_type(
+    normalized_file_name: &str,
+    platform: Option<&str>,
+    gate_key: Option<&str>,
+) -> String {
+    let base_name = artifact_base_name(normalized_file_name).to_lowercase();
+    if base_name.ends_with(".publish-pack.json") {
+        return "publish_package".to_string();
+    }
+    if base_name.ends_with(".cover.json") {
+        return "cover_meta".to_string();
+    }
+    if !base_name.ends_with(".md") {
+        return "asset".to_string();
+    }
+    if base_name == "brief.md" || base_name.contains("brief") {
+        return "brief".to_string();
+    }
+    if base_name == "draft.md" || base_name.contains("draft") {
+        return "draft".to_string();
+    }
+    if base_name == "article.md" || base_name.contains("article") || base_name.contains("final") {
+        return "polished".to_string();
+    }
+    if base_name == "adapted.md" || base_name.contains("adapt") {
+        return "platform_variant".to_string();
+    }
+    if platform.is_some() {
+        return "platform_variant".to_string();
+    }
+    match gate_key.unwrap_or_default() {
+        "topic_select" => "brief".to_string(),
+        "publish_confirm" => {
+            if platform.is_some() {
+                "platform_variant".to_string()
+            } else {
+                "polished".to_string()
+            }
+        }
+        _ => "draft".to_string(),
+    }
+}
+
+fn resolve_social_stage_for_artifact(artifact_type: &str, gate_key: Option<&str>) -> String {
+    match artifact_type {
+        "brief" => "briefing".to_string(),
+        "draft" => "drafting".to_string(),
+        "polished" => "polishing".to_string(),
+        "platform_variant" => "adapting".to_string(),
+        "cover_meta" | "publish_package" => "publish_prep".to_string(),
+        _ => match gate_key.unwrap_or("idle") {
+            "topic_select" => "briefing".to_string(),
+            "publish_confirm" => "publish_prep".to_string(),
+            _ => "drafting".to_string(),
+        },
+    }
+}
+
+fn resolve_social_stage_label(stage: &str) -> String {
+    match stage {
+        "briefing" => "需求澄清".to_string(),
+        "drafting" => "初稿创作".to_string(),
+        "polishing" => "润色优化".to_string(),
+        "adapting" => "平台适配".to_string(),
+        "publish_prep" => "发布准备".to_string(),
+        _ => "社媒创作".to_string(),
+    }
+}
+
+fn resolve_social_version_label(artifact_type: &str, platform: Option<&str>) -> String {
+    match artifact_type {
+        "brief" => "需求简报".to_string(),
+        "draft" => "社媒初稿".to_string(),
+        "polished" => "润色成稿".to_string(),
+        "platform_variant" => match platform {
+            Some("xiaohongshu") => "平台适配 · 小红书".to_string(),
+            Some("wechat") => "平台适配 · 公众号".to_string(),
+            Some("zhihu") => "平台适配 · 知乎".to_string(),
+            _ => "平台适配".to_string(),
+        },
+        "cover_meta" => "封面配置".to_string(),
+        "publish_package" => "发布包".to_string(),
+        _ => "社媒产物".to_string(),
+    }
+}
+
+fn resolve_social_run_artifact_descriptor(
+    file_name: &str,
+    gate_key: Option<&str>,
+    run_title: Option<&str>,
+) -> SocialRunArtifactDescriptor {
+    let normalized_file_name = normalize_artifact_file_name(file_name);
+    let platform = infer_social_platform_from_text(
+        format!("{} {}", normalized_file_name, run_title.unwrap_or_default()).as_str(),
+    );
+    let artifact_type =
+        resolve_social_artifact_type(normalized_file_name.as_str(), platform.as_deref(), gate_key);
+    let stage = resolve_social_stage_for_artifact(artifact_type.as_str(), gate_key);
+    let branch_key = to_social_branch_key(normalized_file_name.as_str());
+    let artifact_suffix = match platform.as_deref() {
+        Some(platform) => format!("{branch_key}:{platform}"),
+        None => branch_key.clone(),
+    };
+
+    SocialRunArtifactDescriptor {
+        artifact_id: format!("social-media:{}:{}", artifact_type, artifact_suffix),
+        artifact_type: artifact_type.clone(),
+        stage: stage.clone(),
+        stage_label: resolve_social_stage_label(stage.as_str()),
+        version_label: resolve_social_version_label(artifact_type.as_str(), platform.as_deref()),
+        source_file_name: normalized_file_name,
+        branch_key,
+        platform,
+        is_auxiliary: matches!(
+            artifact_type.as_str(),
+            "cover_meta" | "publish_package" | "asset"
+        ),
+    }
+}
+
+fn infer_gate_key_from_social_stage(stage: &str) -> Option<&'static str> {
+    match stage {
+        "briefing" => Some("topic_select"),
+        "drafting" | "polishing" => Some("write_mode"),
+        "adapting" | "publish_prep" => Some("publish_confirm"),
+        _ => None,
+    }
+}
+
+fn build_chat_run_finish_metadata(
+    base_metadata: &serde_json::Map<String, serde_json::Value>,
+    observation: &ChatRunObservation,
+) -> serde_json::Value {
+    let mut metadata = base_metadata.clone();
+
+    if !observation.artifact_paths.is_empty() {
+        metadata.insert(
+            "artifact_paths".to_string(),
+            serde_json::json!(observation.artifact_paths.clone()),
+        );
+    }
+
+    if let Some(artifact) = observation.primary_social_artifact.as_ref() {
+        with_string_field(&mut metadata, "harness_theme", Some("social-media"));
+        with_string_field(
+            &mut metadata,
+            "artifact_id",
+            Some(artifact.artifact_id.as_str()),
+        );
+        with_string_field(
+            &mut metadata,
+            "artifact_type",
+            Some(artifact.artifact_type.as_str()),
+        );
+        with_string_field(&mut metadata, "stage", Some(artifact.stage.as_str()));
+        with_string_field(
+            &mut metadata,
+            "stage_label",
+            Some(artifact.stage_label.as_str()),
+        );
+        with_string_field(
+            &mut metadata,
+            "version_label",
+            Some(artifact.version_label.as_str()),
+        );
+        with_string_field(
+            &mut metadata,
+            "branch_key",
+            Some(artifact.branch_key.as_str()),
+        );
+        with_string_field(&mut metadata, "platform", artifact.platform.as_deref());
+        with_string_field(
+            &mut metadata,
+            "source_file_name",
+            Some(artifact.source_file_name.as_str()),
+        );
+        let version_id = format!("artifact:{}", artifact.source_file_name);
+        with_string_field(&mut metadata, "version_id", Some(version_id.as_str()));
+
+        if !metadata.contains_key("gate_key") {
+            with_string_field(
+                &mut metadata,
+                "gate_key",
+                infer_gate_key_from_social_stage(artifact.stage.as_str()),
+            );
+        }
+        if !metadata.contains_key("run_title") {
+            with_string_field(
+                &mut metadata,
+                "run_title",
+                Some(artifact.version_label.as_str()),
+            );
+        }
+    }
+
+    serde_json::Value::Object(metadata)
 }
 
 /// Agent 执行策略
@@ -605,7 +1318,7 @@ async fn ensure_code_execution_extension_enabled(agent: &Agent) -> Result<bool, 
     Ok(true)
 }
 
-async fn stream_reply_once(
+async fn stream_reply_once<F>(
     agent: &Agent,
     app: &AppHandle,
     event_name: &str,
@@ -614,7 +1327,11 @@ async fn stream_reply_once(
     session_config: aster::agents::SessionConfig,
     cancel_token: CancellationToken,
     request_tool_policy: &RequestToolPolicy,
-) -> Result<(), ReplyAttemptError> {
+    mut on_event: F,
+) -> Result<(), ReplyAttemptError>
+where
+    F: FnMut(&TauriAgentEvent),
+{
     stream_reply_with_policy(
         agent,
         message_text,
@@ -623,6 +1340,7 @@ async fn stream_reply_once(
         Some(cancel_token),
         request_tool_policy,
         |event| {
+            on_event(event);
             if let Err(error) = app.emit(event_name, event) {
                 tracing::error!("[AsterAgent] 发送事件失败: {}", error);
             }
@@ -3963,12 +4681,18 @@ pub async fn aster_agent_chat_stream(
         );
     }
 
-    // 构建请求级工具策略：effective_web_search = request.web_search ?? mode_default(false)
-    let request_tool_policy = resolve_request_tool_policy(request.web_search, false);
+    let runtime_chat_mode = resolve_runtime_chat_mode(request.metadata.as_ref());
+    let mode_default_web_search = default_web_search_enabled_for_chat_mode(runtime_chat_mode);
+
+    // 构建请求级工具策略：默认不强制联网搜索，仅在用户显式开启开关时把搜索升级为必需步骤。
+    let request_tool_policy =
+        resolve_request_tool_policy(request.web_search, mode_default_web_search);
     tracing::info!(
-        "[AsterAgent][WebSearchGuard] session={}, request_web_search={:?}, mode_default_web_search=false, effective_web_search={}",
+        "[AsterAgent][WebSearchGuard] session={}, chat_mode={:?}, request_web_search={:?}, mode_default_web_search={}, effective_web_search={}",
         session_id,
+        runtime_chat_mode,
         request.web_search,
+        mode_default_web_search,
         request_tool_policy.effective_web_search
     );
 
@@ -4182,6 +4906,31 @@ pub async fn aster_agent_chat_stream(
     let tracker = ExecutionTracker::new(db.inner().clone());
     let cancel_token = state.create_cancel_token(session_id).await;
     let auto_continue_metadata = auto_continue_config.clone();
+    let request_metadata = request.metadata.clone();
+    let run_start_metadata = build_chat_run_metadata_base(
+        &request,
+        workspace_id.as_str(),
+        effective_strategy,
+        &request_tool_policy,
+        auto_continue_enabled,
+        auto_continue_metadata.as_ref(),
+    );
+    let run_observation = Arc::new(Mutex::new(ChatRunObservation::default()));
+    let run_observation_for_finalize = run_observation.clone();
+    let run_start_metadata_for_finalize = run_start_metadata.clone();
+    let timeline_recorder = Arc::new(Mutex::new(AgentTimelineRecorder::create(
+        db.inner().clone(),
+        session_id.to_string(),
+        request.message.clone(),
+    )?));
+
+    {
+        let mut recorder = match timeline_recorder.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        recorder.emit_start(&app, &request.event_name)?;
+    }
 
     // 获取 Agent Arc 并保持 guard 在整个流处理期间存活
     let agent_arc = state.get_agent_arc();
@@ -4201,35 +4950,11 @@ pub async fn aster_agent_chat_stream(
     };
 
     let final_result = tracker
-        .with_run(
+        .with_run_custom(
             RunSource::Chat,
             Some("aster_agent_chat_stream".to_string()),
             Some(session_id.to_string()),
-            Some(serde_json::json!({
-                "workspace_id": workspace_id.clone(),
-                "project_id": request.project_id.clone(),
-                "event_name": request.event_name.clone(),
-                "execution_strategy": format!("{:?}", effective_strategy).to_lowercase(),
-                "message_length": request.message.chars().count(),
-                "web_search_enabled": request_tool_policy.effective_web_search,
-                "auto_continue_enabled": auto_continue_enabled,
-                "auto_continue": auto_continue_metadata,
-            })),
-            RunFinalizeOptions {
-                success_metadata: Some(serde_json::json!({
-                    "execution_strategy": format!("{:?}", effective_strategy).to_lowercase(),
-                    "workspace_id": workspace_id.clone(),
-                    "web_search_enabled": request_tool_policy.effective_web_search,
-                    "auto_continue_enabled": auto_continue_enabled,
-                })),
-                error_code: Some("chat_stream_failed".to_string()),
-                error_metadata: Some(serde_json::json!({
-                    "execution_strategy": format!("{:?}", effective_strategy).to_lowercase(),
-                    "workspace_id": workspace_id.clone(),
-                    "web_search_enabled": request_tool_policy.effective_web_search,
-                    "auto_continue_enabled": auto_continue_enabled,
-                })),
-            },
+            Some(serde_json::Value::Object(run_start_metadata.clone())),
             async {
                 let mut added_code_execution = false;
                 if effective_strategy == AsterExecutionStrategy::CodeOrchestrated {
@@ -4245,6 +4970,45 @@ pub async fn aster_agent_chat_stream(
                     build_session_config(),
                     cancel_token.clone(),
                     &request_tool_policy,
+                    {
+                        let run_observation = run_observation.clone();
+                        let app = app.clone();
+                        let event_name = request.event_name.clone();
+                        let timeline_recorder = timeline_recorder.clone();
+                        let workspace_root = workspace_root.clone();
+                        let request_metadata = request_metadata.clone();
+                        move |event| {
+                            let mut observation = match run_observation.lock() {
+                                Ok(guard) => guard,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        "[AsterAgent] run observation lock poisoned，继续复用内部状态"
+                                    );
+                                    error.into_inner()
+                                }
+                            };
+                            observation.record_event(
+                                event,
+                                workspace_root.as_str(),
+                                request_metadata.as_ref(),
+                            );
+                            let mut recorder = match timeline_recorder.lock() {
+                                Ok(guard) => guard,
+                                Err(error) => error.into_inner(),
+                            };
+                            if let Err(error) = recorder.record_legacy_event(
+                                &app,
+                                &event_name,
+                                event,
+                                workspace_root.as_str(),
+                            ) {
+                                tracing::warn!(
+                                    "[AsterAgent] 记录时间线事件失败（已降级继续）: {}",
+                                    error
+                                );
+                            }
+                        }
+                    },
                 )
                 .await;
 
@@ -4278,6 +5042,45 @@ pub async fn aster_agent_chat_stream(
                             build_session_config(),
                             cancel_token.clone(),
                             &request_tool_policy,
+                            {
+                                let run_observation = run_observation.clone();
+                                let app = app.clone();
+                                let event_name = request.event_name.clone();
+                                let timeline_recorder = timeline_recorder.clone();
+                                let workspace_root = workspace_root.clone();
+                                let request_metadata = request_metadata.clone();
+                                move |event| {
+                                    let mut observation = match run_observation.lock() {
+                                        Ok(guard) => guard,
+                                        Err(error) => {
+                                            tracing::warn!(
+                                                "[AsterAgent] run observation lock poisoned，继续复用内部状态"
+                                            );
+                                            error.into_inner()
+                                        }
+                                    };
+                                    observation.record_event(
+                                        event,
+                                        workspace_root.as_str(),
+                                        request_metadata.as_ref(),
+                                    );
+                                    let mut recorder = match timeline_recorder.lock() {
+                                        Ok(guard) => guard,
+                                        Err(error) => error.into_inner(),
+                                    };
+                                    if let Err(error) = recorder.record_legacy_event(
+                                        &app,
+                                        &event_name,
+                                        event,
+                                        workspace_root.as_str(),
+                                    ) {
+                                        tracing::warn!(
+                                            "[AsterAgent] 记录时间线事件失败（已降级继续）: {}",
+                                            error
+                                        );
+                                    }
+                                }
+                            },
                         )
                         .await
                         .map_err(|fallback_err| fallback_err.message)
@@ -4296,17 +5099,66 @@ pub async fn aster_agent_chat_stream(
 
                 run_result
             },
+            move |result| {
+                let observation = match run_observation_for_finalize.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(error) => {
+                        tracing::warn!(
+                            "[AsterAgent] finalize run metadata 时 observation lock 已 poisoned"
+                        );
+                        error.into_inner().clone()
+                    }
+                };
+                let metadata =
+                    build_chat_run_finish_metadata(&run_start_metadata_for_finalize, &observation);
+
+                match result {
+                    Ok(_) => RunFinishDecision {
+                        status: proxycast_core::database::dao::agent_run::AgentRunStatus::Success,
+                        error_code: None,
+                        error_message: None,
+                        metadata: Some(metadata),
+                    },
+                    Err(err) => RunFinishDecision {
+                        status: proxycast_core::database::dao::agent_run::AgentRunStatus::Error,
+                        error_code: Some("chat_stream_failed".to_string()),
+                        error_message: Some(err.clone()),
+                        metadata: Some(metadata),
+                    },
+                }
+            },
         )
         .await;
 
     match final_result {
         Ok(()) => {
+            {
+                let mut recorder = match timeline_recorder.lock() {
+                    Ok(guard) => guard,
+                    Err(error) => error.into_inner(),
+                };
+                if let Err(error) = recorder.complete_turn_success(&app, &request.event_name) {
+                    tracing::warn!("[AsterAgent] 完成 turn 时间线失败（已降级继续）: {}", error);
+                }
+            }
             let done_event = TauriAgentEvent::FinalDone { usage: None };
             if let Err(e) = app.emit(&request.event_name, &done_event) {
                 tracing::error!("[AsterAgent] 发送完成事件失败: {}", e);
             }
         }
         Err(e) => {
+            {
+                let mut recorder = match timeline_recorder.lock() {
+                    Ok(guard) => guard,
+                    Err(error) => error.into_inner(),
+                };
+                if let Err(timeline_error) = recorder.fail_turn(&app, &request.event_name, &e) {
+                    tracing::warn!(
+                        "[AsterAgent] 记录失败 turn 时间线失败（已降级继续）: {}",
+                        timeline_error
+                    );
+                }
+            }
             let error_event = TauriAgentEvent::Error { message: e.clone() };
             if let Err(emit_err) = app.emit(&request.event_name, &error_event) {
                 tracing::error!("[AsterAgent] 发送错误事件失败: {}", emit_err);
@@ -4330,6 +5182,53 @@ pub async fn aster_agent_stop(
 ) -> Result<bool, String> {
     tracing::info!("[AsterAgent] 停止会话: {}", session_id);
     Ok(state.cancel_session(&session_id).await)
+}
+
+/// 统一运行时：提交一个 turn。
+#[tauri::command]
+pub async fn agent_runtime_submit_turn(
+    app: AppHandle,
+    state: State<'_, AsterAgentState>,
+    db: State<'_, DbConnection>,
+    api_key_provider_service: State<'_, ApiKeyProviderServiceState>,
+    logs: State<'_, LogState>,
+    config_manager: State<'_, GlobalConfigManagerState>,
+    mcp_manager: State<'_, McpManagerState>,
+    heartbeat_state: State<'_, HeartbeatServiceState>,
+    request: AgentRuntimeSubmitTurnRequest,
+) -> Result<(), String> {
+    aster_agent_chat_stream(
+        app,
+        state,
+        db,
+        api_key_provider_service,
+        logs,
+        config_manager,
+        mcp_manager,
+        heartbeat_state,
+        request.into(),
+    )
+    .await
+}
+
+/// 统一运行时：中断当前 turn。
+#[tauri::command]
+pub async fn agent_runtime_interrupt_turn(
+    state: State<'_, AsterAgentState>,
+    request: AgentRuntimeInterruptTurnRequest,
+) -> Result<bool, String> {
+    aster_agent_stop(state, request.session_id).await
+}
+
+/// 创建新会话
+#[tauri::command]
+pub async fn agent_runtime_create_session(
+    db: State<'_, DbConnection>,
+    workspace_id: String,
+    name: Option<String>,
+    execution_strategy: Option<AsterExecutionStrategy>,
+) -> Result<String, String> {
+    aster_session_create(db, None, workspace_id, name, execution_strategy).await
 }
 
 /// 创建新会话
@@ -4402,6 +5301,14 @@ pub async fn aster_session_set_execution_strategy(
     Ok(())
 }
 
+/// 统一运行时：列出会话。
+#[tauri::command]
+pub async fn agent_runtime_list_sessions(
+    db: State<'_, DbConnection>,
+) -> Result<Vec<SessionInfo>, String> {
+    aster_session_list(db).await
+}
+
 /// 列出所有会话
 #[tauri::command]
 pub async fn aster_session_list(db: State<'_, DbConnection>) -> Result<Vec<SessionInfo>, String> {
@@ -4419,6 +5326,15 @@ pub async fn aster_session_get(
     AsterAgentWrapper::get_session_sync(&db, &session_id)
 }
 
+/// 统一运行时：获取会话详情。
+#[tauri::command]
+pub async fn agent_runtime_get_session(
+    db: State<'_, DbConnection>,
+    session_id: String,
+) -> Result<SessionDetail, String> {
+    aster_session_get(db, session_id).await
+}
+
 /// 重命名会话
 #[tauri::command]
 pub async fn aster_session_rename(
@@ -4430,6 +5346,36 @@ pub async fn aster_session_rename(
     AsterAgentWrapper::rename_session_sync(&db, &session_id, &name)
 }
 
+/// 统一运行时：更新会话元数据。
+#[tauri::command]
+pub async fn agent_runtime_update_session(
+    db: State<'_, DbConnection>,
+    request: AgentRuntimeUpdateSessionRequest,
+) -> Result<(), String> {
+    let trimmed_session_id = request.session_id.trim().to_string();
+    if trimmed_session_id.is_empty() {
+        return Err("session_id 不能为空".to_string());
+    }
+
+    if let Some(name) = request.name.as_ref() {
+        let normalized_name = name.trim();
+        if !normalized_name.is_empty() {
+            aster_session_rename(
+                db.clone(),
+                trimmed_session_id.clone(),
+                normalized_name.to_string(),
+            )
+            .await?;
+        }
+    }
+
+    if let Some(execution_strategy) = request.execution_strategy {
+        aster_session_set_execution_strategy(db, trimmed_session_id, execution_strategy).await?;
+    }
+
+    Ok(())
+}
+
 /// 删除会话
 #[tauri::command]
 pub async fn aster_session_delete(
@@ -4438,6 +5384,15 @@ pub async fn aster_session_delete(
 ) -> Result<(), String> {
     tracing::info!("[AsterAgent] 删除会话: {}", session_id);
     AsterAgentWrapper::delete_session_sync(&db, &session_id)
+}
+
+/// 统一运行时：删除会话。
+#[tauri::command]
+pub async fn agent_runtime_delete_session(
+    db: State<'_, DbConnection>,
+    session_id: String,
+) -> Result<(), String> {
+    aster_session_delete(db, session_id).await
 }
 
 /// 确认权限请求
@@ -4498,6 +5453,72 @@ fn validate_elicitation_submission(session_id: &str, request_id: &str) -> Result
         return Err("request_id 不能为空".to_string());
     }
     Ok(trimmed_session_id)
+}
+
+fn build_runtime_action_user_data(request: &AgentRuntimeRespondActionRequest) -> serde_json::Value {
+    if let Some(user_data) = request.user_data.clone() {
+        return user_data;
+    }
+
+    if !request.confirmed {
+        return serde_json::Value::String(String::new());
+    }
+
+    let Some(response) = request.response.as_ref() else {
+        return serde_json::Value::String(String::new());
+    };
+    let trimmed = response.trim();
+    if trimmed.is_empty() {
+        return serde_json::Value::String(String::new());
+    }
+
+    serde_json::from_str(trimmed).unwrap_or_else(|_| serde_json::Value::String(trimmed.to_string()))
+}
+
+/// 统一运行时：响应工具确认 / ask / elicitation。
+#[tauri::command]
+pub async fn agent_runtime_respond_action(
+    state: State<'_, AsterAgentState>,
+    db: State<'_, DbConnection>,
+    request: AgentRuntimeRespondActionRequest,
+) -> Result<(), String> {
+    let response_value = build_action_response_value(
+        request.confirmed,
+        request.response.as_deref(),
+        request.user_data.as_ref(),
+    );
+
+    let result = match request.action_type {
+        AgentRuntimeActionType::ToolConfirmation => {
+            aster_agent_confirm(
+                state,
+                ConfirmRequest {
+                    request_id: request.request_id.clone(),
+                    confirmed: request.confirmed,
+                    response: request.response.clone(),
+                },
+            )
+            .await
+        }
+        AgentRuntimeActionType::AskUser | AgentRuntimeActionType::Elicitation => {
+            let user_data = build_runtime_action_user_data(&request);
+            aster_agent_submit_elicitation_response(
+                state,
+                request.session_id.clone(),
+                SubmitElicitationResponseRequest {
+                    request_id: request.request_id.clone(),
+                    user_data,
+                },
+            )
+            .await
+        }
+    };
+
+    if result.is_ok() {
+        complete_action_item(db.inner(), &request.request_id, response_value)?;
+    }
+
+    result
 }
 
 /// 提交 elicitation 回答（用于 ask/lsp 等需要用户输入的流程）
@@ -4733,6 +5754,257 @@ mod tests {
                 sensitivity: 45,
                 source: None,
             })
+        );
+    }
+
+    #[test]
+    fn test_aster_chat_request_deserialize_with_metadata() {
+        let json = r#"{
+            "message": "Hello",
+            "session_id": "test-session",
+            "event_name": "agent_stream",
+            "workspace_id": "workspace-test",
+            "metadata": {
+                "harness": {
+                    "theme": "social-media",
+                    "gate_key": "write_mode",
+                    "run_title": "社媒初稿"
+                }
+            }
+        }"#;
+
+        let request: AsterChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            request
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("harness"))
+                .and_then(|value| value.get("theme"))
+                .and_then(serde_json::Value::as_str),
+            Some("social-media")
+        );
+    }
+
+    #[test]
+    fn test_resolve_runtime_chat_mode_prefers_explicit_chat_mode() {
+        let metadata = serde_json::json!({
+            "harness": {
+                "theme": "social-media",
+                "chat_mode": "general"
+            }
+        });
+
+        assert_eq!(
+            resolve_runtime_chat_mode(Some(&metadata)),
+            RuntimeChatMode::General
+        );
+    }
+
+    #[test]
+    fn test_resolve_runtime_chat_mode_falls_back_to_general_theme_group() {
+        let metadata = serde_json::json!({
+            "harness": {
+                "theme": "planning"
+            }
+        });
+
+        assert_eq!(
+            resolve_runtime_chat_mode(Some(&metadata)),
+            RuntimeChatMode::General
+        );
+    }
+
+    #[test]
+    fn test_default_web_search_enabled_for_chat_mode_requires_explicit_opt_in() {
+        assert!(!default_web_search_enabled_for_chat_mode(
+            RuntimeChatMode::Agent
+        ));
+        assert!(!default_web_search_enabled_for_chat_mode(
+            RuntimeChatMode::Creator
+        ));
+        assert!(!default_web_search_enabled_for_chat_mode(
+            RuntimeChatMode::General
+        ));
+    }
+
+    #[test]
+    fn test_agent_runtime_submit_turn_request_maps_to_aster_chat_request() {
+        let json = r#"{
+            "message": "Hello runtime",
+            "session_id": "runtime-session",
+            "event_name": "runtime_stream",
+            "workspace_id": "workspace-runtime",
+            "turn_config": {
+                "execution_strategy": "auto",
+                "web_search": true,
+                "system_prompt": "runtime prompt",
+                "provider_config": {
+                    "provider_id": "custom-provider",
+                    "provider_name": "custom-provider",
+                    "model_name": "gpt-5.3-codex"
+                },
+                "metadata": {
+                    "source": "hook-facade"
+                }
+            }
+        }"#;
+
+        let request: AgentRuntimeSubmitTurnRequest = serde_json::from_str(json).unwrap();
+        let mapped: AsterChatRequest = request.into();
+
+        assert_eq!(mapped.message, "Hello runtime");
+        assert_eq!(mapped.session_id, "runtime-session");
+        assert_eq!(mapped.event_name, "runtime_stream");
+        assert_eq!(mapped.workspace_id, "workspace-runtime");
+        assert_eq!(
+            mapped.execution_strategy,
+            Some(AsterExecutionStrategy::Auto)
+        );
+        assert_eq!(mapped.web_search, Some(true));
+        assert_eq!(mapped.system_prompt.as_deref(), Some("runtime prompt"));
+        assert_eq!(
+            mapped
+                .provider_config
+                .as_ref()
+                .and_then(|config| config.provider_id.as_deref()),
+            Some("custom-provider")
+        );
+        assert_eq!(
+            mapped
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("source"))
+                .and_then(serde_json::Value::as_str),
+            Some("hook-facade")
+        );
+    }
+
+    #[test]
+    fn test_build_runtime_action_user_data_prefers_structured_payload() {
+        let request = AgentRuntimeRespondActionRequest {
+            session_id: "session-1".to_string(),
+            request_id: "req-1".to_string(),
+            action_type: AgentRuntimeActionType::AskUser,
+            confirmed: true,
+            response: Some("{\"answer\":\"A\"}".to_string()),
+            user_data: Some(serde_json::json!({ "answer": "B" })),
+        };
+
+        assert_eq!(
+            build_runtime_action_user_data(&request),
+            serde_json::json!({ "answer": "B" })
+        );
+    }
+
+    #[test]
+    fn test_build_runtime_action_user_data_parses_json_response() {
+        let request = AgentRuntimeRespondActionRequest {
+            session_id: "session-1".to_string(),
+            request_id: "req-1".to_string(),
+            action_type: AgentRuntimeActionType::Elicitation,
+            confirmed: true,
+            response: Some("{\"answer\":\"A\"}".to_string()),
+            user_data: None,
+        };
+
+        assert_eq!(
+            build_runtime_action_user_data(&request),
+            serde_json::json!({ "answer": "A" })
+        );
+    }
+
+    #[test]
+    fn test_extract_artifact_path_from_tool_start_reads_write_file_path() {
+        let path = extract_artifact_path_from_tool_start(
+            "write_file",
+            Some(r##"{"path":"social-posts/demo.md","content":"# 标题"}"##),
+            "/tmp/workspace",
+        );
+
+        assert_eq!(path.as_deref(), Some("social-posts/demo.md"));
+    }
+
+    #[test]
+    fn test_resolve_social_run_artifact_descriptor_matches_social_draft() {
+        let descriptor = resolve_social_run_artifact_descriptor(
+            "social-posts/draft.md",
+            Some("write_mode"),
+            Some("社媒初稿"),
+        );
+
+        assert_eq!(descriptor.artifact_type, "draft");
+        assert_eq!(descriptor.stage, "drafting");
+        assert_eq!(descriptor.version_label, "社媒初稿");
+        assert!(!descriptor.is_auxiliary);
+    }
+
+    #[test]
+    fn test_build_chat_run_finish_metadata_includes_social_fields() {
+        let base = build_chat_run_metadata_base(
+            &AsterChatRequest {
+                message: "hello".to_string(),
+                session_id: "session-1".to_string(),
+                event_name: "event-1".to_string(),
+                images: None,
+                provider_config: None,
+                project_id: Some("project-1".to_string()),
+                workspace_id: "workspace-1".to_string(),
+                web_search: Some(false),
+                execution_strategy: Some(AsterExecutionStrategy::React),
+                auto_continue: None,
+                system_prompt: None,
+                metadata: Some(serde_json::json!({
+                    "harness": {
+                        "theme": "social-media",
+                        "gate_key": "write_mode"
+                    }
+                })),
+            },
+            "workspace-1",
+            AsterExecutionStrategy::React,
+            &RequestToolPolicy {
+                effective_web_search: false,
+                required_tools: vec![],
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+            },
+            false,
+            None,
+        );
+        let mut observation = ChatRunObservation::default();
+        observation.record_artifact_path(
+            "social-posts/draft.md".to_string(),
+            Some(&serde_json::json!({
+                "harness": {
+                    "theme": "social-media",
+                    "gate_key": "write_mode"
+                }
+            })),
+        );
+
+        let metadata = build_chat_run_finish_metadata(&base, &observation);
+
+        assert_eq!(
+            metadata
+                .get("artifact_paths")
+                .and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::json!("social-posts/draft.md")])
+        );
+        assert_eq!(
+            metadata
+                .get("artifact_type")
+                .and_then(serde_json::Value::as_str),
+            Some("draft")
+        );
+        assert_eq!(
+            metadata.get("stage").and_then(serde_json::Value::as_str),
+            Some("drafting")
+        );
+        assert_eq!(
+            metadata
+                .get("version_id")
+                .and_then(serde_json::Value::as_str),
+            Some("artifact:social-posts/draft.md")
         );
     }
 

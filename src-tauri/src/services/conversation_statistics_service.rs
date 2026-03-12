@@ -2,9 +2,15 @@
 //!
 //! 从数据库查询真实的对话和使用统计数据
 
-use chrono::{DateTime, Datelike, Duration, Local, Timelike};
-use rusqlite::Connection;
+use crate::database::{
+    count_pending_general_messages, count_pending_general_sessions,
+    sum_pending_general_message_chars,
+};
+use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Timelike};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+
+const GENERAL_MODE_PATTERN: &str = "general:%";
 
 /// 使用统计数据响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,65 +194,171 @@ fn chars_to_estimated_tokens(chars: i64) -> u64 {
     ((chars as f64) / 4.0).ceil() as u64
 }
 
+fn format_sqlite_datetime(timestamp_ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(timestamp_ms)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| Local::now().format("%Y-%m-%d %H:%M:%S").to_string())
+}
+
+fn query_general_session_count(
+    conn: &Connection,
+    from_timestamp_ms: Option<i64>,
+    to_timestamp_ms: Option<i64>,
+) -> Result<i64, String> {
+    let from_text = from_timestamp_ms.map(format_sqlite_datetime);
+    let to_text = to_timestamp_ms.map(format_sqlite_datetime);
+
+    let unified_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM agent_sessions s
+             WHERE s.model LIKE ?1
+               AND (?2 IS NULL OR datetime(s.created_at) >= datetime(?2))
+               AND (?3 IS NULL OR datetime(s.created_at) < datetime(?3))",
+            params![GENERAL_MODE_PATTERN, from_text, to_text],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("查询 unified general 会话数失败: {e}"))?;
+
+    let pending_count = count_pending_general_sessions(conn, from_timestamp_ms, to_timestamp_ms)
+        .map_err(|e| format!("查询待迁移 general 会话数失败: {e}"))?;
+
+    Ok(unified_count + pending_count)
+}
+
+fn query_general_message_count(
+    conn: &Connection,
+    from_timestamp_ms: Option<i64>,
+    to_timestamp_ms: Option<i64>,
+) -> Result<i64, String> {
+    let from_text = from_timestamp_ms.map(format_sqlite_datetime);
+    let to_text = to_timestamp_ms.map(format_sqlite_datetime);
+
+    let unified_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM agent_messages m
+             JOIN agent_sessions s ON s.id = m.session_id
+             WHERE s.model LIKE ?1
+               AND (?2 IS NULL OR datetime(m.timestamp) >= datetime(?2))
+               AND (?3 IS NULL OR datetime(m.timestamp) < datetime(?3))",
+            params![GENERAL_MODE_PATTERN, from_text, to_text],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("查询 unified general 消息数失败: {e}"))?;
+
+    let pending_count = count_pending_general_messages(conn, from_timestamp_ms, to_timestamp_ms)
+        .map_err(|e| format!("查询待迁移 general 消息数失败: {e}"))?;
+
+    Ok(unified_count + pending_count)
+}
+
+fn sum_general_message_chars(
+    conn: &Connection,
+    from_timestamp_ms: Option<i64>,
+    to_timestamp_ms: Option<i64>,
+) -> Result<i64, String> {
+    let from_text = from_timestamp_ms.map(format_sqlite_datetime);
+    let to_text = to_timestamp_ms.map(format_sqlite_datetime);
+
+    let unified_chars: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(LENGTH(m.content_json)), 0)
+             FROM agent_messages m
+             JOIN agent_sessions s ON s.id = m.session_id
+             WHERE s.model LIKE ?1
+               AND (?2 IS NULL OR datetime(m.timestamp) >= datetime(?2))
+               AND (?3 IS NULL OR datetime(m.timestamp) < datetime(?3))",
+            params![GENERAL_MODE_PATTERN, from_text, to_text],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("估算 unified general Token 失败: {e}"))?;
+
+    let pending_chars = sum_pending_general_message_chars(conn, from_timestamp_ms, to_timestamp_ms)
+        .map_err(|e| format!("估算待迁移 general Token 失败: {e}"))?;
+
+    Ok(unified_chars + pending_chars)
+}
+
+fn query_non_general_session_count(
+    conn: &Connection,
+    from_timestamp_ms: Option<i64>,
+    to_timestamp_ms: Option<i64>,
+) -> Result<i64, String> {
+    let from_text = from_timestamp_ms.map(format_sqlite_datetime);
+    let to_text = to_timestamp_ms.map(format_sqlite_datetime);
+
+    conn.query_row(
+        "SELECT COUNT(*)
+         FROM agent_sessions s
+         WHERE s.model NOT LIKE ?1
+           AND (?2 IS NULL OR datetime(s.created_at) >= datetime(?2))
+           AND (?3 IS NULL OR datetime(s.created_at) < datetime(?3))",
+        params![GENERAL_MODE_PATTERN, from_text, to_text],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("查询非通用 unified 会话数失败: {e}"))
+}
+
+fn query_non_general_message_count(
+    conn: &Connection,
+    from_timestamp_ms: Option<i64>,
+    to_timestamp_ms: Option<i64>,
+) -> Result<i64, String> {
+    let from_text = from_timestamp_ms.map(format_sqlite_datetime);
+    let to_text = to_timestamp_ms.map(format_sqlite_datetime);
+
+    conn.query_row(
+        "SELECT COUNT(*)
+         FROM agent_messages m
+         JOIN agent_sessions s ON s.id = m.session_id
+         WHERE s.model NOT LIKE ?1
+           AND (?2 IS NULL OR datetime(m.timestamp) >= datetime(?2))
+           AND (?3 IS NULL OR datetime(m.timestamp) < datetime(?3))",
+        params![GENERAL_MODE_PATTERN, from_text, to_text],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("查询非通用 unified 消息数失败: {e}"))
+}
+
+fn sum_non_general_message_chars(
+    conn: &Connection,
+    from_timestamp_ms: Option<i64>,
+    to_timestamp_ms: Option<i64>,
+) -> Result<i64, String> {
+    let from_text = from_timestamp_ms.map(format_sqlite_datetime);
+    let to_text = to_timestamp_ms.map(format_sqlite_datetime);
+
+    conn.query_row(
+        "SELECT COALESCE(SUM(LENGTH(m.content_json)), 0)
+         FROM agent_messages m
+         JOIN agent_sessions s ON s.id = m.session_id
+         WHERE s.model NOT LIKE ?1
+           AND (?2 IS NULL OR datetime(m.timestamp) >= datetime(?2))
+           AND (?3 IS NULL OR datetime(m.timestamp) < datetime(?3))",
+        params![GENERAL_MODE_PATTERN, from_text, to_text],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("估算非通用 unified Token 失败: {e}"))
+}
+
 /// 查询通用对话统计
 fn query_general_chat_stats(
     conn: &Connection,
     today_start: &DateTime<Local>,
     month_start: &DateTime<Local>,
 ) -> Result<ConversationStats, String> {
-    // 转换为 Unix 时间戳（毫秒）
     let today_ts = today_start.timestamp_millis();
     let month_ts = month_start.timestamp_millis();
 
-    // 今日对话数
-    let today_conversations: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM general_chat_sessions WHERE created_at >= ?",
-            [today_ts],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询今日通用会话数失败: {e}"))?;
-
-    // 今日消息数
-    let today_messages: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM general_chat_messages WHERE created_at >= ?",
-            [today_ts],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询今日通用消息数失败: {e}"))?;
-
-    // 本月对话数
-    let monthly_conversations: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM general_chat_sessions WHERE created_at >= ?",
-            [month_ts],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询本月通用会话数失败: {e}"))?;
-
-    // 本月消息数
-    let monthly_messages: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM general_chat_messages WHERE created_at >= ?",
-            [month_ts],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询本月通用消息数失败: {e}"))?;
-
-    // 总对话数
-    let total_conversations: i64 = conn
-        .query_row("SELECT COUNT(*) FROM general_chat_sessions", [], |row| {
-            row.get(0)
-        })
-        .map_err(|e| format!("查询总通用会话数失败: {e}"))?;
-
-    // 总消息数
-    let total_messages: i64 = conn
-        .query_row("SELECT COUNT(*) FROM general_chat_messages", [], |row| {
-            row.get(0)
-        })
-        .map_err(|e| format!("查询总通用消息数失败: {e}"))?;
+    let today_conversations = query_general_session_count(conn, Some(today_ts), None)?;
+    let today_messages = query_general_message_count(conn, Some(today_ts), None)?;
+    let monthly_conversations = query_general_session_count(conn, Some(month_ts), None)?;
+    let monthly_messages = query_general_message_count(conn, Some(month_ts), None)?;
+    let total_conversations = query_general_session_count(conn, None, None)?;
+    let total_messages = query_general_message_count(conn, None, None)?;
 
     Ok(ConversationStats {
         total_conversations: clamp_i64_to_u32(total_conversations),
@@ -264,55 +376,15 @@ fn query_agent_chat_stats(
     today_start: &DateTime<Local>,
     month_start: &DateTime<Local>,
 ) -> Result<ConversationStats, String> {
-    // Agent sessions 使用 TEXT 格式的日期时间
-    let today_str = today_start.format("%Y-%m-%d %H:%M:%S").to_string();
-    let month_str = month_start.format("%Y-%m-%d %H:%M:%S").to_string();
+    let today_ts = today_start.timestamp_millis();
+    let month_ts = month_start.timestamp_millis();
 
-    // 今日对话数
-    let today_conversations: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_sessions WHERE datetime(created_at) >= datetime(?)",
-            [today_str.clone()],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询今日 Agent 会话数失败: {e}"))?;
-
-    // 今日消息数
-    let today_messages: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_messages WHERE datetime(timestamp) >= datetime(?)",
-            [today_str],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询今日 Agent 消息数失败: {e}"))?;
-
-    // 本月对话数
-    let monthly_conversations: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_sessions WHERE datetime(created_at) >= datetime(?)",
-            [month_str.clone()],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询本月 Agent 会话数失败: {e}"))?;
-
-    // 本月消息数
-    let monthly_messages: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_messages WHERE datetime(timestamp) >= datetime(?)",
-            [month_str],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询本月 Agent 消息数失败: {e}"))?;
-
-    // 总对话数
-    let total_conversations: i64 = conn
-        .query_row("SELECT COUNT(*) FROM agent_sessions", [], |row| row.get(0))
-        .map_err(|e| format!("查询总 Agent 会话数失败: {e}"))?;
-
-    // 总消息数
-    let total_messages: i64 = conn
-        .query_row("SELECT COUNT(*) FROM agent_messages", [], |row| row.get(0))
-        .map_err(|e| format!("查询总 Agent 消息数失败: {e}"))?;
+    let today_conversations = query_non_general_session_count(conn, Some(today_ts), None)?;
+    let today_messages = query_non_general_message_count(conn, Some(today_ts), None)?;
+    let monthly_conversations = query_non_general_session_count(conn, Some(month_ts), None)?;
+    let monthly_messages = query_non_general_message_count(conn, Some(month_ts), None)?;
+    let total_conversations = query_non_general_session_count(conn, None, None)?;
+    let total_messages = query_non_general_message_count(conn, None, None)?;
 
     Ok(ConversationStats {
         total_conversations: clamp_i64_to_u32(total_conversations),
@@ -392,58 +464,14 @@ fn query_estimated_tokens_from_messages(
 ) -> Result<TokenStats, String> {
     let today_ts = today_start.timestamp_millis();
     let month_ts = month_start.timestamp_millis();
-    let today_str = today_start.format("%Y-%m-%d %H:%M:%S").to_string();
-    let month_str = month_start.format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let general_total_chars: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM general_chat_messages",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("估算总 Token（通用消息）失败: {e}"))?;
+    let general_total_chars = sum_general_message_chars(conn, None, None)?;
+    let general_monthly_chars = sum_general_message_chars(conn, Some(month_ts), None)?;
+    let general_today_chars = sum_general_message_chars(conn, Some(today_ts), None)?;
 
-    let general_monthly_chars: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM general_chat_messages WHERE created_at >= ?",
-            [month_ts],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("估算本月 Token（通用消息）失败: {e}"))?;
-
-    let general_today_chars: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM general_chat_messages WHERE created_at >= ?",
-            [today_ts],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("估算今日 Token（通用消息）失败: {e}"))?;
-
-    let agent_total_chars: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(LENGTH(content_json)), 0) FROM agent_messages",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("估算总 Token（Agent 消息）失败: {e}"))?;
-
-    let agent_monthly_chars: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(LENGTH(content_json)), 0) FROM agent_messages
-             WHERE datetime(timestamp) >= datetime(?)",
-            [month_str],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("估算本月 Token（Agent 消息）失败: {e}"))?;
-
-    let agent_today_chars: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(LENGTH(content_json)), 0) FROM agent_messages
-             WHERE datetime(timestamp) >= datetime(?)",
-            [today_str],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("估算今日 Token（Agent 消息）失败: {e}"))?;
+    let agent_total_chars = sum_non_general_message_chars(conn, None, None)?;
+    let agent_monthly_chars = sum_non_general_message_chars(conn, Some(month_ts), None)?;
+    let agent_today_chars = sum_non_general_message_chars(conn, Some(today_ts), None)?;
 
     Ok(TokenStats {
         total_tokens: chars_to_estimated_tokens(general_total_chars + agent_total_chars),
@@ -555,7 +583,8 @@ fn query_model_usage_from_agent_messages(
                         COALESCE(SUM(LENGTH(m.content_json)), 0) AS content_chars
                  FROM agent_messages m
                  JOIN agent_sessions s ON s.id = m.session_id
-                 WHERE datetime(m.timestamp) >= datetime(?)
+                 WHERE s.model NOT LIKE ?1
+                   AND datetime(m.timestamp) >= datetime(?2)
                  GROUP BY s.model
                  ORDER BY content_chars DESC, conversations DESC
                  LIMIT 20",
@@ -563,7 +592,7 @@ fn query_model_usage_from_agent_messages(
             .map_err(|e| format!("准备 Agent 模型排行查询失败: {e}"))?;
 
         let rows = stmt
-            .query_map([start_str], |row| {
+            .query_map(params![GENERAL_MODE_PATTERN, start_str], |row| {
                 let model: String = row.get(0)?;
                 let conversations: i64 = row.get(1)?;
                 let chars: i64 = row.get(2)?;
@@ -589,6 +618,7 @@ fn query_model_usage_from_agent_messages(
                     COALESCE(SUM(LENGTH(m.content_json)), 0) AS content_chars
              FROM agent_messages m
              JOIN agent_sessions s ON s.id = m.session_id
+             WHERE s.model NOT LIKE ?1
              GROUP BY s.model
              ORDER BY content_chars DESC, conversations DESC
              LIMIT 20",
@@ -596,7 +626,7 @@ fn query_model_usage_from_agent_messages(
         .map_err(|e| format!("准备 Agent 模型排行查询失败: {e}"))?;
 
     let rows = stmt
-        .query_map([], |row| {
+        .query_map([GENERAL_MODE_PATTERN], |row| {
             let model: String = row.get(0)?;
             let conversations: i64 = row.get(1)?;
             let chars: i64 = row.get(2)?;
@@ -674,31 +704,16 @@ pub fn get_daily_usage_trends_from_db(
         let day_start = start_of_day(date);
         let day_end = day_start + Duration::days(1);
 
-        // 当天开始/结束（时间戳 + 文本）
         let day_start_ts = day_start.timestamp_millis();
         let day_end_ts = day_end.timestamp_millis();
-        let day_start_str = day_start.format("%Y-%m-%d %H:%M:%S").to_string();
-        let day_end_str = day_end.format("%Y-%m-%d %H:%M:%S").to_string();
         let day_key = day_start.format("%Y-%m-%d").to_string();
 
-        let conversations: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM general_chat_sessions WHERE created_at >= ? AND created_at < ?",
-                [day_start_ts, day_end_ts],
-                |row| row.get(0),
-            )
+        let conversations = query_general_session_count(conn, Some(day_start_ts), Some(day_end_ts))
             .map_err(|e| format!("查询通用会话日统计失败: {e}"))?;
 
-        // 查询 Agent 对话
-        let agent_conversations: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_sessions
-                 WHERE datetime(created_at) >= datetime(?)
-                   AND datetime(created_at) < datetime(?)",
-                [day_start_str.clone(), day_end_str.clone()],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("查询 Agent 会话日统计失败: {e}"))?;
+        let agent_conversations =
+            query_non_general_session_count(conn, Some(day_start_ts), Some(day_end_ts))
+                .map_err(|e| format!("查询 Agent 会话日统计失败: {e}"))?;
 
         let total_conversations = conversations + agent_conversations;
 
@@ -713,26 +728,13 @@ pub fn get_daily_usage_trends_from_db(
 
             clamp_i64_to_u64(day_tokens)
         } else {
-            let general_chars: i64 = conn
-                .query_row(
-                    "SELECT COALESCE(SUM(LENGTH(content)), 0)
-                     FROM general_chat_messages
-                     WHERE created_at >= ? AND created_at < ?",
-                    [day_start_ts, day_end_ts],
-                    |row| row.get(0),
-                )
-                .map_err(|e| format!("估算通用消息日 Token 失败: {e}"))?;
+            let general_chars =
+                sum_general_message_chars(conn, Some(day_start_ts), Some(day_end_ts))
+                    .map_err(|e| format!("估算通用消息日 Token 失败: {e}"))?;
 
-            let agent_chars: i64 = conn
-                .query_row(
-                    "SELECT COALESCE(SUM(LENGTH(content_json)), 0)
-                     FROM agent_messages
-                     WHERE datetime(timestamp) >= datetime(?)
-                       AND datetime(timestamp) < datetime(?)",
-                    [day_start_str, day_end_str],
-                    |row| row.get(0),
-                )
-                .map_err(|e| format!("估算 Agent 消息日 Token 失败: {e}"))?;
+            let agent_chars =
+                sum_non_general_message_chars(conn, Some(day_start_ts), Some(day_end_ts))
+                    .map_err(|e| format!("估算 Agent 消息日 Token 失败: {e}"))?;
 
             chars_to_estimated_tokens(general_chars + agent_chars)
         };
@@ -745,4 +747,154 @@ pub fn get_daily_usage_trends_from_db(
     }
 
     Ok(daily_usage)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{query_agent_chat_stats, query_general_chat_stats, start_of_day, start_of_month};
+    use chrono::{Local, TimeZone};
+    use rusqlite::{params, Connection};
+
+    fn create_test_schema(conn: &Connection) {
+        conn.execute_batch(
+            "
+            CREATE TABLE agent_sessions (
+                id TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                system_prompt TEXT,
+                title TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE agent_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                tool_calls_json TEXT,
+                tool_call_id TEXT
+            );
+            CREATE TABLE general_chat_sessions (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                metadata TEXT
+            );
+            CREATE TABLE general_chat_messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                blocks TEXT,
+                status TEXT NOT NULL DEFAULT 'complete',
+                created_at INTEGER NOT NULL,
+                metadata TEXT
+            );
+            ",
+        )
+        .expect("create schema");
+    }
+
+    #[test]
+    fn stats_do_not_double_count_migrated_general_sessions() {
+        let conn = Connection::open_in_memory().expect("open in memory db");
+        create_test_schema(&conn);
+
+        let now = Local
+            .with_ymd_and_hms(2026, 3, 12, 10, 0, 0)
+            .single()
+            .expect("build datetime");
+        let now_ms = now.timestamp_millis();
+
+        conn.execute(
+            "INSERT INTO general_chat_sessions (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["general-1", "旧通用会话", now_ms, now_ms],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO general_chat_messages (id, session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["gm-1", "general-1", "user", "legacy general", now_ms],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO agent_sessions (id, model, system_prompt, title, created_at, updated_at) VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
+            params!["general-1", "general:default", "统一通用会话", now.to_rfc3339(), now.to_rfc3339()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agent_messages (session_id, role, content_json, timestamp) VALUES (?1, ?2, ?3, ?4)",
+            params!["general-1", "user", r#"[{"type":"text","text":"legacy general"}]"#, now.to_rfc3339()],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO agent_sessions (id, model, system_prompt, title, created_at, updated_at) VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
+            params!["agent-1", "claude-sonnet-4", "Agent 会话", now.to_rfc3339(), now.to_rfc3339()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agent_messages (session_id, role, content_json, timestamp) VALUES (?1, ?2, ?3, ?4)",
+            params!["agent-1", "assistant", r#"[{"type":"text","text":"agent reply"}]"#, now.to_rfc3339()],
+        )
+        .unwrap();
+
+        let today_start = start_of_day(now);
+        let month_start = start_of_month(now);
+
+        let general_stats =
+            query_general_chat_stats(&conn, &today_start, &month_start).expect("general stats");
+        let agent_stats =
+            query_agent_chat_stats(&conn, &today_start, &month_start).expect("agent stats");
+
+        assert_eq!(general_stats.total_conversations, 1);
+        assert_eq!(general_stats.total_messages, 1);
+        assert_eq!(agent_stats.total_conversations, 1);
+        assert_eq!(agent_stats.total_messages, 1);
+    }
+
+    #[test]
+    fn stats_ignore_legacy_general_after_migration_completed() {
+        let conn = Connection::open_in_memory().expect("open in memory db");
+        create_test_schema(&conn);
+
+        let now = Local
+            .with_ymd_and_hms(2026, 3, 12, 10, 0, 0)
+            .single()
+            .expect("build datetime");
+        let now_ms = now.timestamp_millis();
+
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+            params!["migrated_general_chat_to_unified", "true"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO general_chat_sessions (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            params!["legacy-only", "旧通用会话", now_ms, now_ms],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO general_chat_messages (id, session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["gm-1", "legacy-only", "user", "legacy general", now_ms],
+        )
+        .unwrap();
+
+        let today_start = start_of_day(now);
+        let month_start = start_of_month(now);
+        let general_stats =
+            query_general_chat_stats(&conn, &today_start, &month_start).expect("general stats");
+
+        assert_eq!(general_stats.total_conversations, 0);
+        assert_eq!(general_stats.total_messages, 0);
+        assert_eq!(general_stats.monthly_conversations, 0);
+        assert_eq!(general_stats.today_messages, 0);
+    }
 }

@@ -35,6 +35,7 @@ export type {
   PlatformType,
   ExportFormat,
   DocumentVersion,
+  DocumentVersionMetadata,
   DocumentCanvasState,
   DocumentCanvasProps,
   DocumentToolbarProps,

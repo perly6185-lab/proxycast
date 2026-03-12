@@ -1,7 +1,7 @@
 {
   "name": "proxycast",
   "private": true,
-  "version": "0.84.0",
+  "version": "0.85.0",
   "type": "module",
   "engines": {
     "node": ">=22.0.0"
@@ -37,7 +37,8 @@
     "bridge:e2e": "node scripts/chrome-bridge-e2e.mjs",
     "bridge:health": "node scripts/check-dev-bridge-health.mjs",
     "smoke:social-workbench": "node scripts/social-workbench-e2e-smoke.mjs",
-    "dev:web-bridge": "node scripts/start-web-bridge-dev.mjs"
+    "dev:web-bridge": "node scripts/start-web-bridge-dev.mjs",
+    "governance:legacy-report": "node scripts/report-legacy-surfaces.mjs"
   },
   "dependencies": {
     "@babel/standalone": "^7.29.0",

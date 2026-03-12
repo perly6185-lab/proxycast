@@ -23,10 +23,10 @@
 - `providers` - Provider 配置
 - `settings` - 应用设置
 
-### 通用对话表
+### Legacy 通用对话表
 
-- `general_chat_sessions` - 通用对话会话
-- `general_chat_messages` - 通用对话消息
+- `general_chat_sessions` - 历史通用对话会话（legacy 保留）
+- `general_chat_messages` - 历史通用对话消息（legacy 保留）
 
 ### 功能表
 
@@ -42,7 +42,6 @@
 |------|------|
 | `dao/agent.rs` | Agent 会话和消息 DAO |
 | `dao/api_key_provider.rs` | API Key Provider DAO |
-| `dao/general_chat.rs` | 通用对话会话和消息 DAO |
 | `dao/mcp.rs` | MCP 服务器 DAO |
 | `dao/prompts.rs` | 提示词 DAO |
 | `dao/provider_pool.rs` | 凭证池 DAO |

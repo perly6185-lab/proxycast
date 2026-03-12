@@ -4,7 +4,7 @@
 //!
 //! ## 目录结构
 //! ```text
-//! ~/.proxycast/sessions/
+//! {应用数据目录}/proxycast/sessions/
 //! ├── {session-id}/
 //! │   ├── .meta.json          # 会话元数据
 //! │   ├── files/              # 生成的文件
@@ -14,6 +14,8 @@
 //! │   └── canvas/             # 画布状态快照
 //! └── ...
 //! ```
+//!
+//! 默认会自动兼容旧 Home 历史目录中的 sessions 数据。
 
 pub mod storage;
 pub mod types;

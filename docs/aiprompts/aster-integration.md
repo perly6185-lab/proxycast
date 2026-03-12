@@ -82,7 +82,7 @@ ProxyCast 已完整集成 aster-rust 框架，包括凭证池桥接。
 
 ### 使用方式
 
-> 治理约定：前端业务层不要直接 `invoke('aster_*')`，统一通过 `src/lib/api/agentRuntime.ts` 调用现役 Aster API。
+> 治理约定：前端业务层不要直接 `invoke('aster_*')`，统一通过 `src/lib/api/agentRuntime.ts` 调用现役 Aster API。历史 `src/lib/api/agentCompat.ts` 已删除。
 
 ```typescript
 import {

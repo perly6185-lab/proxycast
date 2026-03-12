@@ -1,45 +1,84 @@
+import { isGeneralResearchTheme } from "./generalAgentPrompt";
+
 export interface ChatToolPreferences {
   webSearch: boolean;
   thinking: boolean;
+  task: boolean;
+  subagent: boolean;
 }
 
 export const DEFAULT_CHAT_TOOL_PREFERENCES: ChatToolPreferences = {
   webSearch: false,
   thinking: false,
+  task: false,
+  subagent: false,
 };
 
-const CHAT_TOOL_PREFERENCES_KEY = "proxycast.chat.tool_preferences.v1";
+const LEGACY_CHAT_TOOL_PREFERENCES_KEY = "proxycast.chat.tool_preferences.v1";
+const CHAT_TOOL_PREFERENCES_KEY_PREFIX = "proxycast.chat.tool_preferences";
+const CHAT_TOOL_PREFERENCES_KEY_VERSION = "v3";
 
 const normalizeBoolean = (value: unknown, fallback: boolean): boolean =>
   typeof value === "boolean" ? value : fallback;
 
-export function loadChatToolPreferences(): ChatToolPreferences {
+const normalizeThemeScope = (theme?: string | null): string => {
+  const normalizedTheme = theme?.trim().toLowerCase();
+  return normalizedTheme || "global";
+};
+
+const getScopedChatToolPreferencesKey = (theme?: string | null): string =>
+  `${CHAT_TOOL_PREFERENCES_KEY_PREFIX}.${normalizeThemeScope(theme)}.${CHAT_TOOL_PREFERENCES_KEY_VERSION}`;
+
+const parseStoredPreferences = (
+  raw: string,
+  fallback: ChatToolPreferences,
+): ChatToolPreferences => {
+  const parsed = JSON.parse(raw) as Partial<ChatToolPreferences>;
+  return {
+    webSearch: normalizeBoolean(parsed.webSearch, fallback.webSearch),
+    thinking: normalizeBoolean(parsed.thinking, fallback.thinking),
+    task: normalizeBoolean(parsed.task, fallback.task),
+    subagent: normalizeBoolean(parsed.subagent, fallback.subagent),
+  };
+};
+
+export function getDefaultChatToolPreferences(
+  _theme?: string | null,
+): ChatToolPreferences {
+  return DEFAULT_CHAT_TOOL_PREFERENCES;
+}
+
+export function loadChatToolPreferences(theme?: string | null): ChatToolPreferences {
+  const defaults = getDefaultChatToolPreferences(theme);
+
   try {
-    const raw = localStorage.getItem(CHAT_TOOL_PREFERENCES_KEY);
-    if (!raw) {
-      return DEFAULT_CHAT_TOOL_PREFERENCES;
+    const scopedRaw = localStorage.getItem(getScopedChatToolPreferencesKey(theme));
+    if (scopedRaw) {
+      return parseStoredPreferences(scopedRaw, defaults);
     }
 
-    const parsed = JSON.parse(raw) as Partial<ChatToolPreferences>;
-    return {
-      webSearch: normalizeBoolean(
-        parsed.webSearch,
-        DEFAULT_CHAT_TOOL_PREFERENCES.webSearch,
-      ),
-      thinking: normalizeBoolean(
-        parsed.thinking,
-        DEFAULT_CHAT_TOOL_PREFERENCES.thinking,
-      ),
-    };
+    if (isGeneralResearchTheme(theme)) {
+      return defaults;
+    }
+
+    const legacyRaw = localStorage.getItem(LEGACY_CHAT_TOOL_PREFERENCES_KEY);
+    if (legacyRaw) {
+      return parseStoredPreferences(legacyRaw, defaults);
+    }
+
+    return defaults;
   } catch {
-    return DEFAULT_CHAT_TOOL_PREFERENCES;
+    return defaults;
   }
 }
 
-export function saveChatToolPreferences(preferences: ChatToolPreferences): void {
+export function saveChatToolPreferences(
+  preferences: ChatToolPreferences,
+  theme?: string | null,
+): void {
   try {
     localStorage.setItem(
-      CHAT_TOOL_PREFERENCES_KEY,
+      getScopedChatToolPreferencesKey(theme),
       JSON.stringify(preferences),
     );
   } catch {

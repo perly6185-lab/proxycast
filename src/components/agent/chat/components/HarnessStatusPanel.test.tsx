@@ -29,6 +29,7 @@ function createHarnessState(
   overrides: Partial<HarnessSessionState> = {},
 ): HarnessSessionState {
   return {
+    runtimeStatus: null,
     pendingApprovals: [],
     latestContextTrace: [],
     plan: {
@@ -123,6 +124,51 @@ afterEach(() => {
 });
 
 describe("HarnessStatusPanel", () => {
+  it("弹窗模式应默认展示完整内容且不渲染展开按钮", () => {
+    renderPanel({
+      layout: "dialog",
+    });
+
+    expect(document.body.textContent).toContain("待审批");
+    expect(document.body.textContent).toContain("文件活动");
+    expect(document.body.textContent).toContain("计划状态");
+    expect(document.body.textContent).toContain("上下文");
+    expect(document.body.textContent).not.toContain("展开详情");
+    expect(document.body.textContent).not.toContain("收起详情");
+  });
+
+  it("应支持自定义标题说明与前置运行概览内容", () => {
+    renderPanel({
+      title: "Agent 工作台",
+      description: "集中查看代理运行轨迹。",
+      toggleLabel: "工作台详情",
+      leadContent: <div>通用 Agent 运行概览</div>,
+    });
+
+    expect(document.body.textContent).toContain("Agent 工作台");
+    expect(document.body.textContent).toContain("集中查看代理运行轨迹。");
+    expect(document.body.textContent).toContain("通用 Agent 运行概览");
+    expect(document.body.textContent).toContain("收起工作台详情");
+  });
+
+  it("存在 runtimeStatus 时应在工作台中展示当前执行阶段", () => {
+    renderPanel({
+      harnessState: createHarnessState({
+        runtimeStatus: {
+          phase: "routing",
+          title: "正在建立执行回合",
+          detail: "已提交到运行时，正在等待首个执行事件。",
+          checkpoints: ["会话已建立", "等待首个模型事件"],
+        },
+      }),
+    });
+
+    expect(document.body.textContent).toContain("执行阶段");
+    expect(document.body.textContent).toContain("当前执行阶段");
+    expect(document.body.textContent).toContain("正在建立执行回合");
+    expect(document.body.textContent).toContain("等待首个模型事件");
+  });
+
   it("摘要卡和快速导航应支持跳转到对应区块", () => {
     const scrollIntoViewMock = vi.fn();
     const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;

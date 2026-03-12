@@ -5,7 +5,11 @@
  */
 
 import { safeInvoke } from "@/lib/dev-bridge";
-import type { ToolResultImage } from "./agentStream";
+import type {
+  AgentThreadItem,
+  AgentThreadTurn,
+  ToolResultImage,
+} from "./agentStream";
 
 /**
  * Agent 状态
@@ -138,6 +142,7 @@ export interface TauriMessageContent {
  */
 export interface AsterSessionDetail {
   id: string;
+  thread_id?: string;
   name?: string;
   created_at: number;
   updated_at: number;
@@ -148,6 +153,46 @@ export interface AsterSessionDetail {
     content: TauriMessageContent[];
     timestamp: number;
   }>;
+  turns?: AgentThreadTurn[];
+  items?: AgentThreadItem[];
+}
+
+export interface AgentTurnConfigSnapshot {
+  provider_config?: AsterProviderConfig;
+  execution_strategy?: AsterExecutionStrategy;
+  web_search?: boolean;
+  auto_continue?: AutoContinueRequestPayload;
+  system_prompt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentRuntimeSubmitTurnRequest {
+  message: string;
+  session_id: string;
+  event_name: string;
+  workspace_id: string;
+  images?: ImageInput[];
+  turn_config?: AgentTurnConfigSnapshot;
+}
+
+export interface AgentRuntimeInterruptTurnRequest {
+  session_id: string;
+  turn_id?: string;
+}
+
+export interface AgentRuntimeRespondActionRequest {
+  session_id: string;
+  request_id: string;
+  action_type: "tool_confirmation" | "ask_user" | "elicitation";
+  confirmed: boolean;
+  response?: string;
+  user_data?: unknown;
+}
+
+export interface AgentRuntimeUpdateSessionRequest {
+  session_id: string;
+  name?: string;
+  execution_strategy?: AsterExecutionStrategy;
 }
 
 interface InvokeAsterChatStreamOptions {
@@ -162,6 +207,7 @@ interface InvokeAsterChatStreamOptions {
   autoContinue?: AutoContinueRequestPayload;
   systemPrompt?: string;
   projectId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 const invokeAsterChatStream = async ({
@@ -176,6 +222,7 @@ const invokeAsterChatStream = async ({
   autoContinue,
   systemPrompt,
   projectId,
+  metadata,
 }: InvokeAsterChatStreamOptions): Promise<void> => {
   const resolvedWorkspaceId = requireWorkspaceId(workspaceId, projectId);
 
@@ -192,9 +239,62 @@ const invokeAsterChatStream = async ({
       web_search: webSearch,
       auto_continue: autoContinue,
       system_prompt: systemPrompt,
+      metadata,
     },
   });
 };
+
+export async function submitAgentRuntimeTurn(
+  request: AgentRuntimeSubmitTurnRequest,
+): Promise<void> {
+  return await safeInvoke("agent_runtime_submit_turn", { request });
+}
+
+export async function interruptAgentRuntimeTurn(
+  request: AgentRuntimeInterruptTurnRequest,
+): Promise<boolean> {
+  return await safeInvoke("agent_runtime_interrupt_turn", { request });
+}
+
+export async function respondAgentRuntimeAction(
+  request: AgentRuntimeRespondActionRequest,
+): Promise<void> {
+  return await safeInvoke("agent_runtime_respond_action", { request });
+}
+
+export async function createAgentRuntimeSession(
+  workspaceId: string,
+  name?: string,
+  executionStrategy?: AsterExecutionStrategy,
+): Promise<string> {
+  return await safeInvoke("agent_runtime_create_session", {
+    workspaceId: requireWorkspaceId(workspaceId),
+    name,
+    executionStrategy,
+  });
+}
+
+export async function listAgentRuntimeSessions(): Promise<AsterSessionInfo[]> {
+  return await safeInvoke("agent_runtime_list_sessions");
+}
+
+export async function getAgentRuntimeSession(
+  sessionId: string,
+): Promise<AsterSessionDetail> {
+  return await safeInvoke("agent_runtime_get_session", { sessionId });
+}
+
+export async function updateAgentRuntimeSession(
+  request: AgentRuntimeUpdateSessionRequest,
+): Promise<void> {
+  return await safeInvoke("agent_runtime_update_session", { request });
+}
+
+export async function deleteAgentRuntimeSession(
+  sessionId: string,
+): Promise<void> {
+  return await safeInvoke("agent_runtime_delete_session", { sessionId });
+}
 
 /**
  * 启动 Agent（初始化原生 Agent）
@@ -375,6 +475,7 @@ export async function sendAsterMessageStream(
   autoContinue?: AutoContinueRequestPayload,
   systemPrompt?: string,
   projectId?: string,
+  metadata?: Record<string, unknown>,
 ): Promise<void> {
   return await invokeAsterChatStream({
     message,
@@ -388,6 +489,7 @@ export async function sendAsterMessageStream(
     autoContinue,
     systemPrompt,
     projectId,
+    metadata,
   });
 }
 

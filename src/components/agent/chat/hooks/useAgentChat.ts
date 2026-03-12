@@ -30,6 +30,7 @@ import {
   ContentPart,
   ActionRequired,
   ConfirmResponse,
+  WriteArtifactContext,
   PROVIDER_CONFIG,
   getProviderConfig,
   type ProviderConfigMap,
@@ -262,7 +263,11 @@ interface UseAgentChatOptions {
   /** 系统提示词（用于内容创作等场景） */
   systemPrompt?: string;
   /** 文件写入回调 */
-  onWriteFile?: (content: string, fileName: string) => void;
+  onWriteFile?: (
+    content: string,
+    fileName: string,
+    context?: WriteArtifactContext,
+  ) => void;
   /** 绑定的工作区 ID（用于本地 sandbox） */
   workspaceId: string;
 }

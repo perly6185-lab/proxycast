@@ -1,5 +1,7 @@
 //! HTTP API 服务器
 
+#![allow(clippy::all)]
+
 pub mod auth;
 pub mod chrome_bridge;
 pub mod client_detector;

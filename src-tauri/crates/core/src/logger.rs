@@ -45,12 +45,7 @@ pub struct LogStore {
 
 impl Default for LogStore {
     fn default() -> Self {
-        let log_dir = app_paths::resolve_logs_dir().unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".proxycast")
-                .join("logs")
-        });
+        let log_dir = app_paths::best_effort_runtime_subdir("logs");
         let _ = fs::create_dir_all(&log_dir);
         let log_file = log_dir.join("proxycast.log");
         let config = LogStoreConfig::default();

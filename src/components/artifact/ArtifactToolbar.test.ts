@@ -260,6 +260,7 @@ const codeArtifactWithLanguageArb = fc
 
 /** 各类型的有效文件扩展名 */
 const VALID_EXTENSIONS: Record<ArtifactType, string[]> = {
+  document: ["md"],
   code: [
     "txt",
     "js",

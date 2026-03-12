@@ -29,6 +29,7 @@ export interface TaskFile {
   createdAt: number;
   updatedAt: number;
   thumbnail?: string;
+  metadata?: Record<string, unknown>;
 }
 
 interface TaskFileListProps {

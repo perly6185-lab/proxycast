@@ -85,6 +85,9 @@ const _ToolCallStatusIndicator: React.FC<ToolCallStatusIndicatorProps> = ({
 
 const getToolIcon = (toolName: string) => {
   const name = toolName.toLowerCase();
+  if (name.includes("subagent")) {
+    return Globe;
+  }
   if (
     name.includes("bash") ||
     name.includes("shell") ||
@@ -125,6 +128,16 @@ const getToolIcon = (toolName: string) => {
   }
   return Wrench;
 };
+
+const normalizeToolNameKey = (value: string): string =>
+  value.replace(/[\s_-]+/g, "").trim().toLowerCase();
+
+const PLANNING_TOOL_KEYS = new Set([
+  "todowrite",
+  "writetodos",
+  "enterplanmode",
+  "exitplanmode",
+]);
 
 // ============ 工具描述生成 ============
 
@@ -172,6 +185,48 @@ const getToolActionLabel = (
   const Icon = getToolIcon(toolName);
   if (isFailed) return { action: "执行失败", icon: Icon };
   return { action: isCompleted ? "已完成" : "执行中", icon: Icon };
+};
+
+const getToolDisplayInfo = (
+  toolName: string,
+  status: ToolCallStatus,
+): { label: string; action: string; icon: React.ElementType } => {
+  const normalizedName = normalizeToolNameKey(toolName);
+  const isCompleted = status === "completed";
+  const isFailed = status === "failed";
+
+  if (normalizedName === "subagenttask") {
+    return {
+      label: "子代理协作",
+      action: isFailed ? "委派失败" : isCompleted ? "协作完成" : "正在委派",
+      icon: Globe,
+    };
+  }
+
+  if (
+    normalizedName === "task" ||
+    normalizedName.startsWith("proxycastcreate") &&
+      normalizedName.endsWith("tasktool")
+  ) {
+    return {
+      label: "后台任务",
+      action: isFailed ? "创建失败" : isCompleted ? "已创建任务" : "创建任务中",
+      icon: FilePlus,
+    };
+  }
+
+  if (PLANNING_TOOL_KEYS.has(normalizedName)) {
+    return {
+      label: "计划",
+      action: isFailed ? "规划失败" : isCompleted ? "规划已更新" : "规划中",
+      icon: FileText,
+    };
+  }
+
+  return {
+    label: getToolActionLabel(toolName, status).action,
+    ...getToolActionLabel(toolName, status),
+  };
 };
 
 /**
@@ -579,9 +634,8 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
     }
   }, [toolCall.arguments]);
 
-  // 获取操作标签和图标（保留用于未来扩展）
-  const _toolAction = useMemo(
-    () => getToolActionLabel(toolCall.name, toolCall.status),
+  const toolDisplay = useMemo(
+    () => getToolDisplayInfo(toolCall.name, toolCall.status),
     [toolCall.name, toolCall.status],
   );
 
@@ -604,8 +658,30 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
       const q = String(parsedArgs.pattern || parsedArgs.query);
       return q.length > 30 ? q.slice(0, 30) + "..." : q;
     }
+    if (
+      normalizeToolNameKey(toolCall.name) === "subagenttask" &&
+      (parsedArgs.description || parsedArgs.taskType || parsedArgs.role)
+    ) {
+      return String(
+        parsedArgs.description || parsedArgs.taskType || parsedArgs.role,
+      );
+    }
+    if (
+      normalizeToolNameKey(toolCall.name).startsWith("proxycastcreate") &&
+      (parsedArgs.title ||
+        parsedArgs.topic ||
+        parsedArgs.keyword ||
+        parsedArgs.url)
+    ) {
+      return String(
+        parsedArgs.title ||
+          parsedArgs.topic ||
+          parsedArgs.keyword ||
+          parsedArgs.url,
+      );
+    }
     return null;
-  }, [filePath, parsedArgs]);
+  }, [filePath, parsedArgs, toolCall.name]);
 
   // 获取文件内容（用于点击打开右边栏）
   const fileContent = useMemo(() => {
@@ -697,6 +773,10 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
     }
     return undefined;
   }, [resultMetadata]);
+  const openableFilePath = useMemo(
+    () => resultPath?.value || filePath,
+    [filePath, resultPath?.value],
+  );
   const hasResultImages = resultImages.length > 0;
 
   useEffect(() => {
@@ -711,10 +791,10 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
 
   // 处理点击事件 - 如果是文件写入工具，打开右边栏
   const handleOpenFile = useCallback(() => {
-    if (filePath && fileContent && onFileClick) {
-      onFileClick(filePath, fileContent);
+    if (openableFilePath && onFileClick) {
+      onFileClick(openableFilePath, fileContent || "");
     }
-  }, [filePath, fileContent, onFileClick]);
+  }, [fileContent, onFileClick, openableFilePath]);
 
   // 简洁模式：单行显示 - Claude 风格
   return (
@@ -748,11 +828,17 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
         </span>
 
         {/* 工具名称 - Claude 风格 */}
-        <span
-          className="text-sm font-medium"
-          style={{ color: "var(--claude-accent)" }}
-        >
-          {snakeToTitleCase(toolCall.name)}
+        <span className="flex items-center gap-2">
+          <toolDisplay.icon
+            className="h-4 w-4"
+            style={{ color: "var(--claude-accent)" }}
+          />
+          <span
+            className="text-sm font-medium"
+            style={{ color: "var(--claude-accent)" }}
+          >
+            {toolDisplay.label}
+          </span>
         </span>
 
         {/* 文件名/参数 */}
@@ -763,13 +849,14 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
         )}
 
         {/* 右侧操作按钮 */}
-        <div className="flex items-center gap-1 ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="ml-auto flex items-center gap-1">
           {/* 打开文件按钮 */}
-          {filePath && fileContent && onFileClick && (
+          {openableFilePath && onFileClick && (
             <button
               onClick={handleOpenFile}
               className="p-1.5 rounded-md hover:bg-[var(--surface-secondary)] transition-colors"
               title="在画布中打开"
+              aria-label={`在画布中打开-${openableFilePath}`}
             >
               <ExternalLink className="w-3.5 h-3.5 text-[var(--ink-600)] hover:text-[var(--ink-900)]" />
             </button>
@@ -820,7 +907,7 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
             className="text-xs font-semibold mb-2"
             style={{ color: "var(--claude-accent)" }}
           >
-            Output
+            {toolDisplay.action}
           </div>
           {resultMetaItems.length > 0 ? (
             <div className="mb-2 flex flex-wrap gap-2">

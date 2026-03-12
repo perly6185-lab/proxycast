@@ -49,8 +49,4 @@ export const promptsApi = {
   /** Auto-import from live file if no prompts exist */
   autoImport: (app: AppType): Promise<number> =>
     safeInvoke("auto_import_prompt", { app }),
-
-  // Legacy API for compatibility
-  switchPrompt: (appType: AppType, id: string): Promise<void> =>
-    safeInvoke("switch_prompt", { appType, id }),
 };

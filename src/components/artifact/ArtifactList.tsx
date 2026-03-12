@@ -44,6 +44,8 @@ function getTypeIcon(type: ArtifactType): React.ReactNode {
   const iconClass = "w-4 h-4";
 
   switch (type) {
+    case "document":
+      return <FileText className={iconClass} />;
     case "code":
       return <Code className={iconClass} />;
     case "html":
@@ -76,6 +78,7 @@ function getTypeIcon(type: ArtifactType): React.ReactNode {
  */
 function getTypeDisplayName(type: ArtifactType): string {
   const displayNames: Record<ArtifactType, string> = {
+    document: "文档",
     code: "代码",
     html: "HTML",
     svg: "SVG",

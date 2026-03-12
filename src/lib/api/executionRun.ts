@@ -63,7 +63,14 @@ export interface ThemeWorkbenchRunState {
     | null;
   queue_items: ThemeWorkbenchRunTodoItem[];
   latest_terminal: ThemeWorkbenchRunTerminalItem | null;
+  recent_terminals?: ThemeWorkbenchRunTerminalItem[] | null;
   updated_at: string;
+}
+
+export interface ThemeWorkbenchRunHistoryPage {
+  items: ThemeWorkbenchRunTerminalItem[];
+  has_more: boolean;
+  next_offset: number | null;
 }
 
 export async function executionRunList(
@@ -87,5 +94,18 @@ export async function executionRunGetThemeWorkbenchState(
     sessionId,
     session_id: sessionId,
     limit,
+  });
+}
+
+export async function executionRunListThemeWorkbenchHistory(
+  sessionId: string,
+  limit: number = 20,
+  offset: number = 0,
+): Promise<ThemeWorkbenchRunHistoryPage> {
+  return await safeInvoke("execution_run_list_theme_workbench_history", {
+    sessionId,
+    session_id: sessionId,
+    limit,
+    offset,
   });
 }

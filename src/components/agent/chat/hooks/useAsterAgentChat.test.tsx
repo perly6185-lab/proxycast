@@ -4,15 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   mockInitAsterAgent,
-  mockSendAsterMessageStream,
+  mockSubmitAgentRuntimeTurn,
   mockCreateAsterSession,
   mockListAsterSessions,
   mockGetAsterSession,
-  mockRenameAsterSession,
+  mockUpdateAgentRuntimeSession,
   mockDeleteAsterSession,
-  mockStopAsterSession,
-  mockConfirmAsterAction,
-  mockSubmitAsterElicitationResponse,
+  mockInterruptAgentRuntimeTurn,
+  mockRespondAgentRuntimeAction,
   mockParseStreamEvent,
   mockSafeListen,
   mockToast,
@@ -20,15 +19,14 @@ const {
   mockTryExecuteSlashSkillCommand,
 } = vi.hoisted(() => ({
   mockInitAsterAgent: vi.fn(),
-  mockSendAsterMessageStream: vi.fn(),
+  mockSubmitAgentRuntimeTurn: vi.fn(),
   mockCreateAsterSession: vi.fn(),
   mockListAsterSessions: vi.fn(),
   mockGetAsterSession: vi.fn(),
-  mockRenameAsterSession: vi.fn(),
+  mockUpdateAgentRuntimeSession: vi.fn(),
   mockDeleteAsterSession: vi.fn(),
-  mockStopAsterSession: vi.fn(),
-  mockConfirmAsterAction: vi.fn(),
-  mockSubmitAsterElicitationResponse: vi.fn(),
+  mockInterruptAgentRuntimeTurn: vi.fn(),
+  mockRespondAgentRuntimeAction: vi.fn(),
   mockParseStreamEvent: vi.fn((payload: unknown) => payload),
   mockSafeListen: vi.fn(),
   mockToast: {
@@ -43,17 +41,22 @@ const {
   mockTryExecuteSlashSkillCommand: vi.fn(async () => false),
 }));
 
+const mockSendAsterMessageStream = mockSubmitAgentRuntimeTurn;
+
 vi.mock("@/lib/api/agentRuntime", () => ({
   initAsterAgent: mockInitAsterAgent,
-  sendAsterMessageStream: mockSendAsterMessageStream,
   createAsterSession: mockCreateAsterSession,
   listAsterSessions: mockListAsterSessions,
   getAsterSession: mockGetAsterSession,
-  renameAsterSession: mockRenameAsterSession,
   deleteAsterSession: mockDeleteAsterSession,
-  stopAsterSession: mockStopAsterSession,
-  confirmAsterAction: mockConfirmAsterAction,
-  submitAsterElicitationResponse: mockSubmitAsterElicitationResponse,
+  submitAgentRuntimeTurn: mockSubmitAgentRuntimeTurn,
+  createAgentRuntimeSession: mockCreateAsterSession,
+  listAgentRuntimeSessions: mockListAsterSessions,
+  getAgentRuntimeSession: mockGetAsterSession,
+  updateAgentRuntimeSession: mockUpdateAgentRuntimeSession,
+  deleteAgentRuntimeSession: mockDeleteAsterSession,
+  interruptAgentRuntimeTurn: mockInterruptAgentRuntimeTurn,
+  respondAgentRuntimeAction: mockRespondAgentRuntimeAction,
 }));
 
 vi.mock("@/lib/api/agentStream", () => ({
@@ -148,18 +151,17 @@ beforeEach(() => {
   sessionStorage.clear();
 
   mockInitAsterAgent.mockResolvedValue(undefined);
-  mockSendAsterMessageStream.mockResolvedValue(undefined);
+  mockSubmitAgentRuntimeTurn.mockResolvedValue(undefined);
   mockCreateAsterSession.mockResolvedValue("created-session");
   mockListAsterSessions.mockResolvedValue([]);
   mockGetAsterSession.mockResolvedValue({
     id: "session-from-api",
     messages: [],
   });
-  mockRenameAsterSession.mockResolvedValue(undefined);
+  mockUpdateAgentRuntimeSession.mockResolvedValue(undefined);
   mockDeleteAsterSession.mockResolvedValue(undefined);
-  mockStopAsterSession.mockResolvedValue(undefined);
-  mockConfirmAsterAction.mockResolvedValue(undefined);
-  mockSubmitAsterElicitationResponse.mockResolvedValue(undefined);
+  mockInterruptAgentRuntimeTurn.mockResolvedValue(undefined);
+  mockRespondAgentRuntimeAction.mockResolvedValue(undefined);
   mockSafeListen.mockResolvedValue(() => {});
   mockParseSkillSlashCommand.mockReturnValue(null);
   mockTryExecuteSlashSkillCommand.mockResolvedValue(false);
@@ -213,7 +215,7 @@ describe("useAsterAgentChat 首页新会话", () => {
 });
 
 describe("useAsterAgentChat.confirmAction", () => {
-  it("tool_confirmation 应调用 confirmAsterAction", async () => {
+  it("tool_confirmation 应调用统一 runtime action 响应", async () => {
     const workspaceId = "ws-tool";
     seedSession(workspaceId, "session-tool");
     const harness = mountHook(workspaceId);
@@ -229,19 +231,21 @@ describe("useAsterAgentChat.confirmAction", () => {
         });
       });
 
-      expect(mockConfirmAsterAction).toHaveBeenCalledTimes(1);
-      expect(mockConfirmAsterAction).toHaveBeenCalledWith(
-        "req-tool-1",
-        true,
-        "允许",
-      );
-      expect(mockSubmitAsterElicitationResponse).not.toHaveBeenCalled();
+      expect(mockRespondAgentRuntimeAction).toHaveBeenCalledTimes(1);
+      expect(mockRespondAgentRuntimeAction).toHaveBeenCalledWith({
+        session_id: "session-tool",
+        request_id: "req-tool-1",
+        action_type: "tool_confirmation",
+        confirmed: true,
+        response: "允许",
+        user_data: undefined,
+      });
     } finally {
       harness.unmount();
     }
   });
 
-  it("elicitation 应调用 submitAsterElicitationResponse 并透传 userData", async () => {
+  it("elicitation 应调用统一 runtime action 响应并透传 userData", async () => {
     const workspaceId = "ws-elicitation";
     seedSession(workspaceId, "session-elicitation");
     const harness = mountHook(workspaceId);
@@ -257,13 +261,15 @@ describe("useAsterAgentChat.confirmAction", () => {
         });
       });
 
-      expect(mockSubmitAsterElicitationResponse).toHaveBeenCalledTimes(1);
-      expect(mockSubmitAsterElicitationResponse).toHaveBeenCalledWith(
-        "session-elicitation",
-        "req-elicitation-1",
-        { answer: "A" },
-      );
-      expect(mockConfirmAsterAction).not.toHaveBeenCalled();
+      expect(mockRespondAgentRuntimeAction).toHaveBeenCalledTimes(1);
+      expect(mockRespondAgentRuntimeAction).toHaveBeenCalledWith({
+        session_id: "session-elicitation",
+        request_id: "req-elicitation-1",
+        action_type: "elicitation",
+        confirmed: true,
+        response: undefined,
+        user_data: { answer: "A" },
+      });
     } finally {
       harness.unmount();
     }
@@ -285,12 +291,177 @@ describe("useAsterAgentChat.confirmAction", () => {
         });
       });
 
-      expect(mockSubmitAsterElicitationResponse).toHaveBeenCalledTimes(1);
-      expect(mockSubmitAsterElicitationResponse).toHaveBeenCalledWith(
-        "session-ask-user",
-        "req-ask-user-1",
-        { answer: "选项A" },
-      );
+      expect(mockRespondAgentRuntimeAction).toHaveBeenCalledTimes(1);
+      expect(mockRespondAgentRuntimeAction).toHaveBeenCalledWith({
+        session_id: "session-ask-user",
+        request_id: "req-ask-user-1",
+        action_type: "ask_user",
+        confirmed: true,
+        response: '{"answer":"选项A"}',
+        user_data: { answer: "选项A" },
+      });
+    } finally {
+      harness.unmount();
+    }
+  });
+});
+
+describe("useAsterAgentChat thread timeline", () => {
+  it("sendMessage 后在首个流事件前应先注入本地回合占位", async () => {
+    const workspaceId = "ws-thread-optimistic";
+    seedSession(workspaceId, "session-thread-optimistic");
+    const harness = mountHook(workspaceId);
+
+    let streamHandler: ((event: { payload: unknown }) => void) | null = null;
+    mockSafeListen.mockImplementationOnce(async (_eventName, handler) => {
+      streamHandler = handler as (event: { payload: unknown }) => void;
+      return () => {
+        streamHandler = null;
+      };
+    });
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("帮我先开始处理", [], false, false, false, "react");
+      });
+
+      expect(harness.getValue().currentTurnId).toMatch(/^local-turn:/);
+      expect(harness.getValue().turns).toHaveLength(1);
+      expect(harness.getValue().turns[0]?.id).toMatch(/^local-turn:/);
+      expect(harness.getValue().turns[0]?.status).toBe("running");
+      expect(harness.getValue().threadItems).toHaveLength(1);
+      expect(harness.getValue().threadItems[0]?.id).toMatch(/^local-item:/);
+      expect(harness.getValue().threadItems[0]?.type).toBe("turn_summary");
+      expect(harness.getValue().threadItems[0]?.status).toBe("in_progress");
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "turn_started",
+            turn: {
+              id: "turn-real-1",
+              thread_id: "session-thread-optimistic",
+              prompt_text: "帮我先开始处理",
+              status: "running",
+              started_at: "2026-03-13T11:00:00.000Z",
+              created_at: "2026-03-13T11:00:00.000Z",
+              updated_at: "2026-03-13T11:00:00.000Z",
+            },
+          },
+        });
+      });
+
+      expect(harness.getValue().currentTurnId).toBe("turn-real-1");
+      expect(harness.getValue().turns).toHaveLength(1);
+      expect(harness.getValue().turns[0]?.id).toBe("turn-real-1");
+      expect(harness.getValue().threadItems).toEqual([]);
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("应接收 turn/item 生命周期事件并写入运行态", async () => {
+    const workspaceId = "ws-thread-timeline";
+    seedSession(workspaceId, "session-thread-timeline");
+    const harness = mountHook(workspaceId);
+
+    let streamHandler: ((event: { payload: unknown }) => void) | null = null;
+    mockSafeListen.mockImplementationOnce(async (_eventName, handler) => {
+      streamHandler = handler as (event: { payload: unknown }) => void;
+      return () => {
+        streamHandler = null;
+      };
+    });
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("帮我整理一个计划", [], false, false, false, "react");
+      });
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "turn_started",
+            turn: {
+              id: "turn-1",
+              thread_id: "session-thread-timeline",
+              prompt_text: "帮我整理一个计划",
+              status: "running",
+              started_at: "2026-03-13T10:00:00.000Z",
+              created_at: "2026-03-13T10:00:00.000Z",
+              updated_at: "2026-03-13T10:00:00.000Z",
+            },
+          },
+        });
+        streamHandler?.({
+          payload: {
+            type: "item_started",
+            item: {
+              id: "plan-1",
+              thread_id: "session-thread-timeline",
+              turn_id: "turn-1",
+              sequence: 1,
+              status: "in_progress",
+              started_at: "2026-03-13T10:00:01.000Z",
+              updated_at: "2026-03-13T10:00:01.000Z",
+              type: "plan",
+              text: "1. 收集资料\n2. 输出结论",
+            },
+          },
+        });
+        streamHandler?.({
+          payload: {
+            type: "item_completed",
+            item: {
+              id: "plan-1",
+              thread_id: "session-thread-timeline",
+              turn_id: "turn-1",
+              sequence: 1,
+              status: "completed",
+              started_at: "2026-03-13T10:00:01.000Z",
+              completed_at: "2026-03-13T10:00:03.000Z",
+              updated_at: "2026-03-13T10:00:03.000Z",
+              type: "plan",
+              text: "1. 收集资料\n2. 输出结论",
+            },
+          },
+        });
+        streamHandler?.({
+          payload: {
+            type: "turn_completed",
+            turn: {
+              id: "turn-1",
+              thread_id: "session-thread-timeline",
+              prompt_text: "帮我整理一个计划",
+              status: "completed",
+              started_at: "2026-03-13T10:00:00.000Z",
+              completed_at: "2026-03-13T10:00:04.000Z",
+              created_at: "2026-03-13T10:00:00.000Z",
+              updated_at: "2026-03-13T10:00:04.000Z",
+            },
+          },
+        });
+        streamHandler?.({
+          payload: {
+            type: "final_done",
+          },
+        });
+      });
+
+      expect(harness.getValue().currentTurnId).toBe("turn-1");
+      expect(harness.getValue().turns).toHaveLength(1);
+      expect(harness.getValue().turns[0]?.status).toBe("completed");
+      expect(harness.getValue().threadItems).toHaveLength(1);
+      expect(harness.getValue().threadItems[0]?.type).toBe("plan");
+      expect(harness.getValue().threadItems[0]?.status).toBe("completed");
     } finally {
       harness.unmount();
     }
@@ -632,11 +803,14 @@ describe("useAsterAgentChat action_required 渲染链路", () => {
         .reverse()
         .find((msg) => msg.role === "assistant");
 
-      expect(mockSubmitAsterElicitationResponse).toHaveBeenCalledWith(
-        "session-ask-submit-keep",
-        "req-ask-submit-1",
-        { answer: "自动执行（Auto）" },
-      );
+      expect(mockRespondAgentRuntimeAction).toHaveBeenCalledWith({
+        session_id: "session-ask-submit-keep",
+        request_id: "req-ask-submit-1",
+        action_type: "ask_user",
+        confirmed: true,
+        response: '{"answer":"自动执行（Auto）"}',
+        user_data: { answer: "自动执行（Auto）" },
+      });
       expect(assistantMessage?.actionRequests?.[0]).toMatchObject({
         requestId: "req-ask-submit-1",
         actionType: "ask_user",
@@ -702,7 +876,7 @@ describe("useAsterAgentChat action_required 渲染链路", () => {
         });
       });
 
-      expect(mockSubmitAsterElicitationResponse).not.toHaveBeenCalled();
+      expect(mockRespondAgentRuntimeAction).not.toHaveBeenCalled();
       expect(mockToast.error).toHaveBeenCalledWith(
         "Ask 请求 ID 尚未就绪，请稍后再试",
       );
@@ -748,11 +922,14 @@ describe("useAsterAgentChat action_required 渲染链路", () => {
 
       await flushEffects();
 
-      expect(mockConfirmAsterAction).toHaveBeenCalledWith(
-        "req-auto-1",
-        true,
-        "Auto 模式自动确认",
-      );
+      expect(mockRespondAgentRuntimeAction).toHaveBeenCalledWith({
+        session_id: "session-auto-confirm",
+        request_id: "req-auto-1",
+        action_type: "tool_confirmation",
+        confirmed: true,
+        response: "Auto 模式自动确认",
+        user_data: undefined,
+      });
 
       const assistantMessage = [...harness.getValue().messages]
         .reverse()
@@ -890,6 +1067,133 @@ describe("useAsterAgentChat action_required 渲染链路", () => {
         role: "planner",
         failed_count: 1,
       });
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("write_file 工具启动时应为当前 assistant 消息挂载 streaming artifact", async () => {
+    const workspaceId = "ws-artifact-tool-start";
+    seedSession(workspaceId, "session-artifact-tool-start");
+    const harness = mountHook(workspaceId);
+
+    let streamHandler: ((event: { payload: unknown }) => void) | null = null;
+    mockSafeListen.mockImplementationOnce(async (_eventName, handler) => {
+      streamHandler = handler as (event: { payload: unknown }) => void;
+      return () => {
+        streamHandler = null;
+      };
+    });
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("生成文档", [], false, false, false, "react");
+      });
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "tool_start",
+            tool_id: "tool-write-1",
+            tool_name: "write_file",
+            arguments: JSON.stringify({
+              path: "notes/demo.md",
+              content: "# Demo\n\nartifact body",
+            }),
+          },
+        });
+      });
+
+      const assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.artifacts?.[0]).toMatchObject({
+        title: "demo.md",
+        content: "# Demo\n\nartifact body",
+        status: "streaming",
+        meta: expect.objectContaining({
+          filePath: "notes/demo.md",
+          filename: "demo.md",
+          source: "tool_start",
+          sourceMessageId: assistantMessage?.id,
+        }),
+      });
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("artifact_snapshot 完成后应在 final_done 时将 artifact 标记为 complete", async () => {
+    const workspaceId = "ws-artifact-snapshot";
+    seedSession(workspaceId, "session-artifact-snapshot");
+    const harness = mountHook(workspaceId);
+
+    let streamHandler: ((event: { payload: unknown }) => void) | null = null;
+    mockSafeListen.mockImplementationOnce(async (_eventName, handler) => {
+      streamHandler = handler as (event: { payload: unknown }) => void;
+      return () => {
+        streamHandler = null;
+      };
+    });
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("生成快照", [], false, false, false, "react");
+      });
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "artifact_snapshot",
+            artifact: {
+              artifactId: "artifact-snapshot-1",
+              filePath: "notes/final.md",
+              content: "# Final\n\nsnapshot body",
+              metadata: {
+                complete: false,
+              },
+            },
+          },
+        });
+      });
+
+      let assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.artifacts?.[0]).toMatchObject({
+        id: "artifact-snapshot-1",
+        title: "final.md",
+        status: "streaming",
+        content: "# Final\n\nsnapshot body",
+        meta: expect.objectContaining({
+          filePath: "notes/final.md",
+          source: "artifact_snapshot",
+        }),
+      });
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "final_done",
+          },
+        });
+      });
+
+      assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.artifacts?.[0]?.status).toBe("complete");
     } finally {
       harness.unmount();
     }
@@ -1828,8 +2132,10 @@ describe("useAsterAgentChat 兼容接口", () => {
       const value = harness.getValue();
       expect(value.messages).toHaveLength(1);
       expect(value.messages[0]?.role).toBe("assistant");
-      expect(mockSendAsterMessageStream).toHaveBeenCalledTimes(1);
-      expect(mockSendAsterMessageStream.mock.calls[0]?.[0]).toBe("");
+      expect(mockSubmitAgentRuntimeTurn).toHaveBeenCalledTimes(1);
+      expect(mockSubmitAgentRuntimeTurn.mock.calls[0]?.[0]).toMatchObject({
+        message: "",
+      });
     } finally {
       harness.unmount();
     }
@@ -1848,8 +2154,10 @@ describe("useAsterAgentChat 兼容接口", () => {
       const value = harness.getValue();
       expect(value.messages).toHaveLength(1);
       expect(value.messages[0]?.role).toBe("assistant");
-      expect(mockSendAsterMessageStream).toHaveBeenCalledTimes(1);
-      expect(mockSendAsterMessageStream.mock.calls[0]?.[0]).toBe(prompt);
+      expect(mockSubmitAgentRuntimeTurn).toHaveBeenCalledTimes(1);
+      expect(mockSubmitAgentRuntimeTurn.mock.calls[0]?.[0]).toMatchObject({
+        message: prompt,
+      });
     } finally {
       harness.unmount();
     }
@@ -1872,8 +2180,11 @@ describe("useAsterAgentChat 兼容接口", () => {
         await harness.getValue().triggerAIGuide("检查 provider_id 透传");
       });
 
-      expect(mockSendAsterMessageStream).toHaveBeenCalledTimes(1);
-      expect(mockSendAsterMessageStream.mock.calls[0]?.[5]).toMatchObject({
+      expect(mockSubmitAgentRuntimeTurn).toHaveBeenCalledTimes(1);
+      expect(
+        mockSubmitAgentRuntimeTurn.mock.calls[0]?.[0]?.turn_config
+          ?.provider_config,
+      ).toMatchObject({
         provider_id: providerId,
         provider_name: providerId,
         model_name: model,
@@ -1904,8 +2215,11 @@ describe("useAsterAgentChat 兼容接口", () => {
         await harness.getValue().triggerAIGuide("请输出一版社媒主稿");
       });
 
-      expect(mockSendAsterMessageStream).toHaveBeenCalledTimes(1);
-      expect(mockSendAsterMessageStream.mock.calls[0]?.[5]).toMatchObject({
+      expect(mockSubmitAgentRuntimeTurn).toHaveBeenCalledTimes(1);
+      expect(
+        mockSubmitAgentRuntimeTurn.mock.calls[0]?.[0]?.turn_config
+          ?.provider_config,
+      ).toMatchObject({
         provider_id: selectedProvider,
         model_name: selectedModel,
       });
@@ -1944,8 +2258,11 @@ describe("useAsterAgentChat 兼容接口", () => {
         await harness.getValue().renameTopic("topic-1", "新标题");
       });
 
-      expect(mockRenameAsterSession).toHaveBeenCalledTimes(1);
-      expect(mockRenameAsterSession).toHaveBeenCalledWith("topic-1", "新标题");
+      expect(mockUpdateAgentRuntimeSession).toHaveBeenCalledTimes(1);
+      expect(mockUpdateAgentRuntimeSession).toHaveBeenCalledWith({
+        session_id: "topic-1",
+        name: "新标题",
+      });
 
       const renamedTopic = harness
         .getValue()

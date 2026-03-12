@@ -78,10 +78,15 @@ interface HarnessStatusPanelProps {
     error: string | null;
   };
   environment: HarnessEnvironmentSummary;
+  layout?: "default" | "sidebar" | "dialog";
   onLoadFilePreview?: (path: string) => Promise<HarnessFilePreviewResult>;
   onOpenFile?: (fileName: string, content: string) => void;
   onRevealPath?: (path: string) => Promise<void>;
   onOpenPath?: (path: string) => Promise<void>;
+  title?: string;
+  description?: string;
+  toggleLabel?: string;
+  leadContent?: ReactNode;
 }
 
 interface PreviewDialogState {
@@ -103,6 +108,7 @@ type OutputFilterValue = "all" | "path" | "offload" | "truncated" | "summary";
 type FileDisplayMode = "timeline" | "grouped";
 
 type HarnessSectionKey =
+  | "runtime"
   | "approvals"
   | "files"
   | "outputs"
@@ -110,6 +116,19 @@ type HarnessSectionKey =
   | "delegation"
   | "context"
   | "capabilities";
+
+interface HarnessSectionNavItem {
+  key: HarnessSectionKey;
+  label: string;
+}
+
+interface HarnessSummaryCard {
+  sectionKey: HarnessSectionKey;
+  title: string;
+  value: string;
+  hint: string;
+  icon: LucideIcon;
+}
 
 function getFileName(path: string): string {
   const normalized = path.replace(/\\/g, "/");
@@ -272,6 +291,25 @@ function describeApproval(item: ActionRequired): string | undefined {
   return hints.length > 0 ? hints.join(" · ") : undefined;
 }
 
+function formatRuntimePhaseLabel(
+  runtimeStatus: HarnessSessionState["runtimeStatus"],
+): string {
+  if (!runtimeStatus) {
+    return "空闲";
+  }
+
+  switch (runtimeStatus.phase) {
+    case "preparing":
+      return "准备中";
+    case "routing":
+      return "建回合中";
+    case "context":
+      return "装载上下文";
+    default:
+      return runtimeStatus.phase;
+  }
+}
+
 function summarizeSchedulerEvent(event: SchedulerEvent): string {
   switch (event.type) {
     case "started":
@@ -377,12 +415,19 @@ export function HarnessStatusPanel({
   harnessState,
   subAgentRuntime,
   environment,
+  layout = "default",
   onLoadFilePreview,
   onOpenFile,
   onRevealPath,
   onOpenPath,
+  title = "Harness 运行面板",
+  description = "展示最近文件活动、工具输出、审批与上下文装载情况。",
+  toggleLabel = "详情",
+  leadContent,
 }: HarnessStatusPanelProps) {
   const [expanded, setExpanded] = useState(true);
+  const isDialogLayout = layout === "dialog";
+  const isDetailsExpanded = isDialogLayout ? true : expanded;
   const [fileFilter, setFileFilter] = useState<FileFilterValue>("all");
   const [outputFilter, setOutputFilter] = useState<OutputFilterValue>("all");
   const [fileDisplayMode, setFileDisplayMode] =
@@ -529,31 +574,44 @@ export function HarnessStatusPanel({
   }, [filteredFileEvents]);
 
   const availableSections = useMemo(
-    () => [
-      harnessState.pendingApprovals.length > 0
-        ? { key: "approvals" as const, label: "待审批" }
-        : null,
-      harnessState.recentFileEvents.length > 0
-        ? { key: "files" as const, label: "文件活动" }
-        : null,
-      harnessState.outputSignals.length > 0
-        ? { key: "outputs" as const, label: "工具输出" }
-        : null,
-      harnessState.plan.phase !== "idle" || harnessState.plan.items.length > 0
-        ? { key: "plan" as const, label: "规划状态" }
-        : null,
-      subAgentRuntime.isRunning ||
-      harnessState.delegatedTasks.length > 0 ||
-      recentSchedulerEvents.length > 0 ||
-      subAgentRuntime.error ||
-      subAgentRuntime.result
-        ? { key: "delegation" as const, label: "子任务委派" }
-        : null,
-      harnessState.latestContextTrace.length > 0
-        ? { key: "context" as const, label: "上下文轨迹" }
-        : null,
-      { key: "capabilities" as const, label: "已装载能力" },
-    ].filter((item): item is { key: HarnessSectionKey; label: string } => item !== null),
+    () => {
+      const sections: HarnessSectionNavItem[] = [];
+
+      if (harnessState.runtimeStatus) {
+        sections.push({ key: "runtime", label: "当前阶段" });
+      }
+      if (harnessState.pendingApprovals.length > 0) {
+        sections.push({ key: "approvals", label: "待审批" });
+      }
+      if (harnessState.recentFileEvents.length > 0) {
+        sections.push({ key: "files", label: "文件活动" });
+      }
+      if (harnessState.outputSignals.length > 0) {
+        sections.push({ key: "outputs", label: "工具输出" });
+      }
+      if (
+        harnessState.plan.phase !== "idle" ||
+        harnessState.plan.items.length > 0
+      ) {
+        sections.push({ key: "plan", label: "规划状态" });
+      }
+      if (
+        subAgentRuntime.isRunning ||
+        harnessState.delegatedTasks.length > 0 ||
+        recentSchedulerEvents.length > 0 ||
+        subAgentRuntime.error ||
+        subAgentRuntime.result
+      ) {
+        sections.push({ key: "delegation", label: "子任务委派" });
+      }
+      if (harnessState.latestContextTrace.length > 0) {
+        sections.push({ key: "context", label: "上下文轨迹" });
+      }
+
+      sections.push({ key: "capabilities", label: "已装载能力" });
+
+      return sections;
+    },
     [
       harnessState.delegatedTasks.length,
       harnessState.latestContextTrace.length,
@@ -562,6 +620,7 @@ export function HarnessStatusPanel({
       harnessState.plan.items.length,
       harnessState.plan.phase,
       harnessState.recentFileEvents.length,
+      harnessState.runtimeStatus,
       recentSchedulerEvents.length,
       subAgentRuntime.error,
       subAgentRuntime.isRunning,
@@ -570,46 +629,66 @@ export function HarnessStatusPanel({
   );
 
   const summaryCards = useMemo(
-    () => [
-      {
-        sectionKey: "approvals" as const,
-        title: "待审批",
-        value: `${harnessState.pendingApprovals.length}`,
-        hint:
-          harnessState.pendingApprovals.length > 0
-            ? "需要你确认的操作"
-            : "当前无阻塞审批",
-        icon: ShieldAlert,
-      },
-      {
-        sectionKey: "files" as const,
-        title: "文件活动",
-        value: `${harnessState.recentFileEvents.length}`,
-        hint:
-          harnessState.recentFileEvents[0]?.displayName || "暂无可展示文件活动",
-        icon: FolderOpen,
-      },
-      {
-        sectionKey: "plan" as const,
-        title: "计划状态",
-        value:
-          harnessState.plan.phase === "planning"
-            ? "进行中"
-            : harnessState.plan.phase === "ready"
-              ? "已就绪"
-              : "空闲",
-        hint:
-          harnessState.plan.items[0]?.content || "未检测到显式计划快照",
-        icon: ListChecks,
-      },
-      {
-        sectionKey: "context" as const,
-        title: "上下文",
-        value: `${environment.activeContextCount}/${environment.contextItemsCount}`,
-        hint: environment.contextEnabled ? "上下文工作台已启用" : "普通聊天模式",
-        icon: Sparkles,
-      },
-    ],
+    () => {
+      const cards: HarnessSummaryCard[] = [];
+
+      if (harnessState.runtimeStatus) {
+        cards.push({
+          sectionKey: "runtime",
+          title: "执行阶段",
+          value: formatRuntimePhaseLabel(harnessState.runtimeStatus),
+          hint:
+            harnessState.runtimeStatus.detail ||
+            harnessState.runtimeStatus.title,
+          icon: Loader2,
+        });
+      }
+
+      cards.push(
+        {
+          sectionKey: "approvals",
+          title: "待审批",
+          value: `${harnessState.pendingApprovals.length}`,
+          hint:
+            harnessState.pendingApprovals.length > 0
+              ? "需要你确认的操作"
+              : "当前无阻塞审批",
+          icon: ShieldAlert,
+        },
+        {
+          sectionKey: "files",
+          title: "文件活动",
+          value: `${harnessState.recentFileEvents.length}`,
+          hint:
+            harnessState.recentFileEvents[0]?.displayName ||
+            "暂无可展示文件活动",
+          icon: FolderOpen,
+        },
+        {
+          sectionKey: "plan",
+          title: "计划状态",
+          value:
+            harnessState.plan.phase === "planning"
+              ? "进行中"
+              : harnessState.plan.phase === "ready"
+                ? "已就绪"
+                : "空闲",
+          hint:
+            harnessState.plan.items[0]?.content || "未检测到显式计划快照",
+          icon: ListChecks,
+        },
+        {
+          sectionKey: "context",
+          title: "上下文",
+          value: `${environment.activeContextCount}/${environment.contextItemsCount}`,
+          hint:
+            environment.contextEnabled ? "上下文工作台已启用" : "普通聊天模式",
+          icon: Sparkles,
+        },
+      );
+
+      return cards;
+    },
     [
       environment.activeContextCount,
       environment.contextEnabled,
@@ -618,6 +697,7 @@ export function HarnessStatusPanel({
       harnessState.plan.items,
       harnessState.plan.phase,
       harnessState.recentFileEvents,
+      harnessState.runtimeStatus,
     ],
   );
 
@@ -781,13 +861,24 @@ export function HarnessStatusPanel({
 
   return (
     <>
-      <div className="mx-3 mt-2 rounded-2xl border border-border bg-muted/30">
+      <div
+        data-testid="harness-status-panel"
+        data-layout={layout}
+        className={cn(
+          "bg-muted/30",
+          layout === "sidebar"
+            ? "rounded-xl border border-border"
+            : layout === "dialog"
+              ? "overflow-hidden rounded-xl border border-border/70 bg-background"
+              : "mx-3 mt-2 rounded-2xl border border-border",
+        )}
+      >
         <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <Wrench className="h-4 w-4 text-muted-foreground" />
               <h2 className="text-sm font-semibold text-foreground">
-                Harness 运行面板
+                {title}
               </h2>
               {subAgentRuntime.isRunning ? (
                 <Badge variant="secondary" className="gap-1">
@@ -797,28 +888,43 @@ export function HarnessStatusPanel({
               ) : null}
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              展示最近文件活动、工具输出、审批与上下文装载情况。
+              {description}
             </p>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="shrink-0"
-            onClick={() => setExpanded((value) => !value)}
-            aria-expanded={expanded}
-            aria-label={expanded ? "折叠 Harness 详情" : "展开 Harness 详情"}
-          >
-            {expanded ? (
-              <ChevronDown className="mr-1 h-4 w-4" />
-            ) : (
-              <ChevronRight className="mr-1 h-4 w-4" />
-            )}
-            {expanded ? "收起详情" : "展开详情"}
-          </Button>
+          {!isDialogLayout ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="shrink-0"
+              onClick={() => setExpanded((value) => !value)}
+              aria-expanded={isDetailsExpanded}
+              aria-label={
+                isDetailsExpanded
+                  ? `折叠${toggleLabel}`
+                  : `展开${toggleLabel}`
+              }
+            >
+              {isDetailsExpanded ? (
+                <ChevronDown className="mr-1 h-4 w-4" />
+              ) : (
+                <ChevronRight className="mr-1 h-4 w-4" />
+              )}
+              {isDetailsExpanded ? `收起${toggleLabel}` : `展开${toggleLabel}`}
+            </Button>
+          ) : null}
         </div>
 
-        <div className="grid gap-3 px-4 py-4 md:grid-cols-2 xl:grid-cols-4">
+        {leadContent ? (
+          <div className="border-b border-border px-4 py-4">{leadContent}</div>
+        ) : null}
+
+        <div
+          className={cn(
+            "grid gap-3 px-4 py-4",
+            layout === "sidebar" ? "grid-cols-1" : "md:grid-cols-2 xl:grid-cols-4",
+          )}
+        >
           {summaryCards.map((card) => (
             <SummaryCard
               key={card.title}
@@ -831,8 +937,17 @@ export function HarnessStatusPanel({
           ))}
         </div>
 
-        {expanded ? (
-          <ScrollArea className="max-h-[28rem] border-t border-border px-4 py-4">
+        {isDetailsExpanded ? (
+          <ScrollArea
+            className={cn(
+              "border-t border-border px-4 py-4",
+              layout === "sidebar"
+                ? "max-h-[24rem]"
+                : layout === "dialog"
+                  ? "max-h-[58vh]"
+                  : "max-h-[28rem]",
+            )}
+          >
             <div className="space-y-4 pb-1">
               {availableSections.length > 0 ? (
                 <div className="flex flex-wrap gap-2">
@@ -1135,6 +1250,44 @@ export function HarnessStatusPanel({
                         当前筛选条件下暂无记录。
                       </div>
                     )}
+                  </div>
+                </Section>
+              ) : null}
+
+              {harnessState.runtimeStatus ? (
+                <Section
+                  sectionKey="runtime"
+                  title="当前执行阶段"
+                  badge={formatRuntimePhaseLabel(harnessState.runtimeStatus)}
+                  registerRef={registerSectionRef}
+                >
+                  <div className="space-y-3">
+                    <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
+                      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                        <span>{harnessState.runtimeStatus.title}</span>
+                      </div>
+                      <div className="mt-2 text-sm text-muted-foreground">
+                        {harnessState.runtimeStatus.detail}
+                      </div>
+                    </div>
+
+                    {harnessState.runtimeStatus.checkpoints &&
+                    harnessState.runtimeStatus.checkpoints.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {harnessState.runtimeStatus.checkpoints.map(
+                          (checkpoint, index) => (
+                            <Badge
+                              key={`${checkpoint}-${index}`}
+                              variant="outline"
+                              className="max-w-full whitespace-normal text-left"
+                            >
+                              {checkpoint}
+                            </Badge>
+                          ),
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 </Section>
               ) : null}

@@ -8,6 +8,8 @@
 //!   middleware, orchestrator, plugin, session 部分, session_files）
 //! - ✅ proxycast-infra crate（proxy, resilience, injection, telemetry）
 //! - ✅ proxycast-providers crate（providers, converter, streaming, translator, stream, session 部分）
+
+#![allow(clippy::all)]
 //! - 主 crate 保留 Tauri 相关业务逻辑
 
 // 抑制 objc crate 宏内部的 unexpected_cfgs 警告

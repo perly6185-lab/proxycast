@@ -59,4 +59,21 @@ describe("tauri-mock/core invoke", () => {
       "/mock/workspace/projects",
     );
   });
+
+  it("OpenClaw 环境状态命令在 bridge 失败时回退默认 mock", async () => {
+    mocks.invokeViaHttp.mockRejectedValueOnce(new Error("Failed to fetch"));
+
+    await expect(invoke("openclaw_get_environment_status")).resolves.toEqual(
+      expect.objectContaining({
+        recommendedAction: "install_openclaw",
+        summary: "运行环境已就绪，可以继续一键安装 OpenClaw。",
+        diagnostics: expect.objectContaining({
+          npmPath: "/opt/homebrew/bin/npm",
+          npmGlobalPrefix: "/opt/homebrew",
+        }),
+        node: expect.objectContaining({ status: "ok" }),
+        git: expect.objectContaining({ status: "ok" }),
+      }),
+    );
+  });
 });

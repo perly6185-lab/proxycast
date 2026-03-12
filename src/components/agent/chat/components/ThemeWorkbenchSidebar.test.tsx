@@ -43,6 +43,10 @@ beforeEach(() => {
     }
   ).IS_REACT_ACT_ENVIRONMENT = true;
 
+  if (!HTMLElement.prototype.scrollIntoView) {
+    HTMLElement.prototype.scrollIntoView = () => {};
+  }
+
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: {
@@ -130,8 +134,33 @@ function renderSidebar(
         gateKey: "write_mode",
         runId: "run-abcdef123456",
         source: "skill",
+        sourceRef: "social_post_with_cover",
       },
     ],
+    skillDetailMap: {
+      social_post_with_cover: {
+        name: "social_post_with_cover",
+        display_name: "社媒主稿与封面",
+        description: "生成社媒主稿，并补齐封面素材。",
+        execution_mode: "prompt",
+        has_workflow: true,
+        workflow_steps: [
+          {
+            id: "outline",
+            name: "提炼内容主线",
+            dependencies: [],
+          },
+          {
+            id: "cover",
+            name: "生成封面提示词",
+            dependencies: ["outline"],
+          },
+        ],
+        allowed_tools: ["read_file", "generate_image"],
+        when_to_use: "适合需要主稿与封面同时产出的社媒场景。",
+        markdown_content: "",
+      },
+    },
     onViewRunDetail: vi.fn(),
     activeRunDetail: null,
     activeRunDetailLoading: false,
@@ -242,7 +271,15 @@ describe("ThemeWorkbenchSidebar", () => {
   it("应展示新的双 tab 与紧凑上下文列表结构", () => {
     const { container } = renderSidebar();
     expect(container.textContent).toContain("上下文管理");
-    expect(container.textContent).toContain("编排工作台");
+    expect(
+      container.querySelector('button[aria-label="打开上下文管理"]'),
+    ).toBeTruthy();
+    expect(
+      container.querySelector('button[aria-label="打开编排工作台"]'),
+    ).toBeTruthy();
+    expect(
+      container.querySelector('button[aria-label="打开执行日志"]'),
+    ).toBeTruthy();
     expect(container.textContent).toContain("搜索上下文");
     expect(container.textContent).toContain("上下文列表");
     expect(container.textContent).not.toContain("上下文概览");
@@ -258,6 +295,218 @@ describe("ThemeWorkbenchSidebar", () => {
     ) as HTMLInputElement | null;
     expect(searchInput).toBeTruthy();
     expect(searchInput?.value).toBe("品牌");
+  });
+
+  it("日志存在更多历史时应显示加载按钮并可触发", () => {
+    const onLoadMoreHistory = vi.fn();
+    const { container } = renderSidebar({
+      historyHasMore: true,
+      onLoadMoreHistory,
+    });
+
+    const logTabButton = container.querySelector(
+      'button[aria-label="打开执行日志"]',
+    ) as HTMLButtonElement | null;
+    expect(logTabButton).toBeTruthy();
+    if (logTabButton) {
+      act(() => {
+        logTabButton.click();
+      });
+    }
+
+    const loadMoreButton = container.querySelector(
+      'button[aria-label="加载更早历史日志"]',
+    ) as HTMLButtonElement | null;
+    expect(loadMoreButton).toBeTruthy();
+    if (loadMoreButton) {
+      act(() => {
+        loadMoreButton.click();
+      });
+    }
+
+    expect(onLoadMoreHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("执行日志应展示技能显示名与技能描述", () => {
+    const { container } = renderSidebar();
+
+    const logTabButton = container.querySelector(
+      'button[aria-label="打开执行日志"]',
+    ) as HTMLButtonElement | null;
+    expect(logTabButton).toBeTruthy();
+    if (logTabButton) {
+      act(() => {
+        logTabButton.click();
+      });
+    }
+
+    expect(container.textContent).toContain("技能：社媒主稿与封面");
+    expect(container.textContent).toContain("生成社媒主稿，并补齐封面素材。");
+    expect(container.textContent).toContain("技能标识：social_post_with_cover");
+  });
+
+  it("执行日志应支持展开技能详情", () => {
+    const { container } = renderSidebar();
+
+    const logTabButton = container.querySelector(
+      'button[aria-label="打开执行日志"]',
+    ) as HTMLButtonElement | null;
+    expect(logTabButton).toBeTruthy();
+    if (logTabButton) {
+      act(() => {
+        logTabButton.click();
+      });
+    }
+
+    const detailButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("查看技能详情"),
+    );
+    expect(detailButton).toBeTruthy();
+    if (detailButton) {
+      act(() => {
+        detailButton.click();
+      });
+    }
+
+    expect(container.textContent).toContain("工作流步骤");
+    expect(container.textContent).toContain("1. 提炼内容主线");
+    expect(container.textContent).toContain("2. 生成封面提示词");
+    expect(container.textContent).toContain("允许工具");
+    expect(container.textContent).toContain("读取文件");
+    expect(container.textContent).toContain("生成封面图");
+    expect(container.textContent).toContain("适用场景");
+    expect(container.textContent).toContain("适合需要主稿与封面同时产出的社媒场景。");
+  });
+
+  it("执行日志应支持展开工具详情", () => {
+    const { container } = renderSidebar({
+      messages: [
+        {
+          id: "assistant-tool-detail",
+          role: "assistant",
+          content: "",
+          timestamp: new Date("2026-03-12T10:35:00.000Z"),
+          toolCalls: [
+            {
+              id: "tool-detail-1",
+              name: "read_file",
+              arguments: JSON.stringify({ path: "/tmp/a.txt", limit: 50 }),
+              status: "failed",
+              result: {
+                success: false,
+                output: "",
+                error: "文件不存在",
+              },
+              startTime: new Date("2026-03-12T10:35:00.000Z"),
+            },
+          ],
+        },
+      ],
+    });
+
+    const logTabButton = container.querySelector(
+      'button[aria-label="打开执行日志"]',
+    ) as HTMLButtonElement | null;
+    expect(logTabButton).toBeTruthy();
+    if (logTabButton) {
+      act(() => {
+        logTabButton.click();
+      });
+    }
+
+    const detailButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("查看工具详情"),
+    );
+    expect(detailButton).toBeTruthy();
+    if (detailButton) {
+      act(() => {
+        detailButton.click();
+      });
+    }
+
+    expect(container.textContent).toContain("请求参数");
+    expect(container.textContent).toContain('"path": "/tmp/a.txt"');
+    expect(container.textContent).toContain('"limit": 50');
+    expect(container.textContent).toContain("错误信息");
+    expect(container.textContent).toContain("文件不存在");
+  });
+
+  it("执行日志应支持清空全部记录", () => {
+    const { container } = renderSidebar();
+
+    const logTabButton = container.querySelector(
+      'button[aria-label="打开执行日志"]',
+    ) as HTMLButtonElement | null;
+    expect(logTabButton).toBeTruthy();
+    if (logTabButton) {
+      act(() => {
+        logTabButton.click();
+      });
+    }
+
+    const clearButton = container.querySelector(
+      'button[aria-label="清空全部日志"]',
+    ) as HTMLButtonElement | null;
+    expect(clearButton).toBeTruthy();
+    if (clearButton) {
+      act(() => {
+        clearButton.click();
+      });
+    }
+
+    expect(container.textContent).toContain("日志已清空，等待新的运行记录");
+    expect(container.textContent).not.toContain("执行技能 社媒主稿与封面");
+  });
+
+  it("执行日志应支持按失败项筛选", () => {
+    const { container } = renderSidebar({
+      messages: [
+        {
+          id: "assistant-1",
+          role: "assistant",
+          content: "",
+          timestamp: new Date("2026-03-12T10:32:00.000Z"),
+          toolCalls: [
+            {
+              id: "tool-1",
+              name: "read_file",
+              arguments: JSON.stringify({ path: "/tmp/a.txt" }),
+              status: "failed",
+              result: {
+                success: false,
+                output: "",
+                error: "文件不存在",
+              },
+              startTime: new Date("2026-03-12T10:32:00.000Z"),
+            },
+          ],
+        },
+      ],
+    });
+
+    const logTabButton = container.querySelector(
+      'button[aria-label="打开执行日志"]',
+    ) as HTMLButtonElement | null;
+    expect(logTabButton).toBeTruthy();
+    if (logTabButton) {
+      act(() => {
+        logTabButton.click();
+      });
+    }
+
+    const failedFilterButton = container.querySelector(
+      'button[aria-label="筛选执行日志-失败"]',
+    ) as HTMLButtonElement | null;
+    expect(failedFilterButton).toBeTruthy();
+    if (failedFilterButton) {
+      act(() => {
+        failedFilterButton.click();
+      });
+    }
+
+    expect(container.textContent).toContain("读取文件");
+    expect(container.textContent).toContain("文件不存在");
+    expect(container.textContent).not.toContain("执行技能 社媒主稿与封面");
   });
 
   it("应支持触发上下文搜索与切换来源", () => {

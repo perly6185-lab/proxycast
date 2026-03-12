@@ -140,6 +140,7 @@ export const InputbarComposerSection: React.FC<
         showDragHandle={!isThemeWorkbenchVariant}
         visualVariant={isThemeWorkbenchVariant ? "floating" : "default"}
         topExtra={topExtra}
+        activeTheme={activeTheme}
         leftExtra={
           <InputbarModelExtra
             isFullscreen={isFullscreen}

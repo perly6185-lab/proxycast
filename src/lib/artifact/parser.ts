@@ -75,6 +75,9 @@ function generateId(): string {
  * HTML 等代码类型使用 CodeRenderer 渲染（带语法高亮）
  */
 const LANGUAGE_TO_TYPE: Record<string, ArtifactType> = {
+  md: "document",
+  markdown: "document",
+  txt: "document",
   svg: "svg", // SVG 需要图形渲染
   mermaid: "mermaid", // Mermaid 需要图表渲染
   jsx: "react", // React 组件需要实时预览
@@ -353,6 +356,7 @@ export class ArtifactParser {
     if (meta.language) return meta.language;
 
     const typeNames: Record<ArtifactType, string> = {
+      document: "Document",
       code: "Code",
       html: "HTML",
       svg: "SVG",

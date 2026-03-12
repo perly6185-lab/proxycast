@@ -15,6 +15,8 @@ import {
   Globe,
   Music,
   Code2,
+  ListChecks,
+  Workflow,
 } from "lucide-react";
 import { getConfig } from "@/lib/api/appConfig";
 import type { CreationMode, EntryTaskSlotValues, EntryTaskType } from "./types";
@@ -55,6 +57,7 @@ import { useActiveSkill } from "./Inputbar/hooks/useActiveSkill";
 import type { Character } from "@/lib/api/memory";
 import type { Skill } from "@/lib/api/skills";
 import type { MessageImage } from "../types";
+import { isGeneralResearchTheme } from "../utils/generalAgentPrompt";
 
 // Import Assets
 import iconXhs from "@/assets/platforms/xhs.png";
@@ -396,6 +399,10 @@ interface EmptyStateProps {
   onWebSearchEnabledChange?: (enabled: boolean) => void;
   thinkingEnabled?: boolean;
   onThinkingEnabledChange?: (enabled: boolean) => void;
+  taskEnabled?: boolean;
+  onTaskEnabledChange?: (enabled: boolean) => void;
+  subagentEnabled?: boolean;
+  onSubagentEnabledChange?: (enabled: boolean) => void;
   hasCanvasContent?: boolean;
   hasContentId?: boolean;
   selectedText?: string;
@@ -528,6 +535,10 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   onWebSearchEnabledChange,
   thinkingEnabled = false,
   onThinkingEnabledChange,
+  taskEnabled = false,
+  onTaskEnabledChange,
+  subagentEnabled = false,
+  onSubagentEnabledChange,
   hasCanvasContent = false,
   hasContentId = false,
   selectedText = "",
@@ -614,6 +625,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   // Popover 打开状态
   const [ratioPopoverOpen, setRatioPopoverOpen] = useState(false);
   const [stylePopoverOpen, setStylePopoverOpen] = useState(false);
+  const isGeneralTheme = isGeneralResearchTheme(activeTheme);
 
   const wrapTextWithDefaultSkill = (text: string) => {
     const wrappedByActiveSkill = wrapTextWithSkill(text);
@@ -1241,7 +1253,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                 </>
               )}
 
-              {activeTheme === "general" && (
+              {isGeneralTheme && (
                 <>
                   <Button
                     variant="outline"
@@ -1265,6 +1277,34 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                     title={thinkingEnabled ? "关闭深度思考" : "开启深度思考"}
                   >
                     <Lightbulb className="w-4 h-4 opacity-70" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className={`h-8 w-8 rounded-full ml-1 bg-background shadow-sm hover:bg-muted ${
+                      taskEnabled
+                        ? "border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30"
+                        : ""
+                    }`}
+                    onClick={() => onTaskEnabledChange?.(!taskEnabled)}
+                    aria-pressed={taskEnabled}
+                    title={taskEnabled ? "关闭后台任务偏好" : "开启后台任务偏好"}
+                  >
+                    <ListChecks className="w-4 h-4 opacity-70" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className={`h-8 w-8 rounded-full ml-1 bg-background shadow-sm hover:bg-muted ${
+                      subagentEnabled
+                        ? "border-fuchsia-500 text-fuchsia-600 bg-fuchsia-50 dark:bg-fuchsia-950/30"
+                        : ""
+                    }`}
+                    onClick={() => onSubagentEnabledChange?.(!subagentEnabled)}
+                    aria-pressed={subagentEnabled}
+                    title={subagentEnabled ? "关闭多代理偏好" : "开启多代理偏好"}
+                  >
+                    <Workflow className="w-4 h-4 opacity-70" />
                   </Button>
                 </>
               )}

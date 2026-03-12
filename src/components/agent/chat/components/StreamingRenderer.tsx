@@ -7,12 +7,20 @@
 
 import React, { memo, useMemo, useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
-import { ChevronDown, Lightbulb, FileText } from "lucide-react";
+import {
+  ChevronDown,
+  ExternalLink,
+  FileText,
+  Lightbulb,
+  Loader2,
+  Sparkles,
+} from "lucide-react";
 import { useDebouncedValue } from "@/lib/artifact/hooks/useDebouncedValue";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { A2UITaskCard, A2UITaskLoadingCard } from "./A2UITaskCard";
 import { ToolCallList, ToolCallItem } from "./ToolCallDisplay";
 import { DecisionPanel } from "./DecisionPanel";
+import { AgentPlanBlock } from "./AgentPlanBlock";
 import { parseAIResponse } from "@/components/content-creator/a2ui/parser";
 import type {
   A2UIFormData,
@@ -21,7 +29,14 @@ import type {
 } from "@/components/content-creator/a2ui/types";
 import { CHAT_A2UI_TASK_CARD_PRESET } from "@/components/content-creator/a2ui/taskCardPresets";
 import type { ToolCallState } from "@/lib/api/agentStream";
-import type { ContentPart, ActionRequired, ConfirmResponse } from "../types";
+import type {
+  AgentRuntimeStatus,
+  ContentPart,
+  ActionRequired,
+  ConfirmResponse,
+  WriteArtifactContext,
+} from "../types";
+import { splitProposedPlanSegments } from "../utils/proposedPlan";
 
 const STRUCTURED_CONTENT_HINT_RE = /<a2ui|```\s*a2ui|<write_file|<document/i;
 const STRUCTURED_PARSE_CACHE_LIMIT = 64;
@@ -132,6 +147,51 @@ function getCachedStructuredParse(
   return parsed;
 }
 
+interface PlanAwareMarkdownOptions {
+  onA2UISubmit?: (formData: A2UIFormData) => void;
+  renderA2UIInline?: boolean;
+  collapseCodeBlocks?: boolean;
+  onCodeBlockClick?: (language: string, code: string) => void;
+  isStreaming?: boolean;
+}
+
+function renderPlanAwareMarkdown(
+  text: string,
+  keyPrefix: string,
+  {
+    onA2UISubmit,
+    renderA2UIInline,
+    collapseCodeBlocks,
+    onCodeBlockClick,
+    isStreaming,
+  }: PlanAwareMarkdownOptions,
+) {
+  const segments = splitProposedPlanSegments(text);
+  if (segments.length === 0) {
+    return null;
+  }
+
+  return segments.map((segment, index) =>
+    segment.type === "plan" ? (
+      <AgentPlanBlock
+        key={`${keyPrefix}-plan-${index}`}
+        content={segment.content}
+        isComplete={segment.isComplete}
+      />
+    ) : (
+      <MarkdownRenderer
+        key={`${keyPrefix}-text-${index}`}
+        content={segment.content}
+        onA2UISubmit={onA2UISubmit}
+        renderA2UIInline={renderA2UIInline}
+        collapseCodeBlocks={collapseCodeBlocks}
+        onCodeBlockClick={onCodeBlockClick}
+        isStreaming={isStreaming}
+      />
+    ),
+  );
+}
+
 // ============ 流式文本组件（逐字符动画） ============
 
 interface StreamingTextProps {
@@ -151,6 +211,8 @@ interface StreamingTextProps {
   a2uiInitialFormData?: A2UIFormData;
   /** A2UI 表单数据变化回调（用于持久化） */
   onA2UIFormChange?: (formId: string, formData: A2UIFormData) => void;
+  /** 是否渲染消息内联 A2UI */
+  renderA2UIInline?: boolean;
   /** 是否折叠代码块 */
   collapseCodeBlocks?: boolean;
   /** 代码块点击回调 */
@@ -173,6 +235,7 @@ const StreamingText: React.FC<StreamingTextProps> = memo(
     a2uiFormId,
     a2uiInitialFormData,
     onA2UIFormChange,
+    renderA2UIInline = true,
     collapseCodeBlocks,
     onCodeBlockClick,
   }) => {
@@ -293,15 +356,13 @@ const StreamingText: React.FC<StreamingTextProps> = memo(
     const renderContent = () => {
       // 如果没有 a2ui 内容，直接使用 MarkdownRenderer
       if (!parsedContent.hasA2UI && !parsedContent.hasPending) {
-        return (
-          <MarkdownRenderer
-            content={displayText}
-            onA2UISubmit={onA2UISubmit}
-            collapseCodeBlocks={collapseCodeBlocks}
-            onCodeBlockClick={onCodeBlockClick}
-            isStreaming={isStreaming}
-          />
-        );
+        return renderPlanAwareMarkdown(displayText, "stream", {
+          onA2UISubmit,
+          renderA2UIInline,
+          collapseCodeBlocks,
+          onCodeBlockClick,
+          isStreaming,
+        });
       }
 
       // 有 a2ui 内容，按部分渲染
@@ -310,6 +371,9 @@ const StreamingText: React.FC<StreamingTextProps> = memo(
           {parsedContent.parts.map((part, index) => {
             switch (part.type) {
               case "a2ui":
+                if (!renderA2UIInline) {
+                  return null;
+                }
                 // 直接渲染 A2UI 表单
                 if (typeof part.content !== "string") {
                   return (
@@ -327,6 +391,9 @@ const StreamingText: React.FC<StreamingTextProps> = memo(
                 return null;
 
               case "pending_a2ui":
+                if (!renderA2UIInline) {
+                  return null;
+                }
                 // 显示加载状态
                 return (
                   <A2UITaskLoadingCard
@@ -342,16 +409,13 @@ const StreamingText: React.FC<StreamingTextProps> = memo(
                 const textContent =
                   typeof part.content === "string" ? part.content : "";
                 if (!textContent || textContent.trim() === "") return null;
-                return (
-                  <MarkdownRenderer
-                    key={`text-${index}`}
-                    content={textContent}
-                    onA2UISubmit={onA2UISubmit}
-                    collapseCodeBlocks={collapseCodeBlocks}
-                    onCodeBlockClick={onCodeBlockClick}
-                    isStreaming={isStreaming}
-                  />
-                );
+                return renderPlanAwareMarkdown(textContent, `text-${index}`, {
+                  onA2UISubmit,
+                  renderA2UIInline,
+                  collapseCodeBlocks,
+                  onCodeBlockClick,
+                  isStreaming,
+                });
               }
             }
           })}
@@ -430,8 +494,14 @@ interface StreamingRendererProps {
   a2uiInitialFormData?: A2UIFormData;
   /** A2UI 表单数据变化回调（用于持久化） */
   onA2UIFormChange?: (formId: string, formData: A2UIFormData) => void;
+  /** 是否渲染消息内联 A2UI */
+  renderA2UIInline?: boolean;
   /** 文件写入回调 */
-  onWriteFile?: (content: string, fileName: string) => void;
+  onWriteFile?: (
+    content: string,
+    fileName: string,
+    context?: WriteArtifactContext,
+  ) => void;
   /** 文件点击回调 */
   onFileClick?: (fileName: string, content: string) => void;
   /** 权限确认响应回调 */
@@ -440,7 +510,44 @@ interface StreamingRendererProps {
   collapseCodeBlocks?: boolean;
   /** 代码块点击回调（用于在画布中显示） */
   onCodeBlockClick?: (language: string, code: string) => void;
+  runtimeStatus?: AgentRuntimeStatus;
 }
+
+const RUNTIME_PHASE_LABELS: Record<AgentRuntimeStatus["phase"], string> = {
+  preparing: "准备中",
+  routing: "回合建立中",
+  context: "上下文装载中",
+};
+
+const AgentRuntimeStatusBlock: React.FC<{ status: AgentRuntimeStatus }> = ({
+  status,
+}) => (
+  <div className="rounded-2xl border border-border/70 bg-muted/30 px-4 py-3">
+    <div className="mb-2 flex items-center gap-2">
+      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary">
+        <Sparkles className="h-4 w-4" />
+      </div>
+      <div className="text-sm font-medium text-foreground">{status.title}</div>
+      <div className="ml-auto inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/80 px-2.5 py-0.5 text-xs text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        {RUNTIME_PHASE_LABELS[status.phase]}
+      </div>
+    </div>
+    <div className="text-sm text-muted-foreground">{status.detail}</div>
+    {status.checkpoints && status.checkpoints.length > 0 ? (
+      <div className="mt-3 flex flex-wrap gap-2">
+        {status.checkpoints.map((item) => (
+          <span
+            key={item}
+            className="rounded-full border border-border/60 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground"
+          >
+            {item}
+          </span>
+        ))}
+      </div>
+    ) : null}
+  </div>
+);
 
 /**
  * 流式消息渲染组件
@@ -465,11 +572,13 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
     a2uiFormId,
     a2uiInitialFormData,
     onA2UIFormChange,
+    renderA2UIInline = true,
     onWriteFile,
     onFileClick,
     onPermissionResponse,
     collapseCodeBlocks,
     onCodeBlockClick,
+    runtimeStatus,
   }) => {
     // 判断是否使用交错显示模式
     const useInterleavedMode = contentParts && contentParts.length > 0;
@@ -638,12 +747,15 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
                             }
                           >
                             <FileText className="w-4 h-4" />
-                            <span>Write</span>
+                            <span>写入</span>
                             <span className="font-medium text-foreground">
                               {p.filePath || "文档.md"}
                             </span>
+                            {p.filePath ? (
+                              <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                            ) : null}
                             {p.type === "pending_write_file" && (
-                              <span className="ml-auto animate-pulse">...</span>
+                              <span className="animate-pulse">...</span>
                             )}
                           </div>
                         );
@@ -745,12 +857,22 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
     // 回退模式：传统的 content + toolCalls 分开渲染
     const hasToolCalls = toolCalls && toolCalls.length > 0;
     const hasActionRequests = actionRequests && actionRequests.length > 0;
+    const shouldShowRuntimeStatus =
+      Boolean(runtimeStatus) &&
+      isStreaming &&
+      !hasVisibleContent &&
+      !hasToolCalls &&
+      !hasActionRequests &&
+      !hasRunningTools;
 
     // 渲染解析后的内容（包括 A2UI、write_file、普通文本）
     const renderParsedContent = () => {
       return parsedContent.parts.map((part, index) => {
         switch (part.type) {
           case "a2ui":
+            if (!renderA2UIInline) {
+              return null;
+            }
             // 渲染 A2UI 表单 - content 是 A2UIResponse 类型
             if (typeof part.content !== "string") {
               return (
@@ -783,18 +905,24 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
                 }
               >
                 <FileText className="w-4 h-4" />
-                <span>Write</span>
+                <span>写入</span>
                 <span className="font-medium text-foreground">
                   {part.filePath || "文档.md"}
                 </span>
+                {part.filePath ? (
+                  <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                ) : null}
                 {part.type === "pending_write_file" && (
-                  <span className="ml-auto animate-pulse">...</span>
+                  <span className="animate-pulse">...</span>
                 )}
               </div>
             );
           }
 
           case "pending_a2ui":
+            if (!renderA2UIInline) {
+              return null;
+            }
             // 显示正在加载的表单
             return (
               <div
@@ -828,6 +956,7 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
                 a2uiFormId={a2uiFormId}
                 a2uiInitialFormData={a2uiInitialFormData}
                 onA2UIFormChange={onA2UIFormChange}
+                renderA2UIInline={renderA2UIInline}
                 collapseCodeBlocks={collapseCodeBlocks}
                 onCodeBlockClick={onCodeBlockClick}
               />
@@ -839,6 +968,9 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
 
     return (
       <div className="flex flex-col gap-2">
+        {shouldShowRuntimeStatus && runtimeStatus ? (
+          <AgentRuntimeStatusBlock status={runtimeStatus} />
+        ) : null}
         {/* 思考内容 - 显示在最前面 */}
         {finalThinking && (
           <ThinkingBlock
@@ -876,6 +1008,7 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
         {!hasVisibleContent &&
           isStreaming &&
           showCursor &&
+          !runtimeStatus &&
           !hasRunningTools && (
             <div>
               <StreamingCursor />

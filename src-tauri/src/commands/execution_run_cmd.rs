@@ -123,7 +123,16 @@ pub struct ThemeWorkbenchRunState {
     pub current_gate_key: String,
     pub queue_items: Vec<ThemeWorkbenchRunTodoItem>,
     pub latest_terminal: Option<ThemeWorkbenchRunTerminalItem>,
+    pub recent_terminals: Vec<ThemeWorkbenchRunTerminalItem>,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ThemeWorkbenchRunHistoryPage {
+    pub items: Vec<ThemeWorkbenchRunTerminalItem>,
+    pub has_more: bool,
+    pub next_offset: Option<usize>,
 }
 
 fn normalize_gate_key(raw: &str) -> Option<String> {
@@ -160,11 +169,41 @@ fn infer_gate_key_from_probe(probe: &str) -> String {
     "write_mode".to_string()
 }
 
+fn metadata_string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .filter_map(|key| value.get(*key))
+        .find_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn infer_gate_key_from_stage(stage: &str) -> Option<String> {
+    match stage.trim().to_lowercase().as_str() {
+        "briefing" => Some("topic_select".to_string()),
+        "drafting" | "polishing" => Some("write_mode".to_string()),
+        "adapting" | "publish_prep" => Some("publish_confirm".to_string()),
+        _ => None,
+    }
+}
+
 fn derive_run_title(run: &AgentRun) -> String {
     let parsed_metadata = run
         .metadata
         .as_ref()
         .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+
+    let metadata_title = parsed_metadata
+        .as_ref()
+        .and_then(|value| {
+            metadata_string(
+                value,
+                &["run_title", "title", "version_label", "stage_label"],
+            )
+        })
+        .map(str::to_string);
+    if let Some(title) = metadata_title {
+        return title;
+    }
 
     let skill_title = parsed_metadata
         .as_ref()
@@ -220,6 +259,14 @@ fn derive_run_gate_key(run: &AgentRun, title: &str) -> String {
         return value;
     }
 
+    if let Some(value) = parsed_metadata
+        .as_ref()
+        .and_then(|value| metadata_string(value, &["stage"]))
+        .and_then(infer_gate_key_from_stage)
+    {
+        return value;
+    }
+
     let metadata_probe = parsed_metadata
         .as_ref()
         .map(|value| value.to_string())
@@ -250,13 +297,16 @@ fn derive_run_execution_id(run: &AgentRun) -> Option<String> {
     parsed_metadata
         .as_ref()
         .and_then(|value| {
-            value
-                .get("execution_id")
-                .or_else(|| value.get("version_id"))
-                .and_then(Value::as_str)
+            metadata_string(
+                value,
+                &[
+                    "execution_id",
+                    "version_id",
+                    "run_version_id",
+                    "artifact_version_id",
+                ],
+            )
         })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
 
@@ -268,18 +318,70 @@ fn derive_run_artifact_paths(run: &AgentRun) -> Vec<String> {
 
     parsed_metadata
         .as_ref()
-        .and_then(|value| value.get("artifact_paths"))
-        .and_then(Value::as_array)
-        .map(|paths| {
+        .map(|value| {
+            let mut paths = value
+                .get("artifact_paths")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|path| !path.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            for key in ["artifact_path", "source_file_name"] {
+                if let Some(path) = metadata_string(value, &[key]) {
+                    let normalized = path.to_string();
+                    if !paths.iter().any(|existing| existing == &normalized) {
+                        paths.push(normalized);
+                    }
+                }
+            }
+
             paths
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(str::to_string)
-                .collect()
         })
         .unwrap_or_default()
+}
+
+fn build_terminal_item(run: &AgentRun) -> ThemeWorkbenchRunTerminalItem {
+    let title = derive_run_title(run);
+    let gate_key = derive_run_gate_key(run, title.as_str());
+    ThemeWorkbenchRunTerminalItem {
+        run_id: run.id.clone(),
+        execution_id: derive_run_execution_id(run),
+        session_id: run.session_id.clone(),
+        artifact_paths: derive_run_artifact_paths(run),
+        title,
+        gate_key,
+        status: run.status.clone(),
+        source: run.source.clone(),
+        source_ref: run.source_ref.clone(),
+        started_at: run.started_at.clone(),
+        finished_at: run.finished_at.clone(),
+    }
+}
+
+fn derive_recent_terminal_items(
+    runs: &[AgentRun],
+    limit: usize,
+) -> Vec<ThemeWorkbenchRunTerminalItem> {
+    runs.iter()
+        .filter(|run| {
+            matches!(
+                run.status,
+                AgentRunStatus::Success
+                    | AgentRunStatus::Error
+                    | AgentRunStatus::Canceled
+                    | AgentRunStatus::Timeout
+            )
+        })
+        .take(limit)
+        .map(build_terminal_item)
+        .collect()
 }
 
 #[tauri::command]
@@ -332,41 +434,59 @@ pub async fn execution_run_get_theme_workbench_state(
     };
     let current_gate_key = derive_current_gate_key(queue_items.as_slice());
 
-    let latest_terminal = runs
-        .iter()
-        .find(|run| {
-            matches!(
-                run.status,
-                AgentRunStatus::Success
-                    | AgentRunStatus::Error
-                    | AgentRunStatus::Canceled
-                    | AgentRunStatus::Timeout
-            )
-        })
-        .map(|run| {
-            let title = derive_run_title(run);
-            let gate_key = derive_run_gate_key(run, title.as_str());
-            ThemeWorkbenchRunTerminalItem {
-                run_id: run.id.clone(),
-                execution_id: derive_run_execution_id(run),
-                session_id: run.session_id.clone(),
-                artifact_paths: derive_run_artifact_paths(run),
-                title,
-                gate_key,
-                status: run.status.clone(),
-                source: run.source.clone(),
-                source_ref: run.source_ref.clone(),
-                started_at: run.started_at.clone(),
-                finished_at: run.finished_at.clone(),
-            }
-        });
+    let recent_terminals = derive_recent_terminal_items(runs.as_slice(), safe_limit);
+    let latest_terminal = recent_terminals.first().cloned();
 
     Ok(ThemeWorkbenchRunState {
         run_state,
         current_gate_key,
         queue_items,
         latest_terminal,
+        recent_terminals,
         updated_at: Utc::now().to_rfc3339(),
+    })
+}
+
+#[tauri::command]
+pub async fn execution_run_list_theme_workbench_history(
+    db: State<'_, DbConnection>,
+    session_id: String,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<ThemeWorkbenchRunHistoryPage, String> {
+    let trimmed_session_id = session_id.trim();
+    if trimmed_session_id.is_empty() {
+        return Err("session_id 不能为空".to_string());
+    }
+
+    let safe_limit = limit.unwrap_or(20).clamp(1, 100);
+    let safe_offset = offset.unwrap_or(0);
+    let tracker = ExecutionTracker::new(db.inner().clone());
+
+    let now = Utc::now();
+    let runs_for_timeout = tracker.list_runs_by_session(trimmed_session_id, safe_limit * 5)?;
+    let stale_run_ids = collect_stale_run_ids(runs_for_timeout.as_slice(), now);
+    if !stale_run_ids.is_empty() {
+        mark_stale_runs_as_timeout(db.inner(), stale_run_ids.as_slice(), &now.to_rfc3339())?;
+    }
+
+    let paged_runs =
+        tracker.list_terminal_runs_by_session(trimmed_session_id, safe_limit + 1, safe_offset)?;
+    let has_more = paged_runs.len() > safe_limit;
+    let items = paged_runs
+        .into_iter()
+        .take(safe_limit)
+        .map(|run| build_terminal_item(&run))
+        .collect::<Vec<_>>();
+
+    Ok(ThemeWorkbenchRunHistoryPage {
+        items,
+        has_more,
+        next_offset: if has_more {
+            Some(safe_offset + safe_limit)
+        } else {
+            None
+        },
     })
 }
 
@@ -507,6 +627,72 @@ mod tests {
                 "social-posts/demo.cover.json".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn derive_run_gate_key_should_support_social_stage_fallback() {
+        let run = sample_run_with_metadata(Some(serde_json::json!({
+            "harness_theme": "social-media",
+            "stage": "publish_prep"
+        })));
+
+        assert_eq!(derive_run_gate_key(&run, "社媒发布包"), "publish_confirm");
+    }
+
+    #[test]
+    fn derive_run_title_should_prefer_social_version_label() {
+        let run = sample_run_with_metadata(Some(serde_json::json!({
+            "harness_theme": "social-media",
+            "version_label": "社媒初稿"
+        })));
+
+        assert_eq!(derive_run_title(&run), "社媒初稿");
+    }
+
+    #[test]
+    fn derive_run_artifact_paths_should_fallback_to_source_file_name() {
+        let run = sample_run_with_metadata(Some(serde_json::json!({
+            "source_file_name": "social-posts/demo.md"
+        })));
+
+        assert_eq!(
+            derive_run_artifact_paths(&run),
+            vec!["social-posts/demo.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn derive_recent_terminal_items_should_keep_multiple_terminal_runs() {
+        let mut latest_error_run = sample_run_with_metadata(Some(serde_json::json!({
+            "run_title": "最新失败运行"
+        })));
+        latest_error_run.id = "run-error".to_string();
+        latest_error_run.status = AgentRunStatus::Error;
+        latest_error_run.started_at = "2026-03-06T05:00:00Z".to_string();
+        latest_error_run.finished_at = Some("2026-03-06T05:02:00Z".to_string());
+
+        let mut running_run = sample_run_with_metadata(Some(serde_json::json!({
+            "run_title": "运行中"
+        })));
+        running_run.id = "run-running".to_string();
+        running_run.status = AgentRunStatus::Running;
+        running_run.started_at = "2026-03-06T04:30:00Z".to_string();
+        running_run.finished_at = None;
+
+        let mut previous_success_run = sample_run_with_metadata(Some(serde_json::json!({
+            "run_title": "上一轮成功运行"
+        })));
+        previous_success_run.id = "run-success".to_string();
+        previous_success_run.status = AgentRunStatus::Success;
+        previous_success_run.started_at = "2026-03-06T04:00:00Z".to_string();
+        previous_success_run.finished_at = Some("2026-03-06T04:08:00Z".to_string());
+
+        let recent_terminals =
+            derive_recent_terminal_items(&[latest_error_run, running_run, previous_success_run], 3);
+
+        assert_eq!(recent_terminals.len(), 2);
+        assert_eq!(recent_terminals[0].run_id, "run-error");
+        assert_eq!(recent_terminals[1].run_id, "run-success");
     }
 
     #[test]

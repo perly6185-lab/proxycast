@@ -3,6 +3,11 @@
 //! 提供 Agent 任务调度功能，支持定时任务、重试机制等。
 //!
 //! ## 功能
+
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::format_in_format_args)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::derivable_impls)]
 //! - 任务创建和管理
 //! - 任务持久化到 SQLite
 //! - 定时任务调度

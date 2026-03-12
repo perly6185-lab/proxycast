@@ -71,6 +71,7 @@ interface InputbarCoreProps {
   showDragHandle?: boolean;
   /** 视觉风格 */
   visualVariant?: "default" | "floating";
+  activeTheme?: string;
 }
 
 export const InputbarCore: React.FC<InputbarCoreProps> = ({
@@ -98,6 +99,7 @@ export const InputbarCore: React.FC<InputbarCoreProps> = ({
   showTranslate = true,
   showDragHandle = true,
   visualVariant = "default",
+  activeTheme,
 }) => {
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const inputBarContainerRef = useRef<HTMLDivElement | null>(null);
@@ -259,6 +261,7 @@ export const InputbarCore: React.FC<InputbarCoreProps> = ({
                       showExecutionStrategy={showExecutionStrategy}
                       toolMode={toolMode}
                       isCanvasOpen={isCanvasOpen}
+                      activeTheme={activeTheme}
                     />
                   ) : null}
                 </LeftSection>

@@ -36,7 +36,17 @@ export interface OpenClawEnvironmentStatus {
   openclaw: OpenClawDependencyStatus;
   recommendedAction: string;
   summary: string;
+  diagnostics?: OpenClawEnvironmentDiagnostics;
   tempArtifacts: string[];
+}
+
+export interface OpenClawEnvironmentDiagnostics {
+  npmPath?: string | null;
+  npmGlobalPrefix?: string | null;
+  openclawPackagePath?: string | null;
+  whereCandidates?: string[];
+  supplementalSearchDirs?: string[];
+  supplementalCommandCandidates?: string[];
 }
 
 export interface OpenClawActionResult {

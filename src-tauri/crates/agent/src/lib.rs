@@ -3,6 +3,13 @@
 //! 包含 Agent 模块中不依赖主 crate 内部模块的纯逻辑部分。
 //! 深耦合部分（aster_state、aster_agent 流式桥接）留在主 crate。
 
+#![allow(clippy::explicit_counter_loop)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::to_string_in_format_args)]
+#![allow(clippy::match_like_matches_macro)]
+#![allow(clippy::derivable_impls)]
+#![allow(clippy::borrowed_box)]
+
 pub mod ask_bridge;
 pub mod aster_state;
 pub mod aster_state_support;

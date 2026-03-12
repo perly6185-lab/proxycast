@@ -7,6 +7,10 @@ use rusqlite::{params, Connection};
 use serde_json::json;
 use uuid::Uuid;
 
+use super::migration_support::{
+    is_migration_completed, mark_migration_completed, run_in_transaction,
+};
+
 /// 迁移设置键名
 const MIGRATION_KEY_PLAYWRIGHT_SERVER: &str = "migrated_playwright_mcp_server_v1";
 
@@ -30,7 +34,6 @@ pub struct MigrationResult {
 /// 3. 如果不存在，创建默认配置
 /// 4. 标记迁移完成
 pub fn migrate_playwright_mcp_server(conn: &Connection) -> Result<MigrationResult, String> {
-    // 检查是否已经迁移过
     if is_migration_completed(conn, MIGRATION_KEY_PLAYWRIGHT_SERVER) {
         tracing::debug!("[迁移] Playwright MCP Server 已迁移过，跳过");
         return Ok(MigrationResult {
@@ -51,22 +54,12 @@ pub fn migrate_playwright_mcp_server(conn: &Connection) -> Result<MigrationResul
         });
     }
 
-    // 开始事务
-    conn.execute("BEGIN TRANSACTION", [])
-        .map_err(|e| format!("开始事务失败: {e}"))?;
-
-    // 执行迁移
-    let result = execute_playwright_migration(conn);
-
-    match result {
+    match run_in_transaction(conn, |tx| {
+        let server_id = execute_playwright_migration(tx)?;
+        mark_migration_completed(tx, MIGRATION_KEY_PLAYWRIGHT_SERVER)?;
+        Ok(server_id)
+    }) {
         Ok(server_id) => {
-            // 标记迁移完成
-            mark_migration_completed(conn, MIGRATION_KEY_PLAYWRIGHT_SERVER)?;
-
-            // 提交事务
-            conn.execute("COMMIT", [])
-                .map_err(|e| format!("提交事务失败: {e}"))?;
-
             tracing::info!(
                 "[迁移] Playwright MCP Server 迁移完成: server_id={}",
                 server_id
@@ -77,11 +70,9 @@ pub fn migrate_playwright_mcp_server(conn: &Connection) -> Result<MigrationResul
                 server_id: Some(server_id),
             })
         }
-        Err(e) => {
-            // 回滚事务
-            let _ = conn.execute("ROLLBACK", []);
-            tracing::error!("[迁移] Playwright MCP Server 迁移失败，已回滚: {}", e);
-            Err(e)
+        Err(error) => {
+            tracing::error!("[迁移] Playwright MCP Server 迁移失败，已回滚: {}", error);
+            Err(error)
         }
     }
 }
@@ -139,22 +130,4 @@ fn server_exists(conn: &Connection, name: &str) -> bool {
     )
     .unwrap_or(0)
         > 0
-}
-
-/// 检查迁移是否已完成
-fn is_migration_completed(conn: &Connection, key: &str) -> bool {
-    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
-        row.get::<_, String>(0)
-    })
-    .is_ok()
-}
-
-/// 标记迁移已完成
-fn mark_migration_completed(conn: &Connection, key: &str) -> Result<(), String> {
-    conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
-        [key, "1"],
-    )
-    .map_err(|e| format!("标记迁移完成失败: {e}"))?;
-    Ok(())
 }

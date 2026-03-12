@@ -175,8 +175,7 @@ mod tests {
                 id: "msg-2".to_string(),
                 session_id: "test-session".to_string(),
                 role: MessageRole::Assistant,
-                content: "ProxyCast 的上下文管理包括消息历史管理、智能摘要生成等功能"
-                    .to_string(),
+                content: "ProxyCast 的上下文管理包括消息历史管理、智能摘要生成等功能".to_string(),
                 blocks: None,
                 status: "complete".to_string(),
                 created_at: 2000,

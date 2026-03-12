@@ -419,7 +419,6 @@ impl SessionContextService {
         session_id: &str,
         messages_to_summarize: &[ChatMessage],
     ) -> Result<SessionSummary, String> {
-
         // 提取关键信息
         let mut key_topics = Vec::new();
         let mut decisions = Vec::new();
@@ -901,7 +900,10 @@ mod tests {
             }
         }
 
-        let context = service.get_effective_context("legacy-session").await.unwrap();
+        let context = service
+            .get_effective_context("legacy-session")
+            .await
+            .unwrap();
         assert_eq!(context.len(), 3);
         assert_eq!(context[0].content, "这是第 1 条消息，包含一些测试内容");
     }
@@ -933,7 +935,10 @@ mod tests {
             }
         }
 
-        let context = service.get_effective_context("legacy-session").await.unwrap();
+        let context = service
+            .get_effective_context("legacy-session")
+            .await
+            .unwrap();
         assert!(context.is_empty());
     }
 
@@ -963,7 +968,10 @@ mod tests {
             .unwrap();
         }
 
-        let context = service.get_effective_context("agent-session").await.unwrap();
+        let context = service
+            .get_effective_context("agent-session")
+            .await
+            .unwrap();
         assert!(context.is_empty());
     }
 }

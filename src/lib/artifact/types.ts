@@ -18,6 +18,7 @@ import type React from "react";
  */
 export type ArtifactType =
   // 轻量类型
+  | "document"
   | "code"
   | "html"
   | "svg"
@@ -98,6 +99,8 @@ export interface ArtifactRendererProps {
   artifact: Artifact;
   /** 是否处于流式生成状态 */
   isStreaming?: boolean;
+  /** 渲染色调 */
+  tone?: "dark" | "light";
   /** 内容变更回调（用于可编辑的渲染器） */
   onContentChange?: (content: string) => void;
   /** 是否隐藏内部工具栏（当外部已有工具栏时使用） */
@@ -138,6 +141,7 @@ export interface RendererEntry {
  * 用于类型检查和分类
  */
 export const LIGHTWEIGHT_ARTIFACT_TYPES: ArtifactType[] = [
+  "document",
   "code",
   "html",
   "svg",
@@ -187,6 +191,7 @@ export function isLightweightType(type: ArtifactType): boolean {
  * 默认文件扩展名映射
  */
 export const DEFAULT_FILE_EXTENSIONS: Record<ArtifactType, string> = {
+  document: "md",
   code: "txt",
   html: "html",
   svg: "svg",

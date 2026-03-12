@@ -16,7 +16,6 @@ use aster::context::{
     DEFAULT_CONTEXT_WINDOW_TRIGGER_RATIO, DEFAULT_TOOL_IO_PREVIEW_MAX_CHARS,
     DEFAULT_TOOL_IO_PREVIEW_MAX_LINES, DEFAULT_TOOL_TOKEN_LIMIT_BEFORE_EVICT,
 };
-use chrono::Utc;
 use proxycast_core::agent::types::AgentMessage;
 use serde::Serialize;
 use serde_json::{json, Map, Value};

@@ -10,7 +10,7 @@ const { mockOpen } = vi.hoisted(() => ({
   mockOpen: vi.fn(),
 }));
 
-vi.mock("@/hooks/useTauri", () => ({
+vi.mock("@/lib/api/appConfig", () => ({
   getConfig: mockGetConfig,
   saveConfig: mockSaveConfig,
 }));

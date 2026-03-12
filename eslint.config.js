@@ -86,6 +86,11 @@ const generalChatRestrictedPaths = [
       "generalChatCompat 属于兼容网关，请仅在 general-chat store 中消费，避免 compat 逻辑再次向业务层扩散。",
   },
   {
+    name: "@/lib/api/compat",
+    message:
+      "api/compat.ts 属于历史记忆兼容层，请不要在新代码中接入；旧记忆运行时请使用 @/lib/api/memoryRuntime，统一记忆请使用 @/lib/api/unifiedMemory。",
+  },
+  {
     name: "@/lib/api/agent",
     message:
       "agent.ts 现在只是兼容门面；新代码请改用 @/lib/api/agentRuntime、@/lib/api/agentStream 或 @/lib/api/agentCompat。",
@@ -93,6 +98,11 @@ const generalChatRestrictedPaths = [
   {
     name: "@/lib/terminal-api",
     message: "terminal-api 现在只是兼容门面；新代码请改用 @/lib/api/terminal。",
+  },
+  {
+    name: "@/hooks/useTauri",
+    message:
+      "useTauri 现在只是兼容聚合层，禁止新增依赖；请直接接入对应的 @/lib/api/* 网关。",
   },
   {
     name: "@/hooks/useTauri",
@@ -369,21 +379,6 @@ const generalChatRestrictedPaths = [
       "旧 aster 命名 API 已废弃，请使用现役 Aster API 或 Provider 配置流程。",
   },
 ];
-
-const generalChatRestrictedPathsWithoutPage = generalChatRestrictedPaths.filter(
-  (entry) =>
-    !(
-      entry.name === "@/components/general-chat" &&
-      Array.isArray(entry.importNames) &&
-      entry.importNames.includes("GeneralChatPage")
-    ),
-);
-
-const generalChatRestrictedPathsWithoutPageAndStore =
-  generalChatRestrictedPathsWithoutPage.filter(
-    (entry) =>
-      entry.name !== "@/components/general-chat/store/useGeneralChatStore",
-  );
 
 const generalChatRestrictedPathsWithoutCompatApi =
   generalChatRestrictedPaths.filter(
@@ -750,6 +745,152 @@ const projectMemoryCommandSelectors = [
     "项目记忆 CRUD 相关后端命令请统一通过 `src/lib/api/memory.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
 }));
 
+const toolHooksCommandSelectors = [
+  "execute_hooks",
+  "add_hook_rule",
+  "remove_hook_rule",
+  "toggle_hook_rule",
+  "get_hook_rules",
+  "get_hook_execution_stats",
+  "clear_hook_execution_stats",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "工具钩子相关命令请统一通过 `src/lib/api/toolHooks.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
+const a2uiFormCommandSelectors = [
+  "create_a2ui_form",
+  "get_a2ui_form",
+  "get_a2ui_forms_by_message",
+  "get_a2ui_forms_by_session",
+  "save_a2ui_form_data",
+  "submit_a2ui_form",
+  "delete_a2ui_form",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "A2UI 表单持久化命令请统一通过 `src/lib/api/a2uiForm.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
+const memoryFeedbackCommandSelectors = [
+  "unified_memory_feedback",
+  "get_memory_feedback_stats",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "记忆反馈相关命令请统一通过 `src/lib/api/memoryFeedback.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
+const contextMemoryCommandSelectors = [
+  "save_memory_entry",
+  "get_session_memories",
+  "get_memory_context",
+  "record_error",
+  "should_avoid_operation",
+  "mark_error_resolved",
+  "get_memory_stats",
+  "cleanup_expired_memories",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "上下文记忆命令请统一通过 `src/lib/api/contextMemory.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
+const asrProviderCommandSelectors = [
+  "list_audio_devices",
+  "get_asr_credentials",
+  "add_asr_credential",
+  "update_asr_credential",
+  "delete_asr_credential",
+  "set_default_asr_credential",
+  "test_asr_credential",
+  "get_voice_input_config",
+  "save_voice_input_config",
+  "get_voice_instructions",
+  "save_voice_instruction",
+  "delete_voice_instruction",
+  "transcribe_audio",
+  "polish_voice_text",
+  "open_voice_window",
+  "close_voice_window",
+  "output_voice_text",
+  "start_recording",
+  "stop_recording",
+  "cancel_recording",
+  "get_recording_status",
+  "open_input_with_text",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "语音输入/ASR 相关命令请统一通过 `src/lib/api/asrProvider.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
+const contentWorkflowCommandSelectors = [
+  "content_workflow_create",
+  "content_workflow_get",
+  "content_workflow_get_by_content",
+  "content_workflow_advance",
+  "content_workflow_retry",
+  "content_workflow_cancel",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "内容工作流命令请统一通过 `src/lib/api/content-workflow.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
+const novelCommandSelectors = [
+  "novel_create_project",
+  "novel_update_settings",
+  "novel_generate_outline",
+  "novel_generate_characters",
+  "novel_generate_chapter",
+  "novel_continue_chapter",
+  "novel_rewrite_chapter",
+  "novel_polish_chapter",
+  "novel_check_consistency",
+  "novel_get_project_snapshot",
+  "novel_list_runs",
+  "novel_delete_character",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "小说编排命令请统一通过 `src/lib/api/novel.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
+const unifiedChatCommandSelectors = [
+  "chat_create_session",
+  "chat_list_sessions",
+  "chat_get_session",
+  "chat_delete_session",
+  "chat_rename_session",
+  "chat_get_messages",
+  "chat_send_message",
+  "chat_stop_generation",
+  "chat_configure_provider",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "统一对话命令请统一通过 `src/lib/api/unified-chat.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
+const unifiedMemoryCommandSelectors = [
+  "unified_memory_list",
+  "unified_memory_search",
+  "unified_memory_get",
+  "unified_memory_create",
+  "unified_memory_update",
+  "unified_memory_delete",
+  "unified_memory_stats",
+  "unified_memory_analyze",
+  "unified_memory_semantic_search",
+  "unified_memory_hybrid_search",
+].map((command) => ({
+  selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
+  message:
+    "统一记忆命令请统一通过 `src/lib/api/unifiedMemory.ts` 暴露的网关函数调用，避免继续在其他模块中直接拼接命令名。",
+}));
+
 const apiCompatibilityCommandSelectors = ["check_api_compatibility"].map(
   (command) => ({
     selector: `CallExpression[callee.name='safeInvoke'][arguments.0.value='${command}'], CallExpression[callee.name='invoke'][arguments.0.value='${command}']`,
@@ -929,6 +1070,15 @@ export default [
         ...experimentalFeaturesCommandSelectors,
         ...memoryRuntimeCommandSelectors,
         ...projectMemoryCommandSelectors,
+        ...toolHooksCommandSelectors,
+        ...a2uiFormCommandSelectors,
+        ...memoryFeedbackCommandSelectors,
+        ...contextMemoryCommandSelectors,
+        ...asrProviderCommandSelectors,
+        ...contentWorkflowCommandSelectors,
+        ...novelCommandSelectors,
+        ...unifiedChatCommandSelectors,
+        ...unifiedMemoryCommandSelectors,
         ...apiCompatibilityCommandSelectors,
         ...endpointProvidersCommandSelectors,
         ...modelCatalogCommandSelectors,
@@ -947,22 +1097,6 @@ export default [
         },
       ],
       "@typescript-eslint/no-explicit-any": "off",
-    },
-  },
-  {
-    files: ["src/components/chat/ChatPage.tsx"],
-    rules: {
-      "no-restricted-imports": createLegacyChatImportRule(
-        generalChatRestrictedPathsWithoutPage,
-      ),
-    },
-  },
-  {
-    files: ["src/components/chat/hooks/useChat.ts"],
-    rules: {
-      "no-restricted-imports": createLegacyChatImportRule(
-        generalChatRestrictedPathsWithoutPageAndStore,
-      ),
     },
   },
   {
@@ -995,12 +1129,21 @@ export default [
       "src/lib/api/plugins.ts",
       "src/lib/api/pluginUI.ts",
       "src/lib/api/fileBrowser.ts",
+      "src/lib/api/a2uiForm.ts",
       "src/lib/api/appUpdate.ts",
+      "src/lib/api/asrProvider.ts",
+      "src/lib/api/content-workflow.ts",
       "src/lib/api/screenshotChat.ts",
       "src/lib/api/notification.ts",
+      "src/lib/api/novel.ts",
       "src/lib/api/autoFix.ts",
+      "src/lib/api/contextMemory.ts",
       "src/lib/api/frontendCrash.ts",
+      "src/lib/api/memoryFeedback.ts",
+      "src/lib/api/toolHooks.ts",
       "src/lib/api/terminal.ts",
+      "src/lib/api/unified-chat.ts",
+      "src/lib/api/unifiedMemory.ts",
       "src/lib/api/serverRuntime.ts",
       "src/lib/api/logs.ts",
       "src/lib/api/apiCompatibility.ts",

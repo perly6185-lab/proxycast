@@ -69,13 +69,3 @@ pub fn get_current_prompt_file_content(app: String) -> Result<Option<String>, St
 pub fn auto_import_prompt(db: State<'_, DbConnection>, app: String) -> Result<usize, String> {
     PromptService::import_on_first_launch(&db, &app)
 }
-
-// Legacy command for compatibility
-#[tauri::command]
-pub fn switch_prompt(
-    db: State<'_, DbConnection>,
-    app_type: String,
-    id: String,
-) -> Result<(), String> {
-    PromptService::enable(&db, &app_type, &id)
-}

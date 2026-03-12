@@ -9,12 +9,15 @@
 
 use rusqlite::{params, Connection};
 
+use crate::app_paths;
+
+use super::migration_support::{
+    is_migration_completed, mark_migration_completed, run_in_transaction,
+};
+
 /// 迁移设置键名
 const MIGRATION_KEY_FIX_PROMISE_PATHS: &str = "migrated_fix_promise_paths_v1";
 const MIGRATION_KEY_UNIFY_SESSION_DIRS: &str = "migrated_unify_session_dirs_v1";
-
-/// 默认项目根目录（用于替换损坏的路径）
-const DEFAULT_PROJECTS_DIR: &str = ".proxycast/projects";
 
 /// 迁移结果
 pub struct MigrationResult {
@@ -30,7 +33,6 @@ pub struct MigrationResult {
 
 /// 执行 [object Promise] 路径修复迁移
 pub fn migrate_fix_promise_paths(conn: &Connection) -> Result<MigrationResult, String> {
-    // 检查是否已经迁移过
     let promise_done = is_migration_completed(conn, MIGRATION_KEY_FIX_PROMISE_PATHS);
     let unify_done = is_migration_completed(conn, MIGRATION_KEY_UNIFY_SESSION_DIRS);
 
@@ -44,30 +46,21 @@ pub fn migrate_fix_promise_paths(conn: &Connection) -> Result<MigrationResult, S
         });
     }
 
-    // 获取用户主目录
-    let home = dirs::home_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "/Users/unknown".to_string());
-    let default_path = format!("{}/{}", home, DEFAULT_PROJECTS_DIR);
+    let default_path = app_paths::resolve_projects_dir()?
+        .to_string_lossy()
+        .to_string();
 
-    // 开始事务
-    conn.execute("BEGIN TRANSACTION", [])
-        .map_err(|e| format!("开始事务失败: {e}"))?;
-
-    let result = execute_migration(conn, &default_path, promise_done, unify_done);
-
-    match result {
+    match run_in_transaction(conn, |tx| {
+        let result = execute_migration(tx, &default_path, promise_done, unify_done)?;
+        if !promise_done {
+            mark_migration_completed(tx, MIGRATION_KEY_FIX_PROMISE_PATHS)?;
+        }
+        if !unify_done {
+            mark_migration_completed(tx, MIGRATION_KEY_UNIFY_SESSION_DIRS)?;
+        }
+        Ok(result)
+    }) {
         Ok((fixed_ws, fixed_sess, unified_sess)) => {
-            if !promise_done {
-                mark_migration_completed(conn, MIGRATION_KEY_FIX_PROMISE_PATHS)?;
-            }
-            if !unify_done {
-                mark_migration_completed(conn, MIGRATION_KEY_UNIFY_SESSION_DIRS)?;
-            }
-
-            conn.execute("COMMIT", [])
-                .map_err(|e| format!("提交事务失败: {e}"))?;
-
             if fixed_ws > 0 || fixed_sess > 0 {
                 tracing::info!(
                     "[迁移] Promise 路径修复完成: 修复 workspaces={}, sessions={}",
@@ -89,10 +82,9 @@ pub fn migrate_fix_promise_paths(conn: &Connection) -> Result<MigrationResult, S
                 unified_sessions: unified_sess,
             })
         }
-        Err(e) => {
-            let _ = conn.execute("ROLLBACK", []);
-            tracing::error!("[迁移] 路径修复和会话统一失败，已回滚: {}", e);
-            Err(e)
+        Err(error) => {
+            tracing::error!("[迁移] 路径修复和会话统一失败，已回滚: {}", error);
+            Err(error)
         }
     }
 }
@@ -213,20 +205,4 @@ fn count_corrupted_sessions(conn: &Connection) -> i64 {
         |row| row.get::<_, i64>(0),
     )
     .unwrap_or(0)
-}
-
-fn is_migration_completed(conn: &Connection, key: &str) -> bool {
-    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
-        row.get::<_, String>(0)
-    })
-    .is_ok()
-}
-
-fn mark_migration_completed(conn: &Connection, key: &str) -> Result<(), String> {
-    conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
-        [key, "1"],
-    )
-    .map_err(|e| format!("标记迁移完成失败: {e}"))?;
-    Ok(())
 }

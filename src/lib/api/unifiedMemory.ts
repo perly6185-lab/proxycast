@@ -5,28 +5,28 @@
  * 更新：添加语义搜索和混合搜索 API
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 
 // ==================== 类型定义 ====================
 
 /** 记忆类型 */
 export type MemoryType =
   | "conversation" // 对话记忆
-  | "project";   // 项目记忆
+  | "project"; // 项目记忆
 
 /** 记忆分类（5层架构） */
 export type MemoryCategory =
-  | "identity"   // 身份信息
-  | "context"   // 背景信息
+  | "identity" // 身份信息
+  | "context" // 背景信息
   | "preference" // 偏好信息
   | "experience" // 经验信息
-  | "activity";  // 活动信息
+  | "activity"; // 活动信息
 
 /** 记忆来源 */
 export type MemorySource =
   | "auto_extracted" // 自动从对话历史提取
-  | "manual"        // 手动创建
-  | "imported";     // 从外部导入
+  | "manual" // 手动创建
+  | "imported"; // 从外部导入
 
 /** 记忆元数据 */
 export interface MemoryMetadata {
@@ -216,13 +216,13 @@ export interface UnifiedMemoryAnalysisResult {
 export async function listUnifiedMemories(
   filters?: MemoryListFilters,
 ): Promise<UnifiedMemory[]> {
-  console.log('[记忆列表] Filters:', filters);
+  console.log("[记忆列表] Filters:", filters);
 
-  const result = await invoke<UnifiedMemory[]>("unified_memory_list", {
+  const result = await safeInvoke<UnifiedMemory[]>("unified_memory_list", {
     filters: filters || null,
   });
 
-  console.log('[记忆列表] Results:', result);
+  console.log("[记忆列表] Results:", result);
   return result;
 }
 
@@ -239,15 +239,22 @@ export async function searchUnifiedMemories(
   category?: MemoryCategory,
   limit?: number,
 ): Promise<UnifiedMemory[]> {
-  console.log('[关键词搜索] Query:', query, 'category:', category, 'limit:', limit);
+  console.log(
+    "[关键词搜索] Query:",
+    query,
+    "category:",
+    category,
+    "limit:",
+    limit,
+  );
 
-  const result = await invoke<UnifiedMemory[]>("unified_memory_search", {
+  const result = await safeInvoke<UnifiedMemory[]>("unified_memory_search", {
     query,
     category: category?.toString(),
     limit,
   });
 
-  console.log('[关键词搜索] Results:', result);
+  console.log("[关键词搜索] Results:", result);
   return result;
 }
 
@@ -260,11 +267,13 @@ export async function searchUnifiedMemories(
 export async function getUnifiedMemory(
   id: string,
 ): Promise<UnifiedMemory | null> {
-  console.log('[获取记忆] ID:', id);
+  console.log("[获取记忆] ID:", id);
 
-  const result = await invoke<UnifiedMemory | null>("unified_memory_get", { id });
+  const result = await safeInvoke<UnifiedMemory | null>("unified_memory_get", {
+    id,
+  });
 
-  console.log('[获取记忆] Result:', result);
+  console.log("[获取记忆] Result:", result);
   return result;
 }
 
@@ -277,13 +286,13 @@ export async function getUnifiedMemory(
 export async function createUnifiedMemory(
   request: CreateUnifiedMemoryRequest,
 ): Promise<UnifiedMemory> {
-  console.log('[创建记忆] Request:', request);
+  console.log("[创建记忆] Request:", request);
 
-  const result = await invoke<UnifiedMemory>("unified_memory_create", {
+  const result = await safeInvoke<UnifiedMemory>("unified_memory_create", {
     request,
   });
 
-  console.log('[创建记忆] Result:', result);
+  console.log("[创建记忆] Result:", result);
   return result;
 }
 
@@ -298,11 +307,14 @@ export async function updateUnifiedMemory(
   id: string,
   request: UpdateUnifiedMemoryRequest,
 ): Promise<UnifiedMemory> {
-  console.log('[更新记忆] ID:', id, 'Request:', request);
+  console.log("[更新记忆] ID:", id, "Request:", request);
 
-  const result = await invoke<UnifiedMemory>("unified_memory_update", { id, request });
+  const result = await safeInvoke<UnifiedMemory>("unified_memory_update", {
+    id,
+    request,
+  });
 
-  console.log('[更新记忆] Result:', result);
+  console.log("[更新记忆] Result:", result);
   return result;
 }
 
@@ -312,14 +324,12 @@ export async function updateUnifiedMemory(
  * @param id - 记忆 ID
  * @returns 是否成功
  */
-export async function deleteUnifiedMemory(
-  id: string,
-): Promise<boolean> {
-  console.log('[删除记忆] ID:', id);
+export async function deleteUnifiedMemory(id: string): Promise<boolean> {
+  console.log("[删除记忆] ID:", id);
 
-  const result = await invoke<boolean>("unified_memory_delete", { id });
+  const result = await safeInvoke<boolean>("unified_memory_delete", { id });
 
-  console.log('[删除记忆] Result:', result);
+  console.log("[删除记忆] Result:", result);
   return result;
 }
 
@@ -328,7 +338,7 @@ export async function deleteUnifiedMemory(
  */
 export async function getUnifiedMemoryStats(): Promise<UnifiedMemoryStatsResponse> {
   console.log("[记忆统计] 获取统一记忆统计");
-  return invoke<UnifiedMemoryStatsResponse>("unified_memory_stats");
+  return safeInvoke<UnifiedMemoryStatsResponse>("unified_memory_stats");
 }
 
 /**
@@ -343,7 +353,7 @@ export async function analyzeUnifiedMemories(
     toTimestamp,
   });
 
-  return invoke<UnifiedMemoryAnalysisResult>("unified_memory_analyze", {
+  return safeInvoke<UnifiedMemoryAnalysisResult>("unified_memory_analyze", {
     fromTimestamp,
     toTimestamp,
   });
@@ -364,18 +374,28 @@ export async function semanticSearch(
   minSimilarity: number = 0.5,
   limit?: number,
 ): Promise<UnifiedMemory[]> {
-  console.log('[语义搜索] Query:', query, 'Category:', category, 'MinSimilarity:', minSimilarity);
+  console.log(
+    "[语义搜索] Query:",
+    query,
+    "Category:",
+    category,
+    "MinSimilarity:",
+    minSimilarity,
+  );
 
-  const result = await invoke<UnifiedMemory[]>("unified_memory_semantic_search", {
-    options: {
-      query,
-      category,
-      min_similarity: minSimilarity,
-      limit,
+  const result = await safeInvoke<UnifiedMemory[]>(
+    "unified_memory_semantic_search",
+    {
+      options: {
+        query,
+        category,
+        min_similarity: minSimilarity,
+        limit,
+      },
     },
-  });
+  );
 
-  console.log('[语义搜索] Results:', result);
+  console.log("[语义搜索] Results:", result);
   return result;
 }
 
@@ -396,19 +416,31 @@ export async function hybridSearch(
   minSimilarity: number = 0.5,
   limit?: number,
 ): Promise<UnifiedMemory[]> {
-  console.log('[混合搜索] Query:', query, 'Category:', category, 'SemanticWeight:', semanticWeight, 'MinSimilarity:', minSimilarity);
+  console.log(
+    "[混合搜索] Query:",
+    query,
+    "Category:",
+    category,
+    "SemanticWeight:",
+    semanticWeight,
+    "MinSimilarity:",
+    minSimilarity,
+  );
 
-  const result = await invoke<UnifiedMemory[]>("unified_memory_hybrid_search", {
-    options: {
-      query,
-      category,
-      semantic_weight: semanticWeight,
-      min_similarity: minSimilarity,
-      limit,
+  const result = await safeInvoke<UnifiedMemory[]>(
+    "unified_memory_hybrid_search",
+    {
+      options: {
+        query,
+        category,
+        semantic_weight: semanticWeight,
+        min_similarity: minSimilarity,
+        limit,
+      },
     },
-  });
+  );
 
-  console.log('[混合搜索] Results:', result);
+  console.log("[混合搜索] Results:", result);
   return result;
 }
 

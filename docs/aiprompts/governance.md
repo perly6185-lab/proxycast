@@ -83,6 +83,32 @@
 - CI 阻止新代码继续引用废弃路径
 - 脚本扫描旧表、旧 DAO、旧命令、旧 Hook 的新增使用点
 
+当前仓库可直接运行：
+
+```bash
+npm run governance:legacy-report
+```
+
+它会扫描：
+
+- 已经被判定为 `deprecated` / `dead-candidate` 的前端入口（按真实 import 解析 `@/` 与相对路径）
+- 旧 Tauri 命令是否仍然只收口在指定 API 网关
+- 哪些兼容壳层已经零引用，可以进入删除候选
+
+当前项目的最新治理状态可以概括为：
+
+- 旧 `components/chat`、`general-chat` 页面 / Hook / Store / compat API 已删除
+- Rust `general_chat_*` 兼容命令已删除
+- `src/lib/api/agentCompat.ts` 已删除，Aster 前端只保留现役 runtime / stream API
+- General Chat 历史数据迁移已接入数据库初始化；新治理优先推动“启动期迁移”，而不是长期保留运行时 fallback
+- 下一阶段重点不再是页面和命令，而是统计、记忆等旁路对 `general_chat_*` 历史表的依赖
+
+进一步治理时，建议坚持一个更细的边界规则：
+
+- “迁移是否完成”的判断收口在 `Repository / Database` 边界
+- 业务服务层只消费 `pending_*` 语义接口
+- 不要在多个 service 里重复写 `is_migrated` 分支
+
 原则只有一句：
 
 **不是鼓励走新路，而是封住老路。**
@@ -184,6 +210,8 @@
 3. 必须显式说明当前改动属于 `current`、`compat`、`deprecated`、`dead` 中哪一类。
 4. 如果发现主链路与旁路系统割裂，必须指出，不得假装治理已经完成。
 5. 如果无法在本次改动中完成收口，至少要建立守卫，阻止问题继续扩散。
+6. 一旦历史数据迁移已接入启动流程，运行时必须按“迁移完成标记”短路旧表读取；旧表只允许服务迁移、审计与回放，不再参与主链路查询。
+7. 过渡期对外暴露的命名必须体现“迁移态”语义，例如 `pending_*`，不要继续让业务层直接看见 `legacy_*` 模块名与函数名。
 
 ## 一句话总结
 

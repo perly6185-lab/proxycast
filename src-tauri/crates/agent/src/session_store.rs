@@ -6,6 +6,9 @@
 use chrono::Utc;
 use proxycast_core::agent::types::{AgentMessage, AgentSession, ContentPart, MessageContent};
 use proxycast_core::database::dao::agent::AgentDao;
+use proxycast_core::database::dao::agent_timeline::{
+    AgentThreadItem, AgentThreadTurn, AgentTimelineDao,
+};
 use proxycast_core::database::DbConnection;
 use proxycast_core::workspace::WorkspaceManager;
 use uuid::Uuid;
@@ -35,8 +38,11 @@ pub struct SessionDetail {
     pub name: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub thread_id: String,
     pub messages: Vec<TauriMessage>,
     pub execution_strategy: Option<String>,
+    pub turns: Vec<AgentThreadTurn>,
+    pub items: Vec<AgentThreadItem>,
 }
 
 /// 解析会话 working_dir（优先入参，其次 workspace_id）
@@ -145,6 +151,10 @@ pub fn get_session_sync(db: &DbConnection, session_id: &str) -> Result<SessionDe
 
     let messages =
         AgentDao::get_messages(&conn, session_id).map_err(|e| format!("获取消息失败: {e}"))?;
+    let turns = AgentTimelineDao::list_turns_by_thread(&conn, session_id)
+        .map_err(|e| format!("获取 turn 历史失败: {e}"))?;
+    let items = AgentTimelineDao::list_items_by_thread(&conn, session_id)
+        .map_err(|e| format!("获取 item 历史失败: {e}"))?;
 
     let tauri_messages = convert_agent_messages(&messages, Some(session.model.as_str()));
 
@@ -163,8 +173,11 @@ pub fn get_session_sync(db: &DbConnection, session_id: &str) -> Result<SessionDe
         updated_at: chrono::DateTime::parse_from_rfc3339(&session.updated_at)
             .map(|dt| dt.timestamp())
             .unwrap_or(0),
+        thread_id: session_id.to_string(),
         messages: tauri_messages,
         execution_strategy: session.execution_strategy,
+        turns,
+        items,
     })
 }
 

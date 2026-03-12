@@ -19,6 +19,7 @@ use crate::services::workspace_health_service::{
     ensure_workspace_ready_with_auto_relocate, ensure_workspace_root_ready,
 };
 use crate::workspace::{WorkspaceManager, WorkspaceType, WorkspaceUpdate};
+use proxycast_core::app_paths;
 use proxycast_memory::{MemoryCategory, MemoryMetadata, MemorySource, MemoryType, UnifiedMemory};
 use proxycast_server_utils::load_model_registry_provider_ids_from_resources;
 use rusqlite::{params_from_iter, types::Value};
@@ -95,12 +96,7 @@ fn parse_optional_nested_arg<T: DeserializeOwned>(
 }
 
 fn get_workspace_projects_root_dir() -> Result<PathBuf, String> {
-    let home_dir = dirs::home_dir().ok_or_else(|| "无法获取主目录".to_string())?;
-    let root_dir = home_dir.join(".proxycast").join("projects");
-
-    std::fs::create_dir_all(&root_dir).map_err(|e| format!("创建 workspace 目录失败: {e}"))?;
-
-    Ok(root_dir)
+    app_paths::resolve_projects_dir()
 }
 
 fn mask_api_key_for_display(key: &str) -> String {
@@ -1242,23 +1238,64 @@ pub async fn handle_command(
             Ok(serde_json::json!({ "success": true }))
         }
 
-        "get_conversation_memory_overview" => {
+        "memory_runtime_get_overview" => {
             let args = args.unwrap_or_default();
             let limit = args
                 .get("limit")
                 .and_then(|value| value.as_u64())
                 .map(|value| value as u32);
-            let overview = crate::commands::memory_management_cmd::get_conversation_memory_overview(limit)
+            let overview = crate::commands::memory_management_cmd::memory_runtime_get_overview(limit)
                 .await
                 .map_err(|e| format!("获取对话记忆总览失败: {e}"))?;
             Ok(serde_json::to_value(overview)?)
         }
 
-        "get_conversation_memory_stats" => {
-            let stats = crate::commands::memory_management_cmd::get_conversation_memory_stats()
+        "memory_runtime_get_stats" => {
+            let stats = crate::commands::memory_management_cmd::memory_runtime_get_stats()
                 .await
                 .map_err(|e| format!("获取对话记忆统计失败: {e}"))?;
             Ok(serde_json::to_value(stats)?)
+        }
+
+        "memory_runtime_request_analysis" => {
+            let app_handle = state
+                .app_handle
+                .as_ref()
+                .ok_or_else(|| "Dev Bridge 未持有 AppHandle".to_string())?;
+            let args = args.unwrap_or_default();
+            let from_timestamp = args.get("fromTimestamp").and_then(|value| value.as_i64());
+            let to_timestamp = args.get("toTimestamp").and_then(|value| value.as_i64());
+            let memory_service =
+                app_handle.state::<crate::commands::context_memory::ContextMemoryServiceState>();
+            let db = app_handle.state::<crate::database::DbConnection>();
+            let global_config = app_handle.state::<crate::config::GlobalConfigManagerState>();
+            let result = crate::commands::memory_management_cmd::memory_runtime_request_analysis(
+                memory_service,
+                db,
+                global_config,
+                from_timestamp,
+                to_timestamp,
+            )
+            .await
+            .map_err(|e| format!("请求记忆分析失败: {e}"))?;
+            Ok(serde_json::to_value(result)?)
+        }
+
+        "memory_runtime_cleanup" => {
+            let app_handle = state
+                .app_handle
+                .as_ref()
+                .ok_or_else(|| "Dev Bridge 未持有 AppHandle".to_string())?;
+            let memory_service =
+                app_handle.state::<crate::commands::context_memory::ContextMemoryServiceState>();
+            let global_config = app_handle.state::<crate::config::GlobalConfigManagerState>();
+            let result = crate::commands::memory_management_cmd::memory_runtime_cleanup(
+                memory_service,
+                global_config,
+            )
+            .await
+            .map_err(|e| format!("清理记忆失败: {e}"))?;
+            Ok(serde_json::to_value(result)?)
         }
 
         // ========== 网络信息 ==========

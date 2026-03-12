@@ -10,6 +10,12 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+use crate::app_paths;
+
+use super::migration_support::{
+    is_migration_completed, mark_migration_completed, run_in_transaction,
+};
+
 /// 迁移设置键名
 const MIGRATION_KEY_UNIFIED_CONTENT: &str = "migrated_unified_content_system_v1";
 
@@ -29,7 +35,19 @@ const DEFAULT_PROJECT_ICON: &str = "📁";
 ///
 /// _Requirements: 2.1, 2.2, 2.3, 2.4_
 pub fn migrate_unified_content_system(conn: &Connection) -> Result<MigrationResult, String> {
-    // 检查是否已经迁移过
+    migrate_unified_content_system_with_default_dir_resolver(
+        conn,
+        &app_paths::resolve_default_project_dir,
+    )
+}
+
+fn migrate_unified_content_system_with_default_dir_resolver<F>(
+    conn: &Connection,
+    resolve_default_project_dir: &F,
+) -> Result<MigrationResult, String>
+where
+    F: Fn() -> Result<std::path::PathBuf, String>,
+{
     if is_migration_completed(conn, MIGRATION_KEY_UNIFIED_CONTENT) {
         tracing::debug!("[迁移] 统一内容系统已迁移过，跳过");
         return Ok(MigrationResult::skipped());
@@ -37,45 +55,37 @@ pub fn migrate_unified_content_system(conn: &Connection) -> Result<MigrationResu
 
     tracing::info!("[迁移] 开始执行统一内容系统迁移");
 
-    // 开始事务
-    conn.execute("BEGIN TRANSACTION", [])
-        .map_err(|e| format!("开始事务失败: {e}"))?;
-
-    // 执行迁移
-    let result = execute_migration(conn);
-
-    match result {
+    match run_in_transaction(conn, |tx| {
+        let stats = execute_migration(tx, resolve_default_project_dir)?;
+        mark_migration_completed(tx, MIGRATION_KEY_UNIFIED_CONTENT)?;
+        Ok(stats)
+    }) {
         Ok(stats) => {
-            // 标记迁移完成
-            mark_migration_completed(conn, MIGRATION_KEY_UNIFIED_CONTENT)?;
-
-            // 提交事务
-            conn.execute("COMMIT", [])
-                .map_err(|e| format!("提交事务失败: {e}"))?;
-
             tracing::info!(
                 "[迁移] 统一内容系统迁移完成: 默认项目={}, 迁移内容数={}",
                 stats.default_project_id,
                 stats.migrated_contents_count
             );
-
             Ok(MigrationResult::success(stats))
         }
-        Err(e) => {
-            // 回滚事务
-            // _Requirements: 2.4_
-            let _ = conn.execute("ROLLBACK", []);
-            tracing::error!("[迁移] 统一内容系统迁移失败，已回滚: {}", e);
-            Err(e)
+        Err(error) => {
+            tracing::error!("[迁移] 统一内容系统迁移失败，已回滚: {}", error);
+            Err(error)
         }
     }
 }
 
 /// 执行迁移的核心逻辑
-fn execute_migration(conn: &Connection) -> Result<MigrationStats, String> {
+fn execute_migration<F>(
+    conn: &Connection,
+    resolve_default_project_dir: &F,
+) -> Result<MigrationStats, String>
+where
+    F: Fn() -> Result<std::path::PathBuf, String>,
+{
     // 1. 获取或创建默认项目
     // _Requirements: 2.1_
-    let default_project_id = get_or_create_default_project(conn)?;
+    let default_project_id = get_or_create_default_project(conn, resolve_default_project_dir)?;
 
     // 2. 迁移所有 project_id 为 null 的内容到默认项目
     // _Requirements: 2.2_
@@ -96,7 +106,13 @@ fn execute_migration(conn: &Connection) -> Result<MigrationStats, String> {
 /// 否则创建新的默认项目
 ///
 /// _Requirements: 2.1_
-fn get_or_create_default_project(conn: &Connection) -> Result<String, String> {
+fn get_or_create_default_project<F>(
+    conn: &Connection,
+    resolve_default_project_dir: &F,
+) -> Result<String, String>
+where
+    F: Fn() -> Result<std::path::PathBuf, String>,
+{
     // 检查是否已存在默认项目
     let existing_id: Option<String> = conn
         .query_row(
@@ -116,7 +132,7 @@ fn get_or_create_default_project(conn: &Connection) -> Result<String, String> {
     let now = Utc::now().timestamp_millis();
 
     // 使用应用数据目录作为默认项目的 root_path
-    let root_path = get_default_project_path()?;
+    let root_path = get_default_project_path(resolve_default_project_dir)?;
 
     conn.execute(
         "INSERT INTO workspaces (
@@ -148,12 +164,11 @@ fn get_or_create_default_project(conn: &Connection) -> Result<String, String> {
 }
 
 /// 获取默认项目的存储路径
-fn get_default_project_path() -> Result<String, String> {
-    let home = dirs::home_dir().ok_or_else(|| "无法获取主目录".to_string())?;
-    let path = home.join(".proxycast").join("projects").join("default");
-
-    // 确保目录存在
-    std::fs::create_dir_all(&path).map_err(|e| format!("创建默认项目目录失败: {e}"))?;
+fn get_default_project_path<F>(resolve_default_project_dir: &F) -> Result<String, String>
+where
+    F: Fn() -> Result<std::path::PathBuf, String>,
+{
+    let path = resolve_default_project_dir()?;
 
     path.to_str()
         .map(|s| s.to_string())
@@ -235,27 +250,6 @@ fn verify_migration(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// 检查迁移是否已完成
-fn is_migration_completed(conn: &Connection, key: &str) -> bool {
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = ?",
-        params![key],
-        |row| row.get::<_, String>(0),
-    )
-    .map(|v| v == "true")
-    .unwrap_or(false)
-}
-
-/// 标记迁移完成
-fn mark_migration_completed(conn: &Connection, key: &str) -> Result<(), String> {
-    conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, 'true')",
-        params![key],
-    )
-    .map_err(|e| format!("标记迁移完成失败: {e}"))?;
-    Ok(())
-}
-
 // ============================================================================
 // 迁移结果类型
 // ============================================================================
@@ -316,7 +310,7 @@ pub fn get_default_project_id(conn: &Connection) -> Option<String> {
 ///
 /// 如果不存在则创建，返回默认项目 ID
 pub fn ensure_default_project(conn: &Connection) -> Result<String, String> {
-    get_or_create_default_project(conn)
+    get_or_create_default_project(conn, &app_paths::resolve_default_project_dir)
 }
 
 // ============================================================================
@@ -386,9 +380,16 @@ mod tests {
     #[test]
     fn test_migration_creates_default_project() {
         let conn = setup_test_db();
+        let temp = tempfile::tempdir().unwrap();
+        let expected_default_dir = temp.path().join("projects").join("default");
 
         // 执行迁移
-        let result = migrate_unified_content_system(&conn).unwrap();
+        let result = migrate_unified_content_system_with_default_dir_resolver(&conn, &|| {
+            std::fs::create_dir_all(&expected_default_dir)
+                .map_err(|e| format!("创建默认项目目录失败: {e}"))?;
+            Ok(expected_default_dir.clone())
+        })
+        .unwrap();
 
         assert!(result.executed);
         assert!(result.stats.is_some());
@@ -406,8 +407,37 @@ mod tests {
     }
 
     #[test]
+    fn test_migration_uses_app_data_default_project_path() {
+        let conn = setup_test_db();
+        let temp = tempfile::tempdir().unwrap();
+        let expected_default_dir = temp.path().join("projects").join("default");
+
+        let result = migrate_unified_content_system_with_default_dir_resolver(&conn, &|| {
+            std::fs::create_dir_all(&expected_default_dir)
+                .map_err(|e| format!("创建默认项目目录失败: {e}"))?;
+            Ok(expected_default_dir.clone())
+        })
+        .unwrap();
+        let stats = result.stats.unwrap();
+
+        let root_path: String = conn
+            .query_row(
+                "SELECT root_path FROM workspaces WHERE id = ?1",
+                [stats.default_project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let expected = expected_default_dir.to_string_lossy().to_string();
+
+        assert_eq!(root_path, expected);
+    }
+
+    #[test]
     fn test_migration_migrates_null_project_contents() {
         let conn = setup_test_db();
+        let temp = tempfile::tempdir().unwrap();
+        let expected_default_dir = temp.path().join("projects").join("default");
         let now = Utc::now().timestamp_millis();
 
         // 插入一些没有 project_id 的内容
@@ -426,7 +456,12 @@ mod tests {
         .unwrap();
 
         // 执行迁移
-        let result = migrate_unified_content_system(&conn).unwrap();
+        let result = migrate_unified_content_system_with_default_dir_resolver(&conn, &|| {
+            std::fs::create_dir_all(&expected_default_dir)
+                .map_err(|e| format!("创建默认项目目录失败: {e}"))?;
+            Ok(expected_default_dir.clone())
+        })
+        .unwrap();
 
         assert!(result.executed);
         let stats = result.stats.unwrap();
@@ -447,19 +482,33 @@ mod tests {
     #[test]
     fn test_migration_skips_if_already_done() {
         let conn = setup_test_db();
+        let temp = tempfile::tempdir().unwrap();
+        let expected_default_dir = temp.path().join("projects").join("default");
 
         // 第一次迁移
-        let result1 = migrate_unified_content_system(&conn).unwrap();
+        let result1 = migrate_unified_content_system_with_default_dir_resolver(&conn, &|| {
+            std::fs::create_dir_all(&expected_default_dir)
+                .map_err(|e| format!("创建默认项目目录失败: {e}"))?;
+            Ok(expected_default_dir.clone())
+        })
+        .unwrap();
         assert!(result1.executed);
 
         // 第二次迁移应该跳过
-        let result2 = migrate_unified_content_system(&conn).unwrap();
+        let result2 = migrate_unified_content_system_with_default_dir_resolver(&conn, &|| {
+            std::fs::create_dir_all(&expected_default_dir)
+                .map_err(|e| format!("创建默认项目目录失败: {e}"))?;
+            Ok(expected_default_dir.clone())
+        })
+        .unwrap();
         assert!(!result2.executed);
     }
 
     #[test]
     fn test_migration_uses_existing_default_project() {
         let conn = setup_test_db();
+        let temp = tempfile::tempdir().unwrap();
+        let expected_default_dir = temp.path().join("projects").join("default");
         let now = Utc::now().timestamp_millis();
 
         // 先创建一个默认项目
@@ -479,7 +528,12 @@ mod tests {
         .unwrap();
 
         // 执行迁移
-        let result = migrate_unified_content_system(&conn).unwrap();
+        let result = migrate_unified_content_system_with_default_dir_resolver(&conn, &|| {
+            std::fs::create_dir_all(&expected_default_dir)
+                .map_err(|e| format!("创建默认项目目录失败: {e}"))?;
+            Ok(expected_default_dir.clone())
+        })
+        .unwrap();
 
         assert!(result.executed);
         let stats = result.stats.unwrap();

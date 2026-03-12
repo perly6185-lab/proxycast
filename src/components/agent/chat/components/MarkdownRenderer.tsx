@@ -233,6 +233,8 @@ interface MarkdownRendererProps {
   content: string;
   /** A2UI 表单提交回调 */
   onA2UISubmit?: (formData: A2UIFormData) => void;
+  /** 是否渲染消息内联 A2UI */
+  renderA2UIInline?: boolean;
   /** 是否折叠代码块（当画布打开时） */
   collapseCodeBlocks?: boolean;
   /** 代码块点击回调（用于在画布中显示） */
@@ -245,6 +247,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
   ({
     content,
     onA2UISubmit,
+    renderA2UIInline = true,
     collapseCodeBlocks = false,
     onCodeBlockClick,
     isStreaming = false,
@@ -406,6 +409,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
 
                 // 如果是 a2ui 代码块，特殊处理
                 if (language === "a2ui") {
+                  if (!renderA2UIInline) {
+                    return null;
+                  }
+
                   const parsed = parseA2UIJson(codeContent);
 
                   if (parsed) {
@@ -425,7 +432,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
                         subtitle="正在解析结构化问题，请稍等。"
                       />
                     );
-                  }
+              }
                 }
 
                 // 如果启用了代码块折叠，显示占位符卡片

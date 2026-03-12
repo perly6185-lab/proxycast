@@ -8,6 +8,14 @@
 //! - `sysinfo_service` - 系统信息服务
 //! - `update_check_service` - 更新检查服务
 //! - `usage_service` - 使用统计服务
+
+#![allow(clippy::type_complexity)]
+#![allow(clippy::let_underscore_future)]
+#![allow(clippy::derivable_impls)]
+#![allow(clippy::await_holding_lock)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::collapsible_match)]
 //! - `voice_config_service` - 语音配置服务
 //! - `voice_processor_service` - 语音润色服务
 //! - `voice_output_service` - 语音输出服务

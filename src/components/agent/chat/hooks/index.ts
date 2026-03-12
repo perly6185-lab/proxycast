@@ -11,7 +11,11 @@ export type { Topic } from "./useAgentChat";
 /** Hook 配置选项 */
 interface UseAgentChatUnifiedOptions {
   systemPrompt?: string;
-  onWriteFile?: (content: string, fileName: string) => void;
+  onWriteFile?: (
+    content: string,
+    fileName: string,
+    context?: import("../types").WriteArtifactContext,
+  ) => void;
   workspaceId: string;
 }
 

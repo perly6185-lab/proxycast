@@ -4,6 +4,7 @@ use crate::database::DbConnection;
 use crate::models::app_type::AppType;
 use crate::models::skill_model::{Skill, SkillRepo, SkillState};
 use chrono::Utc;
+use proxycast_core::app_paths;
 use proxycast_services::skill_service::SkillService;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -43,16 +44,18 @@ pub fn scan_installed_skills(skills_dir: &Path) -> Vec<String> {
 }
 
 fn get_skills_dir(app_type: &AppType) -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
-
-    let skills_dir = match app_type {
-        AppType::Claude => home.join(".claude").join("skills"),
-        AppType::Codex => home.join(".codex").join("skills"),
-        AppType::Gemini => home.join(".gemini").join("skills"),
-        AppType::ProxyCast => home.join(".proxycast").join("skills"),
-    };
-
-    Ok(skills_dir)
+    match app_type {
+        AppType::ProxyCast => app_paths::resolve_skills_dir(),
+        AppType::Claude => dirs::home_dir()
+            .ok_or_else(|| "Failed to get home directory".to_string())
+            .map(|home| home.join(".claude").join("skills")),
+        AppType::Codex => dirs::home_dir()
+            .ok_or_else(|| "Failed to get home directory".to_string())
+            .map(|home| home.join(".codex").join("skills")),
+        AppType::Gemini => dirs::home_dir()
+            .ok_or_else(|| "Failed to get home directory".to_string())
+            .map(|home| home.join(".gemini").join("skills")),
+    }
 }
 
 fn validate_skill_directory(directory: &str) -> Result<(), String> {
@@ -113,7 +116,7 @@ fn read_local_skill_content(skills_dir: &Path, directory: &str) -> Result<String
 
 /// 获取已安装的 ProxyCast Skills 目录列表
 ///
-/// 扫描 ~/.proxycast/skills/ 目录，返回包含 SKILL.md 的子目录名列表。
+/// 扫描 ProxyCast Skills 目录，返回包含 SKILL.md 的子目录名列表。
 /// 这些 Skills 将被传递给 aster 用于 AI Agent 功能。
 ///
 /// # Returns
@@ -121,8 +124,7 @@ fn read_local_skill_content(skills_dir: &Path, directory: &str) -> Result<String
 /// - `Err(String)`: 错误信息
 #[tauri::command]
 pub async fn get_installed_proxycast_skills() -> Result<Vec<String>, String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
-    let skills_dir = home.join(".proxycast").join("skills");
+    let skills_dir = get_skills_dir(&AppType::ProxyCast)?;
     Ok(scan_installed_skills(&skills_dir))
 }
 

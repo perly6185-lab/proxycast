@@ -494,28 +494,6 @@ impl ProviderPoolService {
         Ok(None)
     }
 
-    /// 带智能降级的凭证选择（兼容方法）
-    ///
-    /// 为了向后兼容，保留原有的方法签名
-    pub async fn select_credential_with_fallback_legacy(
-        &self,
-        db: &DbConnection,
-        api_key_service: &ApiKeyProviderService,
-        provider_type: &str,
-        model: Option<&str>,
-        provider_id_hint: Option<&str>,
-    ) -> Result<Option<ProviderCredential>, String> {
-        self.select_credential_with_fallback(
-            db,
-            api_key_service,
-            provider_type,
-            model,
-            provider_id_hint,
-            None, // 兼容方法不传递客户端类型
-        )
-        .await
-    }
-
     /// 基于权重分数选择最优凭证
     fn select_best_credential_by_weight(
         &self,

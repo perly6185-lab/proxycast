@@ -206,6 +206,7 @@ impl<E: TerminalEventEmitter> ShellProc<E> {
     /// - `Err(TerminalError)`: 创建失败
     ///
     /// _Requirements: 17.1, 17.2, 17.8, 17.9, 17.10_
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         block_id: String,
         controller_type: String,

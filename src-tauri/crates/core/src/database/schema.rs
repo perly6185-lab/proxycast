@@ -493,6 +493,56 @@ pub fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
         [],
     )?;
 
+    // Agent turn 表
+    // 存储每一轮用户输入驱动的执行周期
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS agent_thread_turns (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            prompt_text TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_thread_turns_session
+         ON agent_thread_turns(session_id, started_at)",
+        [],
+    )?;
+
+    // Agent item 表
+    // 存储 turn 内一等事件项（plan / reasoning / tool / approval / artifact 等）
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS agent_thread_items (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            item_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            updated_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY (turn_id) REFERENCES agent_thread_turns(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_thread_items_thread
+         ON agent_thread_items(session_id, turn_id, sequence)",
+        [],
+    )?;
+
     // ============================================================================
     // General Chat 相关表
     // ============================================================================

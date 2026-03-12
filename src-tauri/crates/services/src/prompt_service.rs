@@ -233,9 +233,4 @@ impl PromptService {
 
         Ok(1)
     }
-
-    // Legacy method for compatibility
-    pub fn set_current(db: &DbConnection, app_type: &str, id: &str) -> Result<(), String> {
-        Self::enable(db, app_type, id)
-    }
 }

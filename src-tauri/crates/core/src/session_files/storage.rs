@@ -2,6 +2,7 @@
 //!
 //! 提供会话文件的 CRUD 操作和生命周期管理。
 
+use crate::app_paths;
 use std::fs;
 use std::path::PathBuf;
 
@@ -18,7 +19,7 @@ pub struct SessionFileStorage {
 impl SessionFileStorage {
     /// 创建新的存储服务
     ///
-    /// 默认使用 ~/.proxycast/sessions 目录
+    /// 默认使用应用数据目录下的 `proxycast/sessions`，并兼容旧 Home 历史目录
     pub fn new() -> Result<Self, String> {
         let base_dir = Self::get_default_base_dir()?;
         fs::create_dir_all(&base_dir).map_err(|e| format!("创建会话存储目录失败: {e}"))?;
@@ -33,8 +34,7 @@ impl SessionFileStorage {
 
     /// 获取默认存储目录
     fn get_default_base_dir() -> Result<PathBuf, String> {
-        let home = dirs::home_dir().ok_or("无法获取用户主目录")?;
-        Ok(home.join(".proxycast").join("sessions"))
+        app_paths::resolve_sessions_dir()
     }
 
     /// 获取会话目录路径

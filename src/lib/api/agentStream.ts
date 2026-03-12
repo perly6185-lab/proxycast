@@ -44,15 +44,189 @@ export interface ToolExecutionResult {
   metadata?: ToolResultMetadata;
 }
 
+export interface StreamArtifactSnapshot {
+  artifactId: string;
+  filePath?: string;
+  content?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type AgentThreadTurnStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "aborted";
+
+export type AgentThreadItemStatus = "in_progress" | "completed" | "failed";
+
+export interface AgentThreadTurn {
+  id: string;
+  thread_id: string;
+  prompt_text: string;
+  status: AgentThreadTurnStatus;
+  started_at: string;
+  completed_at?: string;
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentRequestOption {
+  label: string;
+  description?: string;
+}
+
+export interface AgentRequestQuestion {
+  question: string;
+  header?: string;
+  options?: AgentRequestOption[];
+  multi_select?: boolean;
+}
+
+interface AgentThreadItemBase {
+  id: string;
+  thread_id: string;
+  turn_id: string;
+  sequence: number;
+  status: AgentThreadItemStatus;
+  started_at: string;
+  completed_at?: string;
+  updated_at: string;
+}
+
+export interface AgentThreadUserMessageItem extends AgentThreadItemBase {
+  type: "user_message";
+  content: string;
+}
+
+export interface AgentThreadAgentMessageItem extends AgentThreadItemBase {
+  type: "agent_message";
+  text: string;
+  phase?: string;
+}
+
+export interface AgentThreadPlanItem extends AgentThreadItemBase {
+  type: "plan";
+  text: string;
+}
+
+export interface AgentThreadReasoningItem extends AgentThreadItemBase {
+  type: "reasoning";
+  text: string;
+  summary?: string[];
+}
+
+export interface AgentThreadToolCallItem extends AgentThreadItemBase {
+  type: "tool_call";
+  tool_name: string;
+  arguments?: unknown;
+  output?: string;
+  success?: boolean;
+  error?: string;
+  metadata?: unknown;
+}
+
+export interface AgentThreadCommandExecutionItem extends AgentThreadItemBase {
+  type: "command_execution";
+  command: string;
+  cwd: string;
+  aggregated_output?: string;
+  exit_code?: number;
+  error?: string;
+}
+
+export interface AgentThreadWebSearchItem extends AgentThreadItemBase {
+  type: "web_search";
+  query?: string;
+  action?: string;
+  output?: string;
+}
+
+export interface AgentThreadApprovalRequestItem extends AgentThreadItemBase {
+  type: "approval_request";
+  request_id: string;
+  action_type: string;
+  prompt?: string;
+  tool_name?: string;
+  arguments?: unknown;
+  response?: unknown;
+}
+
+export interface AgentThreadRequestUserInputItem extends AgentThreadItemBase {
+  type: "request_user_input";
+  request_id: string;
+  action_type: string;
+  prompt?: string;
+  questions?: AgentRequestQuestion[];
+  response?: unknown;
+}
+
+export interface AgentThreadFileArtifactItem extends AgentThreadItemBase {
+  type: "file_artifact";
+  path: string;
+  source: string;
+  content?: string;
+  metadata?: unknown;
+}
+
+export interface AgentThreadSubagentActivityItem extends AgentThreadItemBase {
+  type: "subagent_activity";
+  status_label: string;
+  title?: string;
+  summary?: string;
+  role?: string;
+  model?: string;
+}
+
+export interface AgentThreadWarningItem extends AgentThreadItemBase {
+  type: "warning";
+  message: string;
+  code?: string;
+}
+
+export interface AgentThreadErrorItem extends AgentThreadItemBase {
+  type: "error";
+  message: string;
+}
+
+export interface AgentThreadTurnSummaryItem extends AgentThreadItemBase {
+  type: "turn_summary";
+  text: string;
+}
+
+export type AgentThreadItem =
+  | AgentThreadUserMessageItem
+  | AgentThreadAgentMessageItem
+  | AgentThreadPlanItem
+  | AgentThreadReasoningItem
+  | AgentThreadToolCallItem
+  | AgentThreadCommandExecutionItem
+  | AgentThreadWebSearchItem
+  | AgentThreadApprovalRequestItem
+  | AgentThreadRequestUserInputItem
+  | AgentThreadFileArtifactItem
+  | AgentThreadSubagentActivityItem
+  | AgentThreadWarningItem
+  | AgentThreadErrorItem
+  | AgentThreadTurnSummaryItem;
+
 /**
  * 流式事件类型
  * Requirements: 9.1, 9.2, 9.3
  */
 export type StreamEvent =
+  | StreamEventThreadStarted
+  | StreamEventTurnStarted
+  | StreamEventItemStarted
+  | StreamEventItemUpdated
+  | StreamEventItemCompleted
+  | StreamEventTurnCompleted
+  | StreamEventTurnFailed
   | StreamEventTextDelta
   | StreamEventReasoningDelta
   | StreamEventToolStart
   | StreamEventToolEnd
+  | StreamEventArtifactSnapshot
   | StreamEventActionRequired
   | StreamEventContextTrace
   | StreamEventDone
@@ -67,6 +241,41 @@ export type StreamEvent =
 export interface StreamEventTextDelta {
   type: "text_delta";
   text: string;
+}
+
+export interface StreamEventThreadStarted {
+  type: "thread_started";
+  thread_id: string;
+}
+
+export interface StreamEventTurnStarted {
+  type: "turn_started";
+  turn: AgentThreadTurn;
+}
+
+export interface StreamEventItemStarted {
+  type: "item_started";
+  item: AgentThreadItem;
+}
+
+export interface StreamEventItemUpdated {
+  type: "item_updated";
+  item: AgentThreadItem;
+}
+
+export interface StreamEventItemCompleted {
+  type: "item_completed";
+  item: AgentThreadItem;
+}
+
+export interface StreamEventTurnCompleted {
+  type: "turn_completed";
+  turn: AgentThreadTurn;
+}
+
+export interface StreamEventTurnFailed {
+  type: "turn_failed";
+  turn: AgentThreadTurn;
 }
 
 /**
@@ -102,6 +311,11 @@ export interface StreamEventToolEnd {
   tool_id: string;
   /** 工具执行结果 */
   result: ToolExecutionResult;
+}
+
+export interface StreamEventArtifactSnapshot {
+  type: "artifact_snapshot";
+  artifact: StreamArtifactSnapshot;
 }
 
 /**
@@ -218,6 +432,41 @@ export function parseStreamEvent(data: unknown): StreamEvent | null {
   const type = event.type as string;
 
   switch (type) {
+    case "thread_started":
+      return {
+        type: "thread_started",
+        thread_id: (event.thread_id as string) || "",
+      };
+    case "turn_started":
+      return {
+        type: "turn_started",
+        turn: event.turn as AgentThreadTurn,
+      };
+    case "item_started":
+      return {
+        type: "item_started",
+        item: event.item as AgentThreadItem,
+      };
+    case "item_updated":
+      return {
+        type: "item_updated",
+        item: event.item as AgentThreadItem,
+      };
+    case "item_completed":
+      return {
+        type: "item_completed",
+        item: event.item as AgentThreadItem,
+      };
+    case "turn_completed":
+      return {
+        type: "turn_completed",
+        turn: event.turn as AgentThreadTurn,
+      };
+    case "turn_failed":
+      return {
+        type: "turn_failed",
+        turn: event.turn as AgentThreadTurn,
+      };
     case "text_delta":
       return {
         type: "text_delta",
@@ -241,6 +490,19 @@ export function parseStreamEvent(data: unknown): StreamEvent | null {
         type: "tool_end",
         tool_id: (event.tool_id as string) || "",
         result: event.result as ToolExecutionResult,
+      };
+    case "artifact_snapshot":
+    case "ArtifactSnapshot":
+      return {
+        type: "artifact_snapshot",
+        artifact: {
+          artifactId: String(
+            event.artifact_id || event.artifactId || event.id || "artifact-unknown",
+          ),
+          filePath: (event.file_path as string) || (event.filePath as string),
+          content: event.content as string | undefined,
+          metadata: event.metadata as Record<string, unknown> | undefined,
+        },
       };
     case "action_required": {
       const actionData =

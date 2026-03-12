@@ -29,6 +29,7 @@ import type {
   UseUnifiedChatReturn,
   ToolCall,
   CreateSessionRequest,
+  HarnessArtifactSnapshot,
 } from "@/types/chat";
 
 // ============================================================================
@@ -107,6 +108,9 @@ export function useUnifiedChat(
     model: initialModel,
     onCanvasUpdate,
     onWriteFile,
+    harnessConfig,
+    onHarnessEvent,
+    onArtifactUpdate,
     onError,
   } = options;
 
@@ -129,6 +133,7 @@ export function useUnifiedChat(
   const unlistenRef = useRef<UnlistenFn | null>(null);
   const currentMsgIdRef = useRef<string | null>(null);
   const accumulatedContentRef = useRef<string>("");
+  const completedWriteFilesRef = useRef<Map<string, string>>(new Map());
 
   // ========== 会话操作 ==========
 
@@ -145,7 +150,13 @@ export function useUnifiedChat(
           systemPrompt: opts?.systemPrompt || systemPrompt,
           providerType: opts?.providerType || providerType,
           model: opts?.model || model,
-          metadata: opts?.metadata,
+          metadata:
+            harnessConfig || opts?.metadata
+              ? {
+                  ...(opts?.metadata || {}),
+                  ...(harnessConfig ? { harness: harnessConfig } : {}),
+                }
+              : undefined,
         });
 
         const newSession: ChatSession = {
@@ -158,9 +169,10 @@ export function useUnifiedChat(
           messageCount: response.messageCount,
         };
 
-        setSession(newSession);
-        setMessages([]);
-        saveToStorage(`${mode}_session_id`, response.id);
+      setSession(newSession);
+      setMessages([]);
+      completedWriteFilesRef.current.clear();
+      saveToStorage(`${mode}_session_id`, response.id);
 
         console.log("[useUnifiedChat] 创建会话成功:", response.id);
         return response.id;
@@ -173,7 +185,7 @@ export function useUnifiedChat(
         setIsLoading(false);
       }
     },
-    [mode, systemPrompt, providerType, model, onError],
+    [mode, systemPrompt, providerType, model, harnessConfig, onError],
   );
 
   /** 加载会话 */
@@ -231,6 +243,7 @@ export function useUnifiedChat(
         if (targetId === session?.id) {
           setSession(null);
           setMessages([]);
+          completedWriteFilesRef.current.clear();
           localStorage.removeItem(`${STORAGE_PREFIX}${mode}_session_id`);
         }
 
@@ -449,6 +462,30 @@ export function useUnifiedChat(
           );
           break;
 
+        case "harness_event":
+          onHarnessEvent?.(event.event);
+          break;
+
+        case "artifact_snapshot":
+          onArtifactUpdate?.(event.artifact);
+          if (event.artifact.filePath && typeof event.artifact.content === "string") {
+            onCanvasUpdate?.(event.artifact.filePath, event.artifact.content);
+            const previousContent = completedWriteFilesRef.current.get(
+              event.artifact.filePath,
+            );
+            if (
+              previousContent !== event.artifact.content &&
+              onWriteFile
+            ) {
+              completedWriteFilesRef.current.set(
+                event.artifact.filePath,
+                event.artifact.content,
+              );
+              onWriteFile(event.artifact.content, event.artifact.filePath);
+            }
+          }
+          break;
+
         case "done":
           // 单次 API 响应完成，但工具循环可能继续
           break;
@@ -504,7 +541,7 @@ export function useUnifiedChat(
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [onWriteFile, onError],
+    [onArtifactUpdate, onCanvasUpdate, onHarnessEvent, onWriteFile, onError],
   );
 
   /** 检查 write_file 标签 */
@@ -522,12 +559,42 @@ export function useUnifiedChat(
           onCanvasUpdate(path, fileContent);
         }
 
+        if (onArtifactUpdate) {
+          const artifact: HarnessArtifactSnapshot = {
+            artifactId: `write-file:${path}`,
+            filePath: path,
+            content: fileContent,
+            metadata: {
+              source: "write_file",
+              complete: isComplete,
+            },
+          };
+          onArtifactUpdate(artifact);
+        }
+
         if (isComplete && onWriteFile) {
+          const previousContent = completedWriteFilesRef.current.get(path);
+          if (previousContent === fileContent) {
+            continue;
+          }
+          completedWriteFilesRef.current.set(path, fileContent);
           onWriteFile(fileContent, path);
+          onHarnessEvent?.({
+            kind: previousContent === undefined ? "artifact_created" : "artifact_updated",
+            summary: `产物已写入 ${path}`,
+            artifact: {
+              artifactId: `write-file:${path}`,
+              filePath: path,
+              content: fileContent,
+              metadata: {
+                source: "write_file",
+              },
+            },
+          });
         }
       }
     },
-    [onCanvasUpdate, onWriteFile],
+    [onArtifactUpdate, onCanvasUpdate, onHarnessEvent, onWriteFile],
   );
 
   /** 清理资源 */
@@ -573,6 +640,7 @@ export function useUnifiedChat(
   const clearMessages = useCallback((): void => {
     setMessages([]);
     setSession(null);
+    completedWriteFilesRef.current.clear();
     localStorage.removeItem(`${STORAGE_PREFIX}${mode}_session_id`);
     toast.success("新对话已创建");
   }, [mode]);

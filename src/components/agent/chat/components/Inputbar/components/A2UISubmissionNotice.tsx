@@ -13,7 +13,8 @@ interface A2UISubmissionNoticeProps {
 }
 
 const Container = styled.div<{ $visible: boolean }>`
-  margin-bottom: 8px;
+  margin: 0 8px 8px;
+  box-sizing: border-box;
   display: flex;
   align-items: flex-start;
   gap: 8px;

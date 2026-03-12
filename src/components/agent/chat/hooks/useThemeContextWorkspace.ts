@@ -76,6 +76,7 @@ export interface SidebarActivityLog {
   messageId?: string;
   gateKey?: "idle" | "topic_select" | "write_mode" | "publish_confirm";
   source?: string;
+  sourceRef?: string;
 }
 
 export interface ThemeContextWorkspaceState {

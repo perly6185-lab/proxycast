@@ -81,14 +81,26 @@ class ArtifactErrorBoundary extends React.Component<
 /**
  * 渲染器加载骨架屏
  */
-const RendererSkeleton: React.FC = memo(() => (
-  <div className="flex items-center justify-center h-full min-h-[200px] bg-[#1e2227]">
-    <div className="flex flex-col items-center gap-3 text-gray-400">
+const RendererSkeleton: React.FC<{ tone?: "dark" | "light" }> = memo(
+  ({ tone = "dark" }) => (
+    <div
+      className={cn(
+        "flex items-center justify-center h-full min-h-[200px]",
+        tone === "light" ? "bg-background" : "bg-[#1e2227]",
+      )}
+    >
+      <div
+        className={cn(
+          "flex flex-col items-center gap-3",
+          tone === "light" ? "text-muted-foreground" : "text-gray-400",
+        )}
+      >
       <Loader2 className="w-8 h-8 animate-spin" />
       <span className="text-sm">加载渲染器...</span>
+      </div>
     </div>
-  </div>
-));
+  ),
+);
 RendererSkeleton.displayName = "RendererSkeleton";
 
 /**
@@ -147,23 +159,42 @@ StreamingIndicator.displayName = "StreamingIndicator";
  * 未知类型回退渲染器
  * 当 Artifact 类型没有对应的渲染器时显示
  */
-const FallbackRenderer: React.FC<{ artifact: Artifact }> = memo(
-  ({ artifact }) => (
-    <div className="flex flex-col h-full bg-[#1e2227]">
+const FallbackRenderer: React.FC<{
+  artifact: Artifact;
+  tone?: "dark" | "light";
+}> = memo(({ artifact, tone = "dark" }) => (
+    <div
+      className={cn(
+        "flex flex-col h-full",
+        tone === "light" ? "bg-background" : "bg-[#1e2227]",
+      )}
+    >
       {/* 提示区域 */}
-      <div className="p-4 bg-yellow-500/10 border-b border-yellow-500/20">
+      <div className="p-4 border-b border-yellow-500/20 bg-yellow-500/10">
         <div className="flex items-center gap-2 text-yellow-400 font-medium mb-2">
           <AlertTriangle className="w-5 h-5" />
           <span>未知类型</span>
         </div>
-        <div className="text-sm text-gray-400">
+        <div
+          className={cn(
+            "text-sm",
+            tone === "light" ? "text-muted-foreground" : "text-gray-400",
+          )}
+        >
           类型 "{artifact.type}" 没有对应的渲染器，显示原始内容。
         </div>
       </div>
 
       {/* 内容区域 */}
       <div className="flex-1 overflow-auto p-4">
-        <pre className="p-3 bg-black/30 rounded text-sm text-gray-300 overflow-auto whitespace-pre-wrap">
+        <pre
+          className={cn(
+            "overflow-auto whitespace-pre-wrap rounded p-3 text-sm",
+            tone === "light"
+              ? "border border-border bg-muted/30 text-foreground"
+              : "bg-black/30 text-gray-300",
+          )}
+        >
           {artifact.content}
         </pre>
       </div>
@@ -222,6 +253,7 @@ export const ArtifactRenderer: React.FC<ArtifactRendererComponentProps> = memo(
     hideToolbar = false,
     viewMode = "source",
     previewSize = "desktop",
+    tone = "dark",
   }) => {
     // 错误状态管理
     const [renderError, setRenderError] = useState<Error | null>(null);
@@ -288,21 +320,36 @@ export const ArtifactRenderer: React.FC<ArtifactRendererComponentProps> = memo(
     if (renderError && showSourceOnError) {
       return (
         <div className={cn("relative h-full", className)}>
-          <div className="flex flex-col h-full bg-[#1e2227]">
-            <div className="p-2 bg-yellow-500/10 border-b border-yellow-500/20 flex items-center justify-between">
+          <div
+            className={cn(
+              "flex flex-col h-full",
+              tone === "light" ? "bg-background" : "bg-[#1e2227]",
+            )}
+          >
+            <div className="flex items-center justify-between border-b border-yellow-500/20 bg-yellow-500/10 p-2">
               <span className="text-sm text-yellow-400">
                 源码视图（渲染失败）
               </span>
               <button
                 onClick={handleRetry}
-                className="flex items-center gap-1 px-2 py-1 text-xs bg-white/10 hover:bg-white/15 rounded"
+                className={cn(
+                  "flex items-center gap-1 rounded px-2 py-1 text-xs",
+                  tone === "light"
+                    ? "bg-black/5 text-foreground hover:bg-black/10"
+                    : "bg-white/10 hover:bg-white/15",
+                )}
               >
                 <RefreshCw className="w-3 h-3" />
                 重试
               </button>
             </div>
             <div className="flex-1 overflow-auto p-4">
-              <pre className="text-sm text-gray-300 whitespace-pre-wrap">
+              <pre
+                className={cn(
+                  "whitespace-pre-wrap text-sm",
+                  tone === "light" ? "text-foreground" : "text-gray-300",
+                )}
+              >
                 {artifact.content}
               </pre>
             </div>
@@ -315,7 +362,7 @@ export const ArtifactRenderer: React.FC<ArtifactRendererComponentProps> = memo(
     if (!entry) {
       return (
         <div className={cn("relative h-full", className)}>
-          <FallbackRenderer artifact={debouncedArtifact} />
+          <FallbackRenderer artifact={debouncedArtifact} tone={tone} />
           {(isStreaming || isCompleting) && (
             <StreamingIndicator isCompleting={isCompleting} />
           )}
@@ -355,11 +402,12 @@ export const ArtifactRenderer: React.FC<ArtifactRendererComponentProps> = memo(
 
     return (
       <div className={cn("relative h-full", className)} key={retryKey}>
-        <Suspense fallback={<RendererSkeleton />}>
+        <Suspense fallback={<RendererSkeleton tone={tone} />}>
           <ArtifactErrorBoundary fallback={errorFallback} onError={handleError}>
             <RendererComponent
               artifact={debouncedArtifact}
               isStreaming={isStreaming}
+              tone={tone}
               onContentChange={onContentChange}
               hideToolbar={hideToolbar}
               viewMode={viewMode}

@@ -27,6 +27,18 @@ function LayoutHarness({ mode }: { mode: LayoutMode }) {
   );
 }
 
+function EmptyCanvasLayoutHarness({ mode }: { mode: LayoutMode }) {
+  return (
+    <div style={{ width: "1200px", height: "720px" }}>
+      <LayoutTransition
+        mode={mode}
+        chatContent={<div data-testid="layout-chat-content">chat</div>}
+        canvasContent={null}
+      />
+    </div>
+  );
+}
+
 describe("LayoutTransition", () => {
   const mountedRoots: MountedRoot[] = [];
 
@@ -55,5 +67,26 @@ describe("LayoutTransition", () => {
     );
 
     expect(hasGapRule).toBe(true);
+  });
+
+  it("画布内容为空时应退回聊天布局，避免保留空白画布列", () => {
+    const { container } = mountHarness(
+      EmptyCanvasLayoutHarness,
+      { mode: "chat-canvas" },
+      mountedRoots,
+    );
+
+    const root = container.querySelector<HTMLElement>(
+      '[data-testid="layout-transition-root"]',
+    );
+
+    expect(root?.getAttribute("data-effective-mode")).toBe("chat");
+    expect(root?.getAttribute("data-has-canvas")).toBe("false");
+    expect(
+      container.querySelector('[data-testid="layout-chat-content"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="layout-canvas-content"]'),
+    ).toBeNull();
   });
 });

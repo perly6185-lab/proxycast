@@ -1,4 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
+import {
+  createUnifiedMemory,
+  deleteUnifiedMemory,
+  getUnifiedMemory,
+  listUnifiedMemories,
+  searchUnifiedMemories,
+} from "@/lib/api/unifiedMemory";
 
 /**
  * 统一记忆 API 测试组件
@@ -9,13 +15,11 @@ import { invoke } from "@tauri-apps/api/core";
 export default function UnifiedMemoryTest() {
   const testCreateMemory = async () => {
     try {
-      const result = await invoke<UnifiedMemory>("unified_memory_create", {
-        request: {
-          session_id: "test-session-001",
-          title: "测试记忆",
-          content: "这是一条测试记忆内容",
-          summary: "测试记忆摘要",
-        },
+      const result = await createUnifiedMemory({
+        session_id: "test-session-001",
+        title: "测试记忆",
+        content: "这是一条测试记忆内容",
+        summary: "测试记忆摘要",
       });
 
       console.log("创建成功:", result);
@@ -28,10 +32,8 @@ export default function UnifiedMemoryTest() {
 
   const testListMemories = async () => {
     try {
-      const result = await invoke<UnifiedMemory[]>("unified_memory_list", {
-        filters: {
-          limit: 10,
-        },
+      const result = await listUnifiedMemories({
+        limit: 10,
       });
 
       console.log("列表查询成功:", result);
@@ -44,10 +46,7 @@ export default function UnifiedMemoryTest() {
 
   const testSearchMemories = async () => {
     try {
-      const result = await invoke<UnifiedMemory[]>("unified_memory_search", {
-        query: "测试",
-        limit: 10,
-      });
+      const result = await searchUnifiedMemories("测试", undefined, 10);
 
       console.log("搜索成功:", result);
       alert(`搜索成功！找到 ${result.length} 条记忆`);
@@ -62,7 +61,7 @@ export default function UnifiedMemoryTest() {
     if (!id) return;
 
     try {
-      const result = await invoke<boolean>("unified_memory_delete", { id });
+      const result = await deleteUnifiedMemory(id);
       console.log("删除成功:", result);
       alert(`删除${result ? "成功" : "失败"}！`);
     } catch (error) {
@@ -76,7 +75,7 @@ export default function UnifiedMemoryTest() {
     if (!id) return;
 
     try {
-      const result = await invoke<UnifiedMemory | null>("unified_memory_get", { id });
+      const result = await getUnifiedMemory(id);
       console.log("查询成功:", result);
       alert(
         `查询成功！${result ? "找到: " + result.title : "不存在"}`
@@ -135,27 +134,4 @@ export default function UnifiedMemoryTest() {
       </div>
     </div>
   );
-}
-
-// Type definitions for Tauri commands
-interface UnifiedMemory {
-  id: string;
-  session_id: string;
-  memory_type: "conversation" | "project";
-  category: "identity" | "context" | "preference" | "experience" | "activity";
-  title: string;
-  content: string;
-  summary: string;
-  tags: string[];
-  metadata: {
-    confidence: number;
-    importance: number;
-    access_count: number;
-    last_accessed_at: number | null;
-    source: "auto_extracted" | "manual" | "imported";
-    embedding: number[] | null;
-  };
-  created_at: number;
-  updated_at: number;
-  archived: boolean;
 }

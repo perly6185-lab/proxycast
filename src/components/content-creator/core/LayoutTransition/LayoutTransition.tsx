@@ -83,18 +83,25 @@ interface LayoutTransitionProps {
  */
 export const LayoutTransition: React.FC<LayoutTransitionProps> = memo(
   ({ mode, chatContent, canvasContent, transitionConfig }) => {
+    const hasCanvasContent = React.Children.count(canvasContent) > 0;
+    const effectiveMode: LayoutMode = hasCanvasContent ? mode : "chat";
     const { isCanvasVisible, getTransitionStyles } = useLayoutTransition(
-      mode,
+      effectiveMode,
       transitionConfig,
     );
 
     const chatStyles = getTransitionStyles("chat");
     const canvasStyles = getTransitionStyles("canvas");
+    const shouldRenderCanvas = hasCanvasContent && isCanvasVisible;
 
     return (
-      <Container data-testid="layout-transition-root">
+      <Container
+        data-testid="layout-transition-root"
+        data-effective-mode={effectiveMode}
+        data-has-canvas={shouldRenderCanvas ? "true" : "false"}
+      >
         <CanvasPanel
-          $visible={isCanvasVisible}
+          $visible={shouldRenderCanvas}
           $transform={canvasStyles.transform as string}
           $opacity={canvasStyles.opacity as number}
           $duration={parseInt(
@@ -109,8 +116,8 @@ export const LayoutTransition: React.FC<LayoutTransitionProps> = memo(
           $duration={parseInt(
             chatStyles.transition?.match(/\d+/)?.[0] || "300",
           )}
-          $minWidth={mode === "canvas" ? "0px" : "460px"}
-          $hidden={mode === "canvas"}
+          $minWidth={effectiveMode === "canvas" ? "0px" : "460px"}
+          $hidden={effectiveMode === "canvas"}
         >
           <ChatPanelInner>{chatContent}</ChatPanelInner>
         </ChatPanel>

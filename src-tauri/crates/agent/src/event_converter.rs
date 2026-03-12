@@ -5,6 +5,7 @@
 
 use aster::agents::AgentEvent;
 use aster::conversation::message::{ActionRequiredData, Message, MessageContent};
+use proxycast_core::database::dao::agent_timeline::{AgentThreadItem, AgentThreadTurn};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -523,6 +524,34 @@ fn extract_tool_result_metadata<T: serde::Serialize>(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum TauriAgentEvent {
+    /// 线程开始
+    #[serde(rename = "thread_started")]
+    ThreadStarted { thread_id: String },
+
+    /// turn 开始
+    #[serde(rename = "turn_started")]
+    TurnStarted { turn: AgentThreadTurn },
+
+    /// item 开始
+    #[serde(rename = "item_started")]
+    ItemStarted { item: AgentThreadItem },
+
+    /// item 更新
+    #[serde(rename = "item_updated")]
+    ItemUpdated { item: AgentThreadItem },
+
+    /// item 完成
+    #[serde(rename = "item_completed")]
+    ItemCompleted { item: AgentThreadItem },
+
+    /// turn 完成
+    #[serde(rename = "turn_completed")]
+    TurnCompleted { turn: AgentThreadTurn },
+
+    /// turn 失败
+    #[serde(rename = "turn_failed")]
+    TurnFailed { turn: AgentThreadTurn },
+
     /// 文本增量
     #[serde(rename = "text_delta")]
     TextDelta { text: String },

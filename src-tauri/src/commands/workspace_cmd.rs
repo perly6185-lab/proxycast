@@ -19,6 +19,7 @@ use crate::services::workspace_health_service::{
 use crate::workspace::{
     Workspace, WorkspaceManager, WorkspaceSettings, WorkspaceType, WorkspaceUpdate,
 };
+use proxycast_core::app_paths;
 use proxycast_services::project_context_builder::ProjectContextBuilder;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -26,14 +27,9 @@ use std::sync::Arc;
 use tauri::State;
 use tokio::sync::RwLock;
 
-/// 获取统一的项目根目录（~/.proxycast/projects）
+/// 获取统一的项目根目录
 fn get_workspace_projects_root_dir() -> Result<PathBuf, String> {
-    let home_dir = dirs::home_dir().ok_or_else(|| "无法获取主目录".to_string())?;
-    let root_dir = home_dir.join(".proxycast").join("projects");
-
-    std::fs::create_dir_all(&root_dir).map_err(|e| format!("创建 workspace 目录失败: {e}"))?;
-
-    Ok(root_dir)
+    app_paths::resolve_projects_dir()
 }
 
 /// 规范化项目目录名，避免非法路径字符

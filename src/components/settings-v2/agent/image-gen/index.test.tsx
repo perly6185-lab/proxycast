@@ -7,7 +7,7 @@ const { mockGetConfig, mockSaveConfig } = vi.hoisted(() => ({
   mockSaveConfig: vi.fn(),
 }));
 
-vi.mock("@/hooks/useTauri", () => ({
+vi.mock("@/lib/api/appConfig", () => ({
   getConfig: mockGetConfig,
   saveConfig: mockSaveConfig,
 }));

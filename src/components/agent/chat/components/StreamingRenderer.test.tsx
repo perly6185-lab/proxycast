@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StreamingRenderer } from "./StreamingRenderer";
-import type { ContentPart } from "../types";
+import type { AgentRuntimeStatus, ContentPart } from "../types";
 
 const parseAIResponseMock = vi.fn();
 
@@ -33,6 +33,21 @@ vi.mock("./ToolCallDisplay", () => ({
 
 vi.mock("./DecisionPanel", () => ({
   DecisionPanel: () => <div data-testid="decision-panel" />,
+}));
+
+vi.mock("./AgentPlanBlock", () => ({
+  AgentPlanBlock: ({
+    content,
+    isComplete,
+  }: {
+    content: string;
+    isComplete?: boolean;
+  }) => (
+    <div data-testid="agent-plan-block">
+      {isComplete === false ? "进行中:" : "完成:"}
+      {content}
+    </div>
+  ),
 }));
 
 interface MountedHarness {
@@ -72,6 +87,8 @@ function renderHarness(props: {
   content: string;
   isStreaming?: boolean;
   contentParts?: ContentPart[];
+  renderA2UIInline?: boolean;
+  runtimeStatus?: AgentRuntimeStatus;
 }) {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -146,5 +163,57 @@ describe("StreamingRenderer", () => {
     });
 
     expect(parseAIResponseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("关闭内联 A2UI 时应仅保留普通文本片段", () => {
+    parseAIResponseMock.mockReturnValue({
+      parts: [
+        { type: "text", content: "请先补充以下信息：" },
+        { type: "a2ui", content: { type: "form", children: [] } },
+      ],
+      hasA2UI: true,
+      hasWriteFile: false,
+      hasPending: false,
+    });
+
+    const { container } = renderHarness({
+      content: "```a2ui\n{}\n```",
+      renderA2UIInline: false,
+    });
+
+    expect(container.querySelector('[data-testid="a2ui-card"]')).toBeNull();
+    expect(container.textContent).toContain("请先补充以下信息：");
+  });
+
+  it("应将 proposed_plan 片段渲染为独立计划卡片", () => {
+    const { container } = renderHarness({
+      content:
+        "先说明一下\n<proposed_plan>\n- 调研\n- 汇总\n</proposed_plan>\n然后开始执行",
+    });
+
+    expect(
+      container.querySelector('[data-testid="agent-plan-block"]'),
+    ).toBeTruthy();
+    expect(container.textContent).toContain("完成:- 调研");
+    expect(container.textContent).toContain("- 汇总");
+    expect(container.textContent).toContain("先说明一下");
+    expect(container.textContent).toContain("然后开始执行");
+  });
+
+  it("等待首个事件时应渲染 agent 运行状态卡", () => {
+    const { container } = renderHarness({
+      content: "",
+      isStreaming: true,
+      runtimeStatus: {
+        phase: "preparing",
+        title: "Agent 正在准备执行",
+        detail: "正在理解请求并准备回合。",
+        checkpoints: ["对话优先执行", "等待首个事件"],
+      },
+    });
+
+    expect(container.textContent).toContain("Agent 正在准备执行");
+    expect(container.textContent).toContain("正在理解请求并准备回合。");
+    expect(container.textContent).toContain("等待首个事件");
   });
 });

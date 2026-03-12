@@ -24,6 +24,7 @@ const {
   mockInputbar,
   mockMessageList,
   mockExecutionRunGetThemeWorkbenchState,
+  mockExecutionRunListThemeWorkbenchHistory,
   mockExecutionRunGet,
   mockSkillExecutionGetDetail,
 } = vi.hoisted(() => ({
@@ -59,6 +60,7 @@ const {
     <div data-testid="message-list" />
   )),
   mockExecutionRunGetThemeWorkbenchState: vi.fn(),
+  mockExecutionRunListThemeWorkbenchHistory: vi.fn(),
   mockExecutionRunGet: vi.fn(),
   mockSkillExecutionGetDetail: vi.fn(),
 }));
@@ -126,11 +128,24 @@ vi.mock("./components/ChatNavbar", () => ({
   ChatNavbar: ({
     onToggleHistory,
     onProjectChange,
+    showHarnessToggle,
+    harnessPanelVisible,
+    onToggleHarnessPanel,
+    harnessToggleLabel,
   }: {
     onToggleHistory?: () => void;
     onProjectChange?: (projectId: string) => void;
+    showHarnessToggle?: boolean;
+    harnessPanelVisible?: boolean;
+    onToggleHarnessPanel?: () => void;
+    harnessToggleLabel?: string;
   }) => (
-    <div data-testid="chat-navbar">
+    <div
+      data-testid="chat-navbar"
+      data-show-harness-toggle={showHarnessToggle ? "true" : "false"}
+      data-harness-panel-visible={harnessPanelVisible ? "true" : "false"}
+      data-harness-toggle-label={harnessToggleLabel || "Harness"}
+    >
       <button
         type="button"
         data-testid="toggle-history"
@@ -149,6 +164,17 @@ vi.mock("./components/ChatNavbar", () => ({
       >
         选择项目
       </button>
+      {showHarnessToggle ? (
+        <button
+          type="button"
+          data-testid="toggle-harness"
+          onClick={() => {
+            onToggleHarnessPanel?.();
+          }}
+        >
+          切换 {harnessToggleLabel || "Harness"}
+        </button>
+      ) : null}
     </div>
   ),
 }));
@@ -179,6 +205,11 @@ vi.mock("./components/ThemeWorkbenchSidebar", () => ({
     onSetBranchStatus,
     workflowSteps,
     activityLogs,
+    historyHasMore,
+    historyLoading,
+    onLoadMoreHistory,
+    headerActionSlot,
+    topSlot,
   }: {
     onSwitchTopic?: (topicId: string) => Promise<void> | void;
     onSetBranchStatus?: (
@@ -187,6 +218,11 @@ vi.mock("./components/ThemeWorkbenchSidebar", () => ({
     ) => void;
     workflowSteps?: Array<{ title: string; status: string }>;
     activityLogs?: Array<{ runId?: string; executionId?: string; id: string }>;
+    historyHasMore?: boolean;
+    historyLoading?: boolean;
+    onLoadMoreHistory?: () => void;
+    headerActionSlot?: ReactNode;
+    topSlot?: ReactNode;
   }) => (
     <div
       data-testid="theme-workbench-sidebar"
@@ -200,6 +236,26 @@ vi.mock("./components/ThemeWorkbenchSidebar", () => ({
         .map((log) => log.executionId || "-")
         .join("|")}
     >
+      <div data-testid="theme-workbench-sidebar-header-action">
+        {headerActionSlot}
+      </div>
+      <div data-testid="theme-workbench-sidebar-top-slot">{topSlot}</div>
+      <div
+        data-testid="theme-workbench-sidebar-history-state"
+        data-history-has-more={historyHasMore ? "true" : "false"}
+        data-history-loading={historyLoading ? "true" : "false"}
+      />
+      {onLoadMoreHistory ? (
+        <button
+          type="button"
+          data-testid="theme-load-more-history"
+          onClick={() => {
+            onLoadMoreHistory();
+          }}
+        >
+          加载更早历史
+        </button>
+      ) : null}
       <button
         type="button"
         data-testid="theme-switch-topic"
@@ -253,6 +309,7 @@ vi.mock("@/components/general-chat/bridge", () => ({
 }));
 
 vi.mock("@/components/artifact", () => ({
+  ArtifactList: () => <div data-testid="artifact-list" />,
   ArtifactRenderer: () => <div data-testid="artifact-renderer" />,
   ArtifactToolbar: () => <div data-testid="artifact-toolbar" />,
 }));
@@ -286,6 +343,7 @@ vi.mock("@/components/content-creator/canvas/document", () => ({
   createInitialDocumentState: vi.fn((content = "") => ({
     type: "document",
     content,
+    platform: "markdown",
     versions: [],
     currentVersionId: "",
     isEditing: true,
@@ -323,6 +381,7 @@ vi.mock("@/lib/api/memory", () => ({
 vi.mock("@/lib/api/executionRun", () => ({
   executionRunGet: mockExecutionRunGet,
   executionRunGetThemeWorkbenchState: mockExecutionRunGetThemeWorkbenchState,
+  executionRunListThemeWorkbenchHistory: mockExecutionRunListThemeWorkbenchHistory,
 }));
 
 vi.mock("@/lib/api/skill-execution", () => ({
@@ -512,7 +571,13 @@ beforeEach(() => {
     run_state: "idle",
     queue_items: [],
     latest_terminal: null,
+    recent_terminals: [],
     updated_at: "2026-03-06T00:00:00.000Z",
+  });
+  mockExecutionRunListThemeWorkbenchHistory.mockResolvedValue({
+    items: [],
+    has_more: false,
+    next_offset: null,
   });
   mockExecutionRunGet.mockResolvedValue(null);
   mockSkillExecutionGetDetail.mockResolvedValue({
@@ -762,6 +827,30 @@ describe("AgentChatPage 侧栏显示控制", () => {
   });
 });
 
+describe("AgentChatPage 通用工作台", () => {
+  it("通用模式应通过顶部按钮打开工作台弹窗，而不是常驻右侧占位", async () => {
+    const container = renderPage({
+      theme: "general",
+      lockTheme: true,
+    });
+    await flushEffects();
+
+    const navbar = container.querySelector(
+      '[data-testid="chat-navbar"]',
+    ) as HTMLDivElement | null;
+    expect(navbar?.dataset.showHarnessToggle).toBe("true");
+    expect(navbar?.dataset.harnessToggleLabel).toBe("工作台");
+    expect(document.body.textContent).not.toContain("Agent 工作台");
+    expect(document.body.textContent).not.toContain("通用 Agent");
+
+    clickButton(container, "toggle-harness");
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Agent 工作台");
+    expect(document.body.textContent).toContain("通用 Agent");
+  });
+});
+
 describe("AgentChatPage 自动引导", () => {
   it("社媒空文稿应预填引导词且不自动发送", async () => {
     mockIsContentCreationTheme.mockReturnValue(true);
@@ -818,7 +907,13 @@ describe("AgentChatPage 自动引导", () => {
       undefined,
       "mock-model",
       undefined,
-      undefined,
+      expect.objectContaining({
+        requestMetadata: expect.objectContaining({
+          harness: expect.objectContaining({
+            theme: "social-media",
+          }),
+        }),
+      }),
     );
     expect(onInitialUserPromptConsumed).toHaveBeenCalledTimes(1);
     expect(sharedTriggerAIGuideMock).not.toHaveBeenCalled();
@@ -853,7 +948,14 @@ describe("AgentChatPage 自动引导", () => {
       undefined,
       "mock-model",
       undefined,
-      undefined,
+      expect.objectContaining({
+        requestMetadata: expect.objectContaining({
+          harness: expect.objectContaining({
+            theme: "social-media",
+            session_mode: "theme_workbench",
+          }),
+        }),
+      }),
     );
   });
 
@@ -916,7 +1018,13 @@ describe("AgentChatPage 自动引导", () => {
       undefined,
       selectedModel,
       undefined,
-      undefined,
+      expect.objectContaining({
+        requestMetadata: expect.objectContaining({
+          harness: expect.objectContaining({
+            theme: "social-media",
+          }),
+        }),
+      }),
     );
     expect(onInitialUserPromptConsumed).toHaveBeenCalledTimes(1);
   });
@@ -1093,7 +1201,14 @@ describe("AgentChatPage 自动引导", () => {
       undefined,
       expect.any(String),
       undefined,
-      undefined,
+      expect.objectContaining({
+        requestMetadata: expect.objectContaining({
+          harness: expect.objectContaining({
+            theme: "social-media",
+            session_mode: "theme_workbench",
+          }),
+        }),
+      }),
     );
     expect(onInitialUserPromptConsumed).toHaveBeenCalledTimes(1);
   });
@@ -1480,6 +1595,99 @@ describe("AgentChatPage 自动引导", () => {
     expect(bodyUpdateCalls.at(-1)?.[1]).toMatchObject({
       body: "# 新主稿标题\n\n这是在队列未就绪时写入的主稿。",
     });
+  });
+
+  it("社媒主稿写入时应为任务文件与版本链附加 harness 语义", async () => {
+    mockIsContentCreationTheme.mockReturnValue(true);
+    mockUseThemeContextWorkspace.mockReturnValue(
+      createMockThemeContextWorkspaceState({
+        enabled: true,
+      }),
+    );
+    mockGetContent.mockResolvedValue({
+      id: "content-theme-harness-metadata",
+      body: "旧内容",
+      metadata: {},
+    });
+    mockExecutionRunGetThemeWorkbenchState.mockResolvedValue({
+      run_state: "auto_running",
+      current_gate_key: "write_mode",
+      queue_items: [
+        {
+          run_id: "run-write-main",
+          title: "写作阶段",
+          gate_key: "write_mode",
+          status: "running",
+          source: "skill",
+          source_ref: null,
+          started_at: "2026-03-06T03:30:00.000Z",
+        },
+      ],
+      latest_terminal: null,
+      updated_at: "2026-03-06T03:30:10.000Z",
+    });
+
+    renderPage({
+      projectId: "project-theme-harness-metadata",
+      contentId: "content-theme-harness-metadata",
+      theme: "social-media",
+      lockTheme: true,
+    });
+    await flushEffects(12);
+
+    const latestMessageListProps = mockMessageList.mock.calls.at(-1)?.[0] as
+      | {
+          onWriteFile?: (content: string, fileName: string) => void;
+        }
+      | undefined;
+
+    act(() => {
+      latestMessageListProps?.onWriteFile?.(
+        "# 主稿标题\n\n这是用于验证 harness 语义的主稿。",
+        "social-posts/demo-post.md",
+      );
+    });
+    await flushEffects(16);
+
+    const latestInputbarProps = mockInputbar.mock.calls.at(-1)?.[0] as
+      | {
+          taskFiles?: Array<{
+            id: string;
+            name: string;
+            type: string;
+            metadata?: Record<string, unknown>;
+          }>;
+        }
+      | undefined;
+    const writtenFile = latestInputbarProps?.taskFiles?.find(
+      (file) => file.name === "social-posts/demo-post.md",
+    );
+
+    expect(writtenFile?.metadata).toMatchObject({
+      artifactType: "draft",
+      stage: "drafting",
+      versionLabel: "社媒初稿",
+      runId: "run-write-main",
+    });
+
+    const latestTopicBranchCall = mockUseTopicBranchBoard.mock.calls.at(
+      -1,
+    )?.[0] as
+      | {
+          topics?: Array<{ id: string; title: string }>;
+          currentTopicId?: string | null;
+        }
+      | undefined;
+
+    expect(latestTopicBranchCall?.currentTopicId).toBe("run-write-main");
+    expect(latestTopicBranchCall?.topics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "run-write-main",
+          title: "社媒初稿",
+        }),
+      ]),
+    );
   });
 
   it("主题工作台运行中应展示真实技能与工具步骤，而不是默认占位流程", async () => {
@@ -1992,6 +2200,184 @@ describe("AgentChatPage 自动引导", () => {
     );
   });
 
+  it("主题工作台日志应保留最近终态历史，而不是只显示最新一轮", async () => {
+    mockIsContentCreationTheme.mockReturnValue(true);
+    mockUseThemeContextWorkspace.mockReturnValue(
+      createMockThemeContextWorkspaceState({
+        enabled: true,
+        activityLogs: [],
+      }),
+    );
+    mockExecutionRunGetThemeWorkbenchState.mockResolvedValue({
+      run_state: "idle",
+      current_gate_key: "idle",
+      queue_items: [],
+      latest_terminal: {
+        run_id: "run-latest",
+        execution_id: "exec-latest",
+        title: "最新一轮写作",
+        gate_key: "write_mode",
+        status: "success",
+        source: "skill",
+        source_ref: null,
+        started_at: "2026-03-06T05:00:00.000Z",
+        finished_at: "2026-03-06T05:06:00.000Z",
+      },
+      recent_terminals: [
+        {
+          run_id: "run-latest",
+          execution_id: "exec-latest",
+          title: "最新一轮写作",
+          gate_key: "write_mode",
+          status: "success",
+          source: "skill",
+          source_ref: null,
+          started_at: "2026-03-06T05:00:00.000Z",
+          finished_at: "2026-03-06T05:06:00.000Z",
+        },
+        {
+          run_id: "run-previous",
+          execution_id: "exec-previous",
+          title: "上一轮选题",
+          gate_key: "topic_select",
+          status: "error",
+          source: "skill",
+          source_ref: null,
+          started_at: "2026-03-06T04:00:00.000Z",
+          finished_at: "2026-03-06T04:03:00.000Z",
+        },
+      ],
+      updated_at: "2026-03-06T05:06:00.000Z",
+    });
+
+    const container = renderPage({
+      projectId: "project-theme-run-history",
+      contentId: "content-theme-run-history",
+      theme: "social-media",
+      lockTheme: true,
+    });
+    await flushEffects(12);
+
+    const sidebar = container.querySelector(
+      '[data-testid="theme-workbench-sidebar"]',
+    ) as HTMLElement | null;
+    expect(sidebar).toBeTruthy();
+
+    const activityRuns = sidebar?.getAttribute("data-activity-runs") || "";
+    expect(activityRuns).toContain("run-latest");
+    expect(activityRuns).toContain("run-previous");
+  });
+
+  it("主题工作台日志应支持继续加载更早的会话历史", async () => {
+    mockIsContentCreationTheme.mockReturnValue(true);
+    mockUseThemeContextWorkspace.mockReturnValue(
+      createMockThemeContextWorkspaceState({
+        enabled: true,
+        activityLogs: [],
+      }),
+    );
+    mockExecutionRunGetThemeWorkbenchState.mockResolvedValue({
+      run_state: "idle",
+      current_gate_key: "idle",
+      queue_items: [],
+      latest_terminal: {
+        run_id: "run-current",
+        execution_id: "exec-current",
+        title: "当前运行",
+        gate_key: "write_mode",
+        status: "success",
+        source: "skill",
+        source_ref: null,
+        started_at: "2026-03-06T06:00:00.000Z",
+        finished_at: "2026-03-06T06:05:00.000Z",
+      },
+      recent_terminals: [
+        {
+          run_id: "run-current",
+          execution_id: "exec-current",
+          title: "当前运行",
+          gate_key: "write_mode",
+          status: "success",
+          source: "skill",
+          source_ref: null,
+          started_at: "2026-03-06T06:00:00.000Z",
+          finished_at: "2026-03-06T06:05:00.000Z",
+        },
+      ],
+      updated_at: "2026-03-06T06:05:00.000Z",
+    });
+    mockExecutionRunListThemeWorkbenchHistory
+      .mockResolvedValueOnce({
+        items: [
+          {
+            run_id: "run-older-1",
+            execution_id: "exec-older-1",
+            title: "更早一轮",
+            gate_key: "topic_select",
+            status: "error",
+            source: "skill",
+            source_ref: null,
+            started_at: "2026-03-06T05:00:00.000Z",
+            finished_at: "2026-03-06T05:04:00.000Z",
+          },
+        ],
+        has_more: true,
+        next_offset: 1,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            run_id: "run-older-2",
+            execution_id: "exec-older-2",
+            title: "更早二轮",
+            gate_key: "publish_confirm",
+            status: "success",
+            source: "skill",
+            source_ref: null,
+            started_at: "2026-03-06T04:00:00.000Z",
+            finished_at: "2026-03-06T04:05:00.000Z",
+          },
+        ],
+        has_more: false,
+        next_offset: null,
+      });
+
+    const container = renderPage({
+      projectId: "project-theme-load-history",
+      contentId: "content-theme-load-history",
+      theme: "social-media",
+      lockTheme: true,
+    });
+    await flushEffects(12);
+
+    const sidebar = container.querySelector(
+      '[data-testid="theme-workbench-sidebar"]',
+    ) as HTMLElement | null;
+    expect(sidebar).toBeTruthy();
+
+    const firstRuns = sidebar?.getAttribute("data-activity-runs") || "";
+    expect(firstRuns).toContain("run-current");
+    expect(firstRuns).toContain("run-older-1");
+
+    clickButton(container, "theme-load-more-history");
+    await flushEffects(12);
+
+    const secondRuns = sidebar?.getAttribute("data-activity-runs") || "";
+    expect(secondRuns).toContain("run-older-2");
+    expect(mockExecutionRunListThemeWorkbenchHistory).toHaveBeenNthCalledWith(
+      1,
+      "session-1",
+      20,
+      0,
+    );
+    expect(mockExecutionRunListThemeWorkbenchHistory).toHaveBeenNthCalledWith(
+      2,
+      "session-1",
+      20,
+      1,
+    );
+  });
+
   it("主题工作台不应把聊天命令 source_ref 当成 Skill 详情去加载", async () => {
     mockIsContentCreationTheme.mockReturnValue(true);
     mockUseThemeContextWorkspace.mockReturnValue(
@@ -2028,6 +2414,126 @@ describe("AgentChatPage 自动引导", () => {
     expect(mockSkillExecutionGetDetail).not.toHaveBeenCalledWith(
       "aster_agent_chat_stream",
     );
+  });
+
+  it("社媒主题工作台空闲时也应常显 harness 图标入口", async () => {
+    mockIsContentCreationTheme.mockReturnValue(true);
+    mockUseThemeContextWorkspace.mockReturnValue(
+      createMockThemeContextWorkspaceState({
+        enabled: true,
+      }),
+    );
+
+    const container = renderPage({
+      projectId: "project-social-harness-idle",
+      contentId: "content-social-harness-idle",
+      theme: "social-media",
+      lockTheme: true,
+    });
+    await flushEffects(12);
+
+    const navbar = container.querySelector(
+      '[data-testid="chat-navbar"]',
+    ) as HTMLElement | null;
+    const harnessCard = container.querySelector(
+      '[data-testid="social-harness-card"]',
+    ) as HTMLElement | null;
+    const sidebar = container.querySelector(
+      '[data-testid="theme-workbench-sidebar"]',
+    ) as HTMLElement | null;
+
+    expect(navbar?.getAttribute("data-show-harness-toggle")).toBe("true");
+    expect(navbar?.getAttribute("data-harness-panel-visible")).toBe("false");
+    expect(harnessCard).not.toBeNull();
+    expect(harnessCard?.getAttribute("data-run-state")).toBe("idle");
+    expect(harnessCard?.getAttribute("data-layout")).toBe("icon");
+    expect(sidebar?.contains(harnessCard as Node)).toBe(true);
+    expect(harnessCard?.textContent).toContain("社媒 Harness");
+    expect(harnessCard?.textContent).toContain("编排待启动");
+    expect(
+      document.body.querySelector('[data-testid="harness-status-panel"]'),
+    ).toBeNull();
+  });
+
+  it("社媒主题工作台应以弹窗展示 harness 运行详情", async () => {
+    mockIsContentCreationTheme.mockReturnValue(true);
+    mockUseThemeContextWorkspace.mockReturnValue(
+      createMockThemeContextWorkspaceState({
+        enabled: true,
+      }),
+    );
+    const startedAt = new Date(Date.now() - 10_000).toISOString();
+    const updatedAt = new Date().toISOString();
+    mockExecutionRunGetThemeWorkbenchState.mockResolvedValue({
+      run_state: "auto_running",
+      current_gate_key: "write_mode",
+      queue_items: [
+        {
+          run_id: "run-social-harness-active",
+          title: "生成社媒初稿",
+          gate_key: "write_mode",
+          artifact_paths: [
+            "social-posts/demo-post.md",
+            "social-posts/demo-cover.png",
+          ],
+          status: "running",
+          source: "skill",
+          source_ref: null,
+          started_at: startedAt,
+        },
+      ],
+      latest_terminal: null,
+      updated_at: updatedAt,
+    });
+
+    const container = renderPage({
+      projectId: "project-social-harness-running",
+      contentId: "content-social-harness-running",
+      theme: "social-media",
+      lockTheme: true,
+    });
+    await flushEffects(12);
+
+    const harnessCard = container.querySelector(
+      '[data-testid="social-harness-card"]',
+    ) as HTMLElement | null;
+    const sidebar = container.querySelector(
+      '[data-testid="theme-workbench-sidebar"]',
+    ) as HTMLElement | null;
+    const layoutChat = container.querySelector(
+      '[data-testid="layout-chat"]',
+    ) as HTMLElement | null;
+    expect(harnessCard?.getAttribute("data-run-state")).toBe("auto_running");
+    expect(harnessCard?.getAttribute("data-layout")).toBe("icon");
+    expect(sidebar?.contains(harnessCard as Node)).toBe(true);
+    expect(harnessCard?.textContent).toContain("写作闸门");
+    expect(harnessCard?.textContent).toContain("生成社媒初稿");
+    expect(harnessCard?.textContent).toContain("2 个产物");
+    expect(
+      layoutChat?.querySelector('[data-testid="social-harness-card"]'),
+    ).toBeNull();
+
+    clickButton(container, "social-harness-toggle");
+    await flushEffects(2);
+
+    const navbar = container.querySelector(
+      '[data-testid="chat-navbar"]',
+    ) as HTMLElement | null;
+    expect(navbar?.getAttribute("data-harness-panel-visible")).toBe("true");
+    expect(
+      document.body.querySelector('[data-testid="harness-status-panel"]'),
+    ).not.toBeNull();
+    expect(
+      sidebar?.querySelector('[data-testid="harness-status-panel"]'),
+    ).toBeNull();
+    expect(
+      layoutChat?.querySelector('[data-testid="harness-status-panel"]'),
+    ).toBeNull();
+    expect(
+      document.body
+        .querySelector('[data-testid="harness-status-panel"]')
+        ?.getAttribute("data-layout"),
+    ).toBe("dialog");
   });
 });
 
@@ -2135,7 +2641,13 @@ describe("AgentChatPage 小说主题工作台", () => {
       undefined,
       "mock-model",
       undefined,
-      undefined,
+      expect.objectContaining({
+        requestMetadata: expect.objectContaining({
+          harness: expect.objectContaining({
+            theme: "novel",
+          }),
+        }),
+      }),
     );
     expect(onInitialUserPromptConsumed).toHaveBeenCalledTimes(1);
     expect(sharedTriggerAIGuideMock).not.toHaveBeenCalled();

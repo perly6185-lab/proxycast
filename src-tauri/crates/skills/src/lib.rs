@@ -3,6 +3,8 @@
 //! 包含 Skills 系统的 trait 定义和纯逻辑部分。
 //! Tauri 相关实现（TauriExecutionCallback）保留在主 crate。
 
+#![allow(clippy::redundant_closure)]
+
 mod execution_callback;
 mod llm_provider;
 mod proxycast_llm_provider;

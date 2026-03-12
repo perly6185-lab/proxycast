@@ -1,4 +1,12 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -27,6 +35,7 @@ import {
 import styled from "styled-components";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { StepStatus } from "@/components/content-creator/types";
+import type { SkillDetailInfo } from "@/lib/api/skill-execution";
 import type { TopicBranchItem, TopicBranchStatus } from "../hooks/useTopicBranchBoard";
 import type { SidebarActivityLog } from "../hooks/useThemeContextWorkspace";
 import type { Message } from "../types";
@@ -87,6 +96,24 @@ const SidebarHeader = styled.div`
   backdrop-filter: blur(10px);
 `;
 
+const SidebarHeaderMetaRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+`;
+
+const SidebarHeaderActionSlot = styled.div`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+
+  &[data-testid="theme-workbench-sidebar-header-action"] {
+    margin-top: -2px;
+  }
+`;
+
 const SidebarEyebrow = styled.div`
   font-size: 10px;
   color: hsl(var(--muted-foreground));
@@ -96,7 +123,7 @@ const SidebarEyebrow = styled.div`
 `;
 
 const SidebarTitle = styled.div`
-  margin-top: 6px;
+  margin-top: 10px;
   font-size: 16px;
   line-height: 1.3;
   font-weight: 700;
@@ -112,45 +139,63 @@ const SidebarDescription = styled.div`
 
 const SidebarTabs = styled.div`
   margin-top: 14px;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
   gap: 6px;
+  padding: 4px;
+  border: 1px solid hsl(var(--border) / 0.75);
+  border-radius: 18px;
+  background: hsl(var(--muted) / 0.38);
 `;
 
 const SidebarTabButton = styled.button<{ $active: boolean }>`
-  height: 36px;
-  border-radius: 10px;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 38px;
+  border-radius: 12px;
   border: 1px solid
     ${(props) =>
-      props.$active ? 'hsl(var(--primary) / 0.45)' : 'hsl(var(--border))'};
+      props.$active ? 'hsl(var(--primary) / 0.35)' : 'transparent'};
   background: ${(props) =>
-    props.$active ? 'hsl(var(--primary) / 0.10)' : 'hsl(var(--background))'};
+    props.$active ? 'hsl(var(--background))' : 'transparent'};
   color: ${(props) =>
     props.$active ? 'hsl(var(--foreground))' : 'hsl(var(--muted-foreground))'};
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 0 9px;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
   font-size: 11px;
-  line-height: 1.2;
+  line-height: 1;
   font-weight: 600;
+  box-shadow: ${(props) =>
+    props.$active ? '0 1px 2px hsl(var(--foreground) / 0.06)' : 'none'};
 
   &:hover {
     border-color: hsl(var(--primary) / 0.45);
     color: hsl(var(--foreground));
+    background: ${(props) =>
+      props.$active ? 'hsl(var(--background))' : 'hsl(var(--background) / 0.65)'};
   }
 `;
 
+const SidebarTabLabel = styled.span`
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`;
+
 const SidebarTabCount = styled.span<{ $active: boolean }>`
-  min-width: 15px;
-  height: 15px;
+  flex-shrink: 0;
+  min-width: 16px;
+  height: 16px;
   border-radius: 999px;
-  padding: 0 6px;
+  padding: 0 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
+  font-size: 10px;
+  line-height: 1;
   background: ${(props) =>
     props.$active ? 'hsl(var(--primary))' : 'hsl(var(--muted))'};
   color: ${(props) =>
@@ -167,7 +212,7 @@ const SidebarBody = styled.div`
 /* ── 执行日志 Timeline 样式 ── */
 
 const ExecLogContainer = styled.div`
-  padding: 12px 0 12px 14px;
+  padding: 12px 14px;
 `;
 
 const ExecLogTimeline = styled.div`
@@ -288,6 +333,167 @@ const ExecLogEmpty = styled.div`
   color: hsl(var(--muted-foreground));
 `;
 
+const ExecLogToolbar = styled.div`
+  padding: 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+`;
+
+const ExecLogToolbarRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+`;
+
+const ExecLogFilterGroup = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+`;
+
+const ExecLogFilterChip = styled.button<{ $active: boolean }>`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid
+    ${(props) =>
+      props.$active ? "hsl(var(--primary) / 0.32)" : "hsl(var(--border) / 0.85)"};
+  background: ${(props) =>
+    props.$active ? "hsl(var(--primary) / 0.1)" : "hsl(var(--background))"};
+  color: ${(props) =>
+    props.$active ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))"};
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover {
+    color: hsl(var(--foreground));
+    border-color: hsl(var(--primary) / 0.35);
+    background: hsl(var(--accent) / 0.45);
+  }
+`;
+
+const ExecLogMoreButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 96px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    color: hsl(var(--foreground));
+    border-color: hsl(var(--primary) / 0.35);
+    background: hsl(var(--accent) / 0.45);
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+`;
+
+const ExecLogFooter = styled.div`
+  margin-top: 12px;
+  display: flex;
+  justify-content: center;
+`;
+
+const ExecLogDetailToggle = styled.button`
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--primary));
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover {
+    color: hsl(var(--foreground));
+  }
+`;
+
+const ExecLogDetailPanel = styled.div`
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid hsl(var(--border) / 0.8);
+  background: hsl(var(--background) / 0.75);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+`;
+
+const ExecLogDetailSection = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+`;
+
+const ExecLogDetailLabel = styled.div`
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+`;
+
+const ExecLogDetailText = styled.div`
+  font-size: 11px;
+  line-height: 1.55;
+  color: hsl(var(--foreground) / 0.86);
+  word-break: break-word;
+  white-space: pre-wrap;
+`;
+
+const ExecLogDetailList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+`;
+
+const ExecLogDetailItem = styled.div`
+  font-size: 11px;
+  line-height: 1.5;
+  color: hsl(var(--foreground) / 0.82);
+`;
+
+const ExecLogDetailTagList = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+`;
+
+const ExecLogDetailTag = styled.span`
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: hsl(var(--muted) / 0.9);
+  color: hsl(var(--foreground) / 0.82);
+  font-size: 10.5px;
+  line-height: 1.3;
+`;
+
 /* ── end 执行日志 ── */
 
 const SectionBadge = styled.span`
@@ -323,6 +529,13 @@ const SectionTitle = styled.div`
   letter-spacing: 0.05em;
   font-weight: 600;
   margin-bottom: 10px;
+`;
+
+const SidebarTopSlot = styled.div`
+  padding: 12px 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 `;
 
 const NewTopicButton = styled.button`
@@ -1513,6 +1726,55 @@ function resolveFileNameFromPath(path: string): string {
   return segments[segments.length - 1] || "上下文文件";
 }
 
+type ExecLogFilter = "all" | "skill" | "tool" | "failed";
+
+interface ExecLogEntryDetail {
+  kind?: "skill" | "tool";
+  sourceRef?: string;
+  description?: string;
+  workflowSteps?: string[];
+  allowedTools?: string[];
+  whenToUse?: string;
+  artifactPaths?: string[];
+  argumentsText?: string;
+  resultText?: string;
+  errorText?: string;
+}
+
+interface ExecLogEntry {
+  id: string;
+  type: "user" | "thinking" | "response" | "tool" | "run" | "task";
+  typeLabel: string;
+  content: string;
+  meta?: string;
+  timestamp: Date;
+  status?: "running" | "completed" | "failed";
+  detail?: ExecLogEntryDetail;
+}
+
+const EXEC_LOG_FILTER_OPTIONS: Array<{
+  key: ExecLogFilter;
+  label: string;
+}> = [
+  { key: "all", label: "全部" },
+  { key: "skill", label: "技能" },
+  { key: "tool", label: "工具" },
+  { key: "failed", label: "失败" },
+];
+
+function matchesExecLogFilter(entry: ExecLogEntry, filter: ExecLogFilter): boolean {
+  if (filter === "skill") {
+    return entry.type === "run";
+  }
+  if (filter === "tool") {
+    return entry.type === "tool";
+  }
+  if (filter === "failed") {
+    return entry.status === "failed";
+  }
+  return true;
+}
+
 interface ThemeWorkbenchSidebarProps {
   branchMode?: BranchMode;
   onNewTopic: () => void;
@@ -1568,6 +1830,12 @@ interface ThemeWorkbenchSidebarProps {
   activeRunDetail?: AgentRun | null;
   activeRunDetailLoading?: boolean;
   onRequestCollapse?: () => void;
+  historyHasMore?: boolean;
+  historyLoading?: boolean;
+  onLoadMoreHistory?: () => void;
+  skillDetailMap?: Record<string, SkillDetailInfo | null>;
+  headerActionSlot?: ReactNode;
+  topSlot?: ReactNode;
   /** 完整的对话消息列表，用于执行日志 tab */
   messages?: Message[];
 }
@@ -1603,11 +1871,19 @@ function ThemeWorkbenchSidebarComponent({
   activeRunDetail,
   activeRunDetailLoading = false,
   onRequestCollapse,
+  historyHasMore = false,
+  historyLoading = false,
+  onLoadMoreHistory,
+  skillDetailMap = {},
+  headerActionSlot,
+  topSlot,
   messages = [],
 }: ThemeWorkbenchSidebarProps) {
   const [showActivityLogs, setShowActivityLogs] = useState(false);
   const [showCreationTasks, setShowCreationTasks] = useState(true);
   const [activeTab, setActiveTab] = useState<SidebarTab>("context");
+  const [execLogFilter, setExecLogFilter] = useState<ExecLogFilter>("all");
+  const [expandedExecLogIds, setExpandedExecLogIds] = useState<string[]>([]);
   const [selectedSearchResultId, setSelectedSearchResultId] = useState<string | null>(null);
   const renderCountRef = useRef(0);
   const lastCommitAtRef = useRef<number | null>(null);
@@ -2072,16 +2348,7 @@ function ThemeWorkbenchSidebarComponent({
       .join(" → ");
   }, [runMetadataSummary.stages]);
 
-  // ── 执行日志 entries（从 messages 解析）──
-  interface ExecLogEntry {
-    id: string;
-    type: "user" | "thinking" | "response" | "tool" | "run" | "task";
-    typeLabel: string;
-    content: string;
-    meta?: string;
-    timestamp: Date;
-    status?: "running" | "completed" | "failed";
-  }
+  const [execLogClearedAt, setExecLogClearedAt] = useState<number | null>(null);
 
   function resolveToolLabel(toolName: string): string {
     const n = toolName.trim().toLowerCase();
@@ -2100,6 +2367,30 @@ function ThemeWorkbenchSidebarComponent({
     if (!text) return "";
     const t = text.trim();
     return t.length > max ? `${t.slice(0, max)}…` : t;
+  }
+
+  function formatExecLogJson(value: unknown): string | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+
+    if (typeof value === "string") {
+      const normalized = value.trim();
+      if (!normalized) {
+        return undefined;
+      }
+      try {
+        return JSON.stringify(JSON.parse(normalized), null, 2);
+      } catch {
+        return normalized;
+      }
+    }
+
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
   }
 
   const execLogEntries = useMemo<ExecLogEntry[]>(() => {
@@ -2128,8 +2419,10 @@ function ThemeWorkbenchSidebarComponent({
         // tool calls
         for (const tc of msg.toolCalls || []) {
           let argsPreview = "";
+          let parsedArguments: unknown = undefined;
           try {
             const parsed = JSON.parse(tc.arguments || "{}");
+            parsedArguments = parsed;
             const keys = Object.keys(parsed);
             const preview = keys.slice(0, 2).map((k) => {
               const v = String(parsed[k] ?? "");
@@ -2138,11 +2431,23 @@ function ThemeWorkbenchSidebarComponent({
             argsPreview = preview.join(" · ");
           } catch {
             argsPreview = truncate(tc.arguments || "", 120);
+            parsedArguments = tc.arguments || undefined;
           }
           const resultMeta = tc.result?.error
             ? `❌ ${truncate(tc.result.error, 120)}`
             : tc.result?.output
               ? truncate(tc.result.output, 200)
+              : undefined;
+          const detail: ExecLogEntryDetail | undefined =
+            tc.arguments ||
+            tc.result?.output ||
+            tc.result?.error
+              ? {
+                  kind: "tool",
+                  argumentsText: formatExecLogJson(parsedArguments),
+                  resultText: formatExecLogJson(tc.result?.output),
+                  errorText: tc.result?.error?.trim() || undefined,
+                }
               : undefined;
           entries.push({
             id: `${msg.id}-tc-${tc.id}-${idx++}`,
@@ -2152,6 +2457,7 @@ function ThemeWorkbenchSidebarComponent({
             meta: resultMeta,
             timestamp: tc.startTime || msg.timestamp,
             status: tc.status,
+            detail,
           });
         }
         // text response
@@ -2182,11 +2488,48 @@ function ThemeWorkbenchSidebarComponent({
         return new Date(0);
       })();
       const skillLog = group.logs.find((l) => l.source === "skill");
-      const skillName = skillLog?.name || group.source || "";
+      const sourceRef =
+        group.logs.find((log) => log.sourceRef?.trim())?.sourceRef?.trim() ||
+        null;
+      const skillDetail = sourceRef ? skillDetailMap[sourceRef] || null : null;
+      const skillName =
+        skillDetail?.display_name?.trim() || skillLog?.name || group.source || "";
+      const detailSummary = skillDetail?.description?.trim() || null;
+      const workflowSteps = (skillDetail?.workflow_steps || [])
+        .map((step) => step.name?.trim() || step.id?.trim() || "")
+        .filter((step): step is string => Boolean(step));
+      const allowedTools = (skillDetail?.allowed_tools || [])
+        .map((toolName) => resolveToolLabel(toolName))
+        .filter((toolName): toolName is string => Boolean(toolName));
+      const detail: ExecLogEntryDetail | undefined =
+        sourceRef ||
+        detailSummary ||
+        workflowSteps.length > 0 ||
+        allowedTools.length > 0 ||
+        skillDetail?.when_to_use?.trim() ||
+        group.artifactPaths.length > 0
+          ? {
+              kind: "skill",
+              sourceRef: sourceRef || undefined,
+              description: detailSummary || undefined,
+              workflowSteps: workflowSteps.length > 0 ? workflowSteps : undefined,
+              allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
+              whenToUse: skillDetail?.when_to_use?.trim() || undefined,
+              artifactPaths:
+                group.artifactPaths.length > 0 ? [...group.artifactPaths] : undefined,
+            }
+          : undefined;
       const artifactSummary = group.artifactPaths.length > 0
         ? `产物：${group.artifactPaths.map((p) => p.split("/").pop()).join("、")}`
         : undefined;
       const durationLabel = group.logs.find((l) => l.durationLabel)?.durationLabel;
+      const runMeta = [
+        sourceRef ? `技能标识：${sourceRef}` : null,
+        detailSummary,
+        artifactSummary,
+      ]
+        .filter((item): item is string => Boolean(item))
+        .join(" · ");
       entries.push({
         id: `run-${group.key}`,
         type: "run",
@@ -2194,9 +2537,10 @@ function ThemeWorkbenchSidebarComponent({
         content: skillName
           ? `执行技能 ${skillName}${durationLabel ? `  ${durationLabel}` : ""}`
           : `编排运行${durationLabel ? `  ${durationLabel}` : ""}`,
-        meta: artifactSummary,
+        meta: runMeta || undefined,
         timestamp: ts,
         status: group.status,
+        detail,
       });
     }
 
@@ -2222,12 +2566,38 @@ function ThemeWorkbenchSidebarComponent({
     });
 
     return entries;
-  }, [messages, groupedActivityLogs, groupedCreationTaskEvents]);
+  }, [messages, groupedActivityLogs, groupedCreationTaskEvents, skillDetailMap]);
+
+  const visibleExecLogEntries = useMemo(() => {
+    if (execLogClearedAt === null) {
+      return execLogEntries;
+    }
+    return execLogEntries.filter((entry) => {
+      const timestamp = entry.timestamp instanceof Date
+        ? entry.timestamp.getTime()
+        : new Date(entry.timestamp).getTime();
+      return Number.isFinite(timestamp) && timestamp > execLogClearedAt;
+    });
+  }, [execLogClearedAt, execLogEntries]);
+
+  const filteredExecLogEntries = useMemo(
+    () =>
+      visibleExecLogEntries.filter((entry) => matchesExecLogFilter(entry, execLogFilter)),
+    [execLogFilter, visibleExecLogEntries],
+  );
+
+  const toggleExecLogDetail = useCallback((entryId: string) => {
+    setExpandedExecLogIds((previous) =>
+      previous.includes(entryId)
+        ? previous.filter((id) => id !== entryId)
+        : [...previous, entryId],
+    );
+  }, []);
 
   const execLogBottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     execLogBottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [execLogEntries.length]);
+  }, [filteredExecLogEntries.length]);
 
   const _resolveActivityGroupSessionId = useCallback(
     (group: ActivityLogGroup): string | null => {
@@ -2242,6 +2612,117 @@ function ThemeWorkbenchSidebarComponent({
     },
     [activeRunDetail?.id, runDetailSessionId],
   );
+
+  const renderExecLogDetail = useCallback((entry: ExecLogEntry) => {
+    if (!entry.detail) {
+      return null;
+    }
+    const isExpanded = expandedExecLogIds.includes(entry.id);
+    const detailLabel = entry.detail.kind === "tool" ? "工具详情" : "技能详情";
+    const hasDetailContent =
+      Boolean(entry.detail.sourceRef) ||
+      Boolean(entry.detail.description) ||
+      Boolean(entry.detail.whenToUse) ||
+      Boolean(entry.detail.workflowSteps?.length) ||
+      Boolean(entry.detail.allowedTools?.length) ||
+      Boolean(entry.detail.artifactPaths?.length) ||
+      Boolean(entry.detail.argumentsText) ||
+      Boolean(entry.detail.resultText) ||
+      Boolean(entry.detail.errorText);
+
+    if (!hasDetailContent) {
+      return null;
+    }
+
+    return (
+      <>
+        <ExecLogDetailToggle
+          type="button"
+          aria-label={`${isExpanded ? "收起" : "查看"}${detailLabel}-${entry.id}`}
+          onClick={() => toggleExecLogDetail(entry.id)}
+        >
+          {isExpanded ? `收起${detailLabel}` : `查看${detailLabel}`}
+          {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </ExecLogDetailToggle>
+        {isExpanded ? (
+          <ExecLogDetailPanel>
+            {entry.detail.argumentsText ? (
+              <ExecLogDetailSection>
+                <ExecLogDetailLabel>请求参数</ExecLogDetailLabel>
+                <ExecLogDetailText>{entry.detail.argumentsText}</ExecLogDetailText>
+              </ExecLogDetailSection>
+            ) : null}
+            {entry.detail.resultText ? (
+              <ExecLogDetailSection>
+                <ExecLogDetailLabel>执行结果</ExecLogDetailLabel>
+                <ExecLogDetailText>{entry.detail.resultText}</ExecLogDetailText>
+              </ExecLogDetailSection>
+            ) : null}
+            {entry.detail.errorText ? (
+              <ExecLogDetailSection>
+                <ExecLogDetailLabel>错误信息</ExecLogDetailLabel>
+                <ExecLogDetailText>{entry.detail.errorText}</ExecLogDetailText>
+              </ExecLogDetailSection>
+            ) : null}
+            {entry.detail.sourceRef ? (
+              <ExecLogDetailSection>
+                <ExecLogDetailLabel>技能标识</ExecLogDetailLabel>
+                <ExecLogDetailText>{entry.detail.sourceRef}</ExecLogDetailText>
+              </ExecLogDetailSection>
+            ) : null}
+            {entry.detail.description ? (
+              <ExecLogDetailSection>
+                <ExecLogDetailLabel>技能说明</ExecLogDetailLabel>
+                <ExecLogDetailText>{entry.detail.description}</ExecLogDetailText>
+              </ExecLogDetailSection>
+            ) : null}
+            {entry.detail.whenToUse ? (
+              <ExecLogDetailSection>
+                <ExecLogDetailLabel>适用场景</ExecLogDetailLabel>
+                <ExecLogDetailText>{entry.detail.whenToUse}</ExecLogDetailText>
+              </ExecLogDetailSection>
+            ) : null}
+            {entry.detail.workflowSteps && entry.detail.workflowSteps.length > 0 ? (
+              <ExecLogDetailSection>
+                <ExecLogDetailLabel>工作流步骤</ExecLogDetailLabel>
+                <ExecLogDetailList>
+                  {entry.detail.workflowSteps.map((step, index) => (
+                    <ExecLogDetailItem key={`${entry.id}-workflow-${index}`}>
+                      {index + 1}. {step}
+                    </ExecLogDetailItem>
+                  ))}
+                </ExecLogDetailList>
+              </ExecLogDetailSection>
+            ) : null}
+            {entry.detail.allowedTools && entry.detail.allowedTools.length > 0 ? (
+              <ExecLogDetailSection>
+                <ExecLogDetailLabel>允许工具</ExecLogDetailLabel>
+                <ExecLogDetailTagList>
+                  {entry.detail.allowedTools.map((toolName) => (
+                    <ExecLogDetailTag key={`${entry.id}-tool-${toolName}`}>
+                      {toolName}
+                    </ExecLogDetailTag>
+                  ))}
+                </ExecLogDetailTagList>
+              </ExecLogDetailSection>
+            ) : null}
+            {entry.detail.artifactPaths && entry.detail.artifactPaths.length > 0 ? (
+              <ExecLogDetailSection>
+                <ExecLogDetailLabel>关联产物</ExecLogDetailLabel>
+                <ExecLogDetailList>
+                  {entry.detail.artifactPaths.map((artifactPath) => (
+                    <ExecLogDetailItem key={`${entry.id}-artifact-${artifactPath}`}>
+                      {artifactPath}
+                    </ExecLogDetailItem>
+                  ))}
+                </ExecLogDetailList>
+              </ExecLogDetailSection>
+            ) : null}
+          </ExecLogDetailPanel>
+        ) : null}
+      </>
+    );
+  }, [expandedExecLogIds, toggleExecLogDetail]);
 
   const renderCompactContextList = (
     items: ThemeWorkbenchSidebarProps["contextItems"],
@@ -2305,7 +2786,14 @@ function ThemeWorkbenchSidebarComponent({
   return (
     <SidebarContainer>
       <SidebarHeader>
-        <SidebarEyebrow>Theme Workbench</SidebarEyebrow>
+        <SidebarHeaderMetaRow>
+          <SidebarEyebrow>Theme Workbench</SidebarEyebrow>
+          {headerActionSlot ? (
+            <SidebarHeaderActionSlot data-testid="theme-workbench-sidebar-header-action">
+              {headerActionSlot}
+            </SidebarHeaderActionSlot>
+          ) : null}
+        </SidebarHeaderMetaRow>
         <SidebarTitle>
           {activeTab === "context" ? "上下文管理" : isVersionMode ? "编排与版本" : "编排与分支"}
         </SidebarTitle>
@@ -2318,10 +2806,11 @@ function ThemeWorkbenchSidebarComponent({
           <SidebarTabButton
             type="button"
             aria-label="打开上下文管理"
+            title="上下文管理"
             $active={activeTab === "context"}
             onClick={() => setActiveTab("context")}
           >
-            <span>上下文管理</span>
+            <SidebarTabLabel>上下文</SidebarTabLabel>
             <SidebarTabCount $active={activeTab === "context"}>
               {activeContextItems.length}
             </SidebarTabCount>
@@ -2329,10 +2818,11 @@ function ThemeWorkbenchSidebarComponent({
           <SidebarTabButton
             type="button"
             aria-label="打开编排工作台"
+            title="编排工作台"
             $active={activeTab === "workflow"}
             onClick={() => setActiveTab("workflow")}
           >
-            <span>编排工作台</span>
+            <SidebarTabLabel>编排</SidebarTabLabel>
             <SidebarTabCount $active={activeTab === "workflow"}>
               {branchItems.length}
             </SidebarTabCount>
@@ -2340,12 +2830,13 @@ function ThemeWorkbenchSidebarComponent({
           <SidebarTabButton
             type="button"
             aria-label="打开执行日志"
+            title="执行日志"
             $active={activeTab === "log"}
             onClick={() => setActiveTab("log")}
           >
-            <span>执行日志</span>
+            <SidebarTabLabel>日志</SidebarTabLabel>
             <SidebarTabCount $active={activeTab === "log"}>
-              {execLogEntries.length}
+              {visibleExecLogEntries.length}
             </SidebarTabCount>
           </SidebarTabButton>
         </SidebarTabs>
@@ -2361,6 +2852,11 @@ function ThemeWorkbenchSidebarComponent({
       ) : null}
 
       <SidebarBody className="custom-scrollbar">
+        {topSlot ? (
+          <SidebarTopSlot data-testid="theme-workbench-sidebar-top-slot">
+            {topSlot}
+          </SidebarTopSlot>
+        ) : null}
         {activeTab === "context" ? (
           <>
             <Section>
@@ -2842,11 +3338,65 @@ function ThemeWorkbenchSidebarComponent({
         ) : null}
         {activeTab === "log" ? (
           <ExecLogContainer>
-            {execLogEntries.length === 0 ? (
-              <ExecLogEmpty>暂无执行记录</ExecLogEmpty>
+            <ExecLogToolbar>
+              <ExecLogToolbarRow>
+                <ExecLogFilterGroup>
+                  {EXEC_LOG_FILTER_OPTIONS.map((option) => (
+                    <ExecLogFilterChip
+                      key={option.key}
+                      type="button"
+                      aria-label={`筛选执行日志-${option.label}`}
+                      $active={execLogFilter === option.key}
+                      onClick={() => setExecLogFilter(option.key)}
+                    >
+                      {option.label}
+                    </ExecLogFilterChip>
+                  ))}
+                </ExecLogFilterGroup>
+                <ExecLogMoreButton
+                  type="button"
+                  aria-label="清空全部日志"
+                  disabled={visibleExecLogEntries.length === 0}
+                  onClick={() => {
+                    if (visibleExecLogEntries.length > 0) {
+                      setExpandedExecLogIds([]);
+                      setExecLogClearedAt(Date.now());
+                    }
+                  }}
+                >
+                  清空全部
+                </ExecLogMoreButton>
+              </ExecLogToolbarRow>
+            </ExecLogToolbar>
+            {filteredExecLogEntries.length === 0 ? (
+              <>
+                <ExecLogEmpty>
+                  {execLogEntries.length > 0 && execLogClearedAt !== null
+                    ? "日志已清空，等待新的运行记录…"
+                    : visibleExecLogEntries.length > 0
+                      ? "当前筛选下暂无日志"
+                      : "暂无执行记录"}
+                </ExecLogEmpty>
+                {onLoadMoreHistory && (historyHasMore || historyLoading) ? (
+                  <ExecLogFooter>
+                    <ExecLogMoreButton
+                      type="button"
+                      aria-label="加载更早历史日志"
+                      disabled={historyLoading}
+                      onClick={() => {
+                        if (!historyLoading) {
+                          onLoadMoreHistory();
+                        }
+                      }}
+                    >
+                      {historyLoading ? "加载中..." : "加载更早历史"}
+                    </ExecLogMoreButton>
+                  </ExecLogFooter>
+                ) : null}
+              </>
             ) : (
               <ExecLogTimeline>
-                {execLogEntries.map((entry) => (
+                {filteredExecLogEntries.map((entry) => (
                   <ExecLogItem key={entry.id}>
                     <ExecLogDot $type={entry.type} $status={entry.status} />
                     <ExecLogHeader>
@@ -2863,8 +3413,25 @@ function ThemeWorkbenchSidebarComponent({
                     </ExecLogHeader>
                     <ExecLogContent>{entry.content}</ExecLogContent>
                     {entry.meta ? <ExecLogMeta>{entry.meta}</ExecLogMeta> : null}
+                    {renderExecLogDetail(entry)}
                   </ExecLogItem>
                 ))}
+                {onLoadMoreHistory && (historyHasMore || historyLoading) ? (
+                  <ExecLogFooter>
+                    <ExecLogMoreButton
+                      type="button"
+                      aria-label="加载更早历史日志"
+                      disabled={historyLoading}
+                      onClick={() => {
+                        if (!historyLoading) {
+                          onLoadMoreHistory();
+                        }
+                      }}
+                    >
+                      {historyLoading ? "加载中..." : "加载更早历史"}
+                    </ExecLogMoreButton>
+                  </ExecLogFooter>
+                ) : null}
                 <div ref={execLogBottomRef} />
               </ExecLogTimeline>
             )}
@@ -3147,6 +3714,12 @@ function areThemeWorkbenchSidebarPropsEqual(
     previous.activeRunDetail === next.activeRunDetail &&
     previous.activeRunDetailLoading === next.activeRunDetailLoading &&
     previous.onRequestCollapse === next.onRequestCollapse &&
+    previous.historyHasMore === next.historyHasMore &&
+    previous.historyLoading === next.historyLoading &&
+    previous.onLoadMoreHistory === next.onLoadMoreHistory &&
+    previous.skillDetailMap === next.skillDetailMap &&
+    previous.headerActionSlot === next.headerActionSlot &&
+    previous.topSlot === next.topSlot &&
     previous.messages === next.messages
   );
 }

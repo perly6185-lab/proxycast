@@ -14,6 +14,10 @@
 //! - `connections` - 连接模块（本地 PTY、SSH、WSL）
 //! - `integration` - 集成模块（Shell 集成、OSC 解析、状态重同步）
 
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::manual_strip)]
+#![allow(clippy::derivable_impls)]
+
 // 核心抽象
 pub mod emit_helper;
 pub mod emitter;

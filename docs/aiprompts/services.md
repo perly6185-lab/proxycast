@@ -17,10 +17,13 @@ src-tauri/src/services/
 ├── usage_service.rs            # 使用量统计
 ├── backup_service.rs           # 备份服务
 ├── update_check_service.rs     # 自动更新检查
-└── general_chat/               # 通用对话服务
 ```
 
 ## 核心服务
+
+> 注意：`general_chat/` 兼容壳已删除。
+> 新功能与新治理都应直接落到 unified chat / `chat_*` 体系，不要重新引回旧入口。
+> `ProviderPoolService::select_credential_with_fallback_legacy` 也已删除，凭证选择统一走现役 `select_credential_with_fallback`。
 
 ### ProviderPoolService
 

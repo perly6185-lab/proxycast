@@ -4,7 +4,7 @@
  * 对应 src-tauri/src/commands/novel_cmd.rs
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import {
   normalizeNovelSettingsEnvelope,
   type NovelSettingsEnvelope,
@@ -118,12 +118,18 @@ export interface CreateNovelProjectRequest {
   theme?: string;
   target_words?: number;
   metadata_json?: Record<string, unknown>;
-  settings_json?: NovelSettingsEnvelope | NovelSettingsV1 | Record<string, unknown>;
+  settings_json?:
+    | NovelSettingsEnvelope
+    | NovelSettingsV1
+    | Record<string, unknown>;
 }
 
 export interface UpdateNovelSettingsRequest {
   project_id: string;
-  settings_json: NovelSettingsEnvelope | NovelSettingsV1 | Record<string, unknown>;
+  settings_json:
+    | NovelSettingsEnvelope
+    | NovelSettingsV1
+    | Record<string, unknown>;
 }
 
 export interface NovelGenerateRequest {
@@ -174,13 +180,15 @@ export async function createNovelProject(
           ...request,
           settings_json: normalizeNovelSettingsEnvelope(request.settings_json),
         };
-  return invoke("novel_create_project", { request: normalizedRequest });
+  return safeInvoke<NovelProject>("novel_create_project", {
+    request: normalizedRequest,
+  });
 }
 
 export async function updateNovelSettings(
   request: UpdateNovelSettingsRequest,
 ): Promise<NovelSettingsRecord> {
-  return invoke("novel_update_settings", {
+  return safeInvoke<NovelSettingsRecord>("novel_update_settings", {
     request: {
       ...request,
       settings_json: normalizeNovelSettingsEnvelope(request.settings_json),
@@ -191,59 +199,65 @@ export async function updateNovelSettings(
 export async function generateNovelOutline(
   request: NovelGenerateRequest,
 ): Promise<NovelGenerateResult> {
-  return invoke("novel_generate_outline", { request });
+  return safeInvoke<NovelGenerateResult>("novel_generate_outline", { request });
 }
 
 export async function generateNovelCharacters(
   request: NovelGenerateRequest,
 ): Promise<NovelGenerateResult> {
-  return invoke("novel_generate_characters", { request });
+  return safeInvoke<NovelGenerateResult>("novel_generate_characters", {
+    request,
+  });
 }
 
 export async function generateNovelChapter(
   request: NovelGenerateChapterRequest,
 ): Promise<NovelGenerateResult> {
-  return invoke("novel_generate_chapter", { request });
+  return safeInvoke<NovelGenerateResult>("novel_generate_chapter", { request });
 }
 
 export async function continueNovelChapter(
   request: NovelGenerateRequest,
 ): Promise<NovelGenerateResult> {
-  return invoke("novel_continue_chapter", { request });
+  return safeInvoke<NovelGenerateResult>("novel_continue_chapter", { request });
 }
 
 export async function rewriteNovelChapter(
   request: NovelRewriteChapterRequest,
 ): Promise<NovelGenerateResult> {
-  return invoke("novel_rewrite_chapter", { request });
+  return safeInvoke<NovelGenerateResult>("novel_rewrite_chapter", { request });
 }
 
 export async function polishNovelChapter(
   request: NovelPolishChapterRequest,
 ): Promise<NovelGenerateResult> {
-  return invoke("novel_polish_chapter", { request });
+  return safeInvoke<NovelGenerateResult>("novel_polish_chapter", { request });
 }
 
 export async function checkNovelConsistency(
   request: NovelCheckConsistencyRequest,
 ): Promise<NovelConsistencyCheck> {
-  return invoke("novel_check_consistency", { request });
+  return safeInvoke<NovelConsistencyCheck>("novel_check_consistency", {
+    request,
+  });
 }
 
 export async function getNovelProjectSnapshot(
   projectId: string,
 ): Promise<NovelProjectSnapshot> {
-  return invoke("novel_get_project_snapshot", { projectId });
+  return safeInvoke<NovelProjectSnapshot>("novel_get_project_snapshot", {
+    projectId,
+  });
 }
 
 export async function listNovelRuns(
   request: NovelListRunsRequest,
 ): Promise<NovelGenerationRun[]> {
-  return invoke("novel_list_runs", { request });
+  return safeInvoke<NovelGenerationRun[]>("novel_list_runs", { request });
 }
 
 export async function deleteNovelCharacter(
   request: NovelDeleteCharacterRequest,
 ): Promise<boolean> {
-  return invoke("novel_delete_character", { request });
+  return safeInvoke<boolean>("novel_delete_character", { request });
 }

@@ -282,36 +282,6 @@ export const apiKeyProviderApi = {
   },
 
   // ============================================================================
-  // 旧凭证迁移 API
-  // ============================================================================
-
-  /**
-   * 获取需要迁移的旧 API Key 凭证列表
-   */
-  async getLegacyApiKeyCredentials(): Promise<LegacyApiKeyCredential[]> {
-    return safeInvoke("get_legacy_api_key_credentials");
-  },
-
-  /**
-   * 迁移旧的 API Key 凭证到新的 API Key Provider 系统
-   * @param deleteAfterMigration 迁移后是否删除旧凭证
-   */
-  async migrateLegacyCredentials(
-    deleteAfterMigration: boolean,
-  ): Promise<LegacyMigrationResult> {
-    return safeInvoke("migrate_legacy_api_key_credentials", {
-      deleteAfterMigration,
-    });
-  },
-
-  /**
-   * 删除单个旧的 API Key 凭证
-   */
-  async deleteLegacyCredential(uuid: string): Promise<boolean> {
-    return safeInvoke("delete_legacy_api_key_credential", { uuid });
-  },
-
-  // ============================================================================
   // 连接测试 API
   // ============================================================================
 
@@ -370,28 +340,4 @@ export interface ConnectionTestResult {
   method?: string;
   /** 模型列表（如果使用 models 端点测试） */
   models?: string[];
-}
-
-/**
- * 旧的 API Key 凭证信息
- */
-export interface LegacyApiKeyCredential {
-  uuid: string;
-  provider_type: string;
-  name?: string;
-  api_key_masked: string;
-  base_url?: string;
-  usage_count: number;
-  error_count: number;
-  created_at: string;
-}
-
-/**
- * 迁移结果
- */
-export interface LegacyMigrationResult {
-  migrated_count: number;
-  skipped_count: number;
-  deleted_count: number;
-  errors: string[];
 }

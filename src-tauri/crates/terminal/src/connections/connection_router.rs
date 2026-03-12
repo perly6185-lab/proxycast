@@ -25,21 +25,16 @@ use crate::error::TerminalError;
 /// 表示终端会话可以使用的连接类型。
 ///
 /// _Requirements: 1.4, 1.5_
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionType {
     /// 本地 PTY 连接
+    #[default]
     Local,
     /// SSH 远程连接
     SSH,
     /// WSL 连接（仅 Windows）
     WSL,
-}
-
-impl Default for ConnectionType {
-    fn default() -> Self {
-        Self::Local
-    }
 }
 
 impl std::fmt::Display for ConnectionType {

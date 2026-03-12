@@ -39,11 +39,14 @@ import {
   ThemeWorkbenchSidebar,
   type ThemeWorkbenchCreationTaskEvent,
 } from "./components/ThemeWorkbenchSidebar";
+import { AgentRuntimeStrip } from "./components/AgentRuntimeStrip";
 import { HarnessStatusPanel } from "./components/HarnessStatusPanel";
+import { SocialMediaHarnessCard } from "./components/SocialMediaHarnessCard";
 import { MessageList } from "./components/MessageList";
 import { Inputbar } from "./components/Inputbar";
 import { RuntimeStyleControlBar } from "./components/RuntimeStyleControlBar";
 import { EmptyState } from "./components/EmptyState";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import type { CreationMode } from "./components/types";
 import { type TaskFile } from "./components/TaskFiles";
 import { LayoutTransition } from "@/components/content-creator/core/LayoutTransition/LayoutTransition";
@@ -77,6 +80,7 @@ import {
   selectedArtifactIdAtom,
 } from "@/lib/artifact/store";
 import { ArtifactRenderer, ArtifactToolbar } from "@/components/artifact";
+import type { Artifact } from "@/lib/artifact/types";
 import { useAtomValue, useSetAtom } from "jotai";
 import { createInitialMusicState } from "@/components/content-creator/canvas/music/types";
 import {
@@ -88,7 +92,9 @@ import {
   generateContentCreationPrompt,
   isContentCreationTheme,
 } from "@/components/content-creator/utils/systemPrompt";
+import { activityLogger } from "@/components/content-creator/utils/activityLogger";
 import { generateProjectMemoryPrompt } from "@/components/content-creator/utils/projectPrompt";
+import { resolveSocialMediaArtifactDescriptor } from "@/components/content-creator/utils/socialMediaHarness";
 import {
   getProject,
   getDefaultProject,
@@ -117,6 +123,7 @@ import { LatestRunStatusBadge } from "@/components/execution/LatestRunStatusBadg
 import {
   executionRunGet,
   executionRunGetThemeWorkbenchState,
+  executionRunListThemeWorkbenchHistory,
   type AgentRun,
   type ThemeWorkbenchRunTodoItem,
   type ThemeWorkbenchRunTerminalItem,
@@ -142,7 +149,7 @@ import {
   type SkillDetailInfo,
 } from "@/lib/api/skill-execution";
 
-import type { Message, MessageImage } from "./types";
+import type { Message, MessageImage, WriteArtifactContext } from "./types";
 import type {
   ThemeType,
   LayoutMode,
@@ -163,10 +170,21 @@ import {
 } from "./utils/chatToolPreferences";
 import { deriveHarnessSessionState } from "./utils/harnessState";
 import {
+  buildArtifactFromWrite,
+  mergeArtifacts,
+  resolveDefaultArtifactViewMode,
+} from "./utils/messageArtifacts";
+import { buildSyntheticSubagentTimelineItems } from "./utils/subagentTimeline";
+import {
   resolveCanvasTaskFileTarget,
   shouldDeferCanvasSyncWhileEditing,
 } from "./utils/taskFileCanvasSync";
 import { parseSkillSlashCommand } from "./hooks/skillCommand";
+import {
+  buildGeneralAgentSystemPrompt,
+  resolveAgentChatMode,
+} from "./utils/generalAgentPrompt";
+import { mergeThreadItems } from "./utils/threadTimelineView";
 import { subscribeDocumentEditorFocus } from "@/lib/documentEditorFocusEvents";
 import {
   DEFAULT_STYLE_PROFILE,
@@ -210,6 +228,55 @@ function normalizeInitialTheme(value?: string): ThemeType {
     return value as ThemeType;
   }
   return "general";
+}
+
+function resolveArtifactFilePath(artifact: Pick<Artifact, "title" | "meta">): string {
+  if (typeof artifact.meta.filePath === "string" && artifact.meta.filePath.trim()) {
+    return artifact.meta.filePath.trim();
+  }
+  if (typeof artifact.meta.filename === "string" && artifact.meta.filename.trim()) {
+    return artifact.meta.filename.trim();
+  }
+  return artifact.title;
+}
+
+function mergeMessageArtifactsIntoStore(
+  messageArtifacts: Artifact[],
+  currentArtifacts: Artifact[],
+): Artifact[] {
+  if (messageArtifacts.length === 0) {
+    return [];
+  }
+
+  const currentArtifactsById = new Map(
+    currentArtifacts.map((artifact) => [artifact.id, artifact]),
+  );
+
+  return mergeArtifacts(
+    messageArtifacts.map((artifact) => {
+      const existing = currentArtifactsById.get(artifact.id);
+      if (!existing) {
+        return artifact;
+      }
+
+      const shouldReuseExistingContent =
+        artifact.content.length === 0 &&
+        artifact.meta.source === "tool_result" &&
+        existing.content.length > 0;
+
+      return {
+        ...existing,
+        ...artifact,
+        content: shouldReuseExistingContent ? existing.content : artifact.content,
+        meta: {
+          ...existing.meta,
+          ...artifact.meta,
+        },
+        createdAt: Math.min(existing.createdAt, artifact.createdAt),
+        updatedAt: Math.max(existing.updatedAt, artifact.updatedAt),
+      };
+    }),
+  );
 }
 
 const PageContainer = styled.div`
@@ -373,6 +440,7 @@ interface HandleSendOptions {
   skipThemeSkillPrefix?: boolean;
   purpose?: "content_review" | "text_stylize" | "style_rewrite" | "style_audit";
   observer?: HandleSendObserver;
+  requestMetadata?: Record<string, unknown>;
 }
 
 const ThemeWorkbenchLeftExpandButton = styled.button`
@@ -841,6 +909,7 @@ function resolveThemeWorkbenchQueueItemTitle(
   return item.title?.trim() || "执行任务";
 }
 const THEME_WORKBENCH_ACTIVE_RUN_MAX_AGE_MS = 45 * 1000;
+const THEME_WORKBENCH_HISTORY_PAGE_SIZE = 20;
 
 function resolveThemeWorkbenchSkillSourceRef(
   item:
@@ -888,6 +957,10 @@ function normalizeDocumentVersion(value: unknown): DocumentVersion | null {
     typeof candidate.description === "string"
       ? candidate.description
       : undefined;
+  const metadata =
+    candidate.metadata && typeof candidate.metadata === "object"
+      ? (candidate.metadata as DocumentVersion["metadata"])
+      : undefined;
 
   if (!id || Number.isNaN(createdAt)) {
     return null;
@@ -898,6 +971,7 @@ function normalizeDocumentVersion(value: unknown): DocumentVersion | null {
     content,
     createdAt,
     description,
+    metadata,
   };
 }
 
@@ -1570,6 +1644,51 @@ function isSyncContentEmpty(content: string): boolean {
   return !content || content === "[]" || content === "{}";
 }
 
+function resolveThemeWorkbenchRecentTerminals(
+  state: BackendThemeWorkbenchRunState | null,
+): ThemeWorkbenchRunTerminalItem[] {
+  if (!state) {
+    return [];
+  }
+
+  const rawTerminals =
+    Array.isArray(state.recent_terminals) && state.recent_terminals.length > 0
+      ? state.recent_terminals
+      : state.latest_terminal
+        ? [state.latest_terminal]
+        : [];
+
+  const seenRunIds = new Set<string>();
+  return rawTerminals.filter((item) => {
+    const runId = item.run_id?.trim();
+    if (!runId || seenRunIds.has(runId)) {
+      return false;
+    }
+    seenRunIds.add(runId);
+    return true;
+  });
+}
+
+function mergeThemeWorkbenchTerminalItems(
+  ...groups: ThemeWorkbenchRunTerminalItem[][]
+): ThemeWorkbenchRunTerminalItem[] {
+  const merged: ThemeWorkbenchRunTerminalItem[] = [];
+  const seenRunIds = new Set<string>();
+
+  groups.forEach((items) => {
+    items.forEach((item) => {
+      const runId = item.run_id?.trim();
+      if (!runId || seenRunIds.has(runId)) {
+        return;
+      }
+      seenRunIds.add(runId);
+      merged.push(item);
+    });
+  });
+
+  return merged;
+}
+
 function buildThemeWorkbenchRunStateSignature(
   state: BackendThemeWorkbenchRunState | null,
 ): string {
@@ -1590,16 +1709,18 @@ function buildThemeWorkbenchRunStateSignature(
     )
     .join("|");
 
-  const terminalSignature = state.latest_terminal
-    ? [
-        state.latest_terminal.run_id,
-        state.latest_terminal.execution_id || "",
-        state.latest_terminal.status,
-        state.latest_terminal.gate_key || "",
-        state.latest_terminal.source || "",
-        state.latest_terminal.source_ref || "",
-      ].join(":")
-    : "";
+  const terminalSignature = resolveThemeWorkbenchRecentTerminals(state)
+    .map((item) =>
+      [
+        item.run_id,
+        item.execution_id || "",
+        item.status,
+        item.gate_key || "",
+        item.source || "",
+        item.source_ref || "",
+      ].join(":"),
+    )
+    .join("|");
 
   return [
     state.run_state,
@@ -1658,6 +1779,7 @@ export function AgentChatPage({
   onSessionChange?: (sessionId: string | null) => void;
   preferContentReviewInRightRail?: boolean;
 }) {
+  const normalizedEntryTheme = normalizeInitialTheme(initialTheme);
   const [showSidebar, setShowSidebar] = useState(true);
   const [themeWorkbenchSidebarCollapsed, setThemeWorkbenchSidebarCollapsed] =
     useState(false);
@@ -1667,9 +1789,11 @@ export function AgentChatPage({
     Boolean(entryBannerMessage),
   );
   const [chatToolPreferences, setChatToolPreferences] =
-    useState<ChatToolPreferences>(() => loadChatToolPreferences());
-
-  const normalizedEntryTheme = normalizeInitialTheme(initialTheme);
+    useState<ChatToolPreferences>(() =>
+      loadChatToolPreferences(normalizedEntryTheme),
+    );
+  const [chatToolPreferencesTheme, setChatToolPreferencesTheme] =
+    useState<string>(normalizedEntryTheme);
   const shouldBootstrapCanvasOnEntry =
     Boolean(contentId) && isContentCreationTheme(normalizedEntryTheme);
 
@@ -1703,8 +1827,21 @@ export function AgentChatPage({
   }, [entryBannerMessage]);
 
   useEffect(() => {
-    saveChatToolPreferences(chatToolPreferences);
-  }, [chatToolPreferences]);
+    if (chatToolPreferencesTheme === activeTheme) {
+      return;
+    }
+
+    setChatToolPreferences(loadChatToolPreferences(activeTheme));
+    setChatToolPreferencesTheme(activeTheme);
+  }, [activeTheme, chatToolPreferencesTheme]);
+
+  useEffect(() => {
+    if (chatToolPreferencesTheme !== activeTheme) {
+      return;
+    }
+
+    saveChatToolPreferences(chatToolPreferences, activeTheme);
+  }, [activeTheme, chatToolPreferences, chatToolPreferencesTheme]);
 
   // 内部 projectId 状态（当外部未提供时使用）
   const [internalProjectId, setInternalProjectId] = useState<string | null>(
@@ -1752,10 +1889,19 @@ export function AgentChatPage({
     useState(false);
   const [themeWorkbenchBackendRunState, setThemeWorkbenchBackendRunState] =
     useState<BackendThemeWorkbenchRunState | null>(null);
+  const [themeWorkbenchHistoryTerminals, setThemeWorkbenchHistoryTerminals] =
+    useState<ThemeWorkbenchRunTerminalItem[]>([]);
+  const [themeWorkbenchHistoryHasMore, setThemeWorkbenchHistoryHasMore] =
+    useState(false);
+  const [themeWorkbenchHistoryNextOffset, setThemeWorkbenchHistoryNextOffset] =
+    useState<number | null>(null);
+  const [themeWorkbenchHistoryLoading, setThemeWorkbenchHistoryLoading] =
+    useState(false);
   const [themeWorkbenchSkillDetailMap, setThemeWorkbenchSkillDetailMap] =
     useState<Record<string, SkillDetailInfo | null>>({});
   const [selectedThemeWorkbenchRunId, setSelectedThemeWorkbenchRunId] =
     useState<string | null>(null);
+  const themeWorkbenchHistoryLoadingRef = useRef(false);
   const [selectedThemeWorkbenchRunDetail, setSelectedThemeWorkbenchRunDetail] =
     useState<AgentRun | null>(null);
   const [themeWorkbenchRunDetailLoading, setThemeWorkbenchRunDetailLoading] =
@@ -1787,6 +1933,8 @@ export function AgentChatPage({
   const [taskFiles, setTaskFiles] = useState<TaskFile[]>([]);
   const [taskFilesExpanded, setTaskFilesExpanded] = useState(false);
   const [selectedFileId, setSelectedFileId] = useState<string | undefined>();
+  const taskFilesRef = useRef<TaskFile[]>([]);
+  const socialStageLogRef = useRef<Record<string, string>>({});
 
   // 项目上下文状态
   const [project, setProject] = useState<Project | null>(null);
@@ -1802,6 +1950,10 @@ export function AgentChatPage({
       sourceLabel: undefined,
       sourceProfile: null,
     });
+
+  useEffect(() => {
+    taskFilesRef.current = taskFiles;
+  }, [taskFiles]);
 
   useEffect(() => {
     setRuntimeStyleSelection((previous) => {
@@ -1855,7 +2007,13 @@ export function AgentChatPage({
 
   // 文件写入回调 ref（用于传递给 useAgentChat）
   const handleWriteFileRef =
-    useRef<(content: string, fileName: string) => void>();
+    useRef<
+      (
+        content: string,
+        fileName: string,
+        context?: WriteArtifactContext,
+      ) => void
+    >();
 
   // 工作流状态（仅在内容创作模式下使用）
   const mappedTheme = activeTheme as ThemeType;
@@ -1885,6 +2043,7 @@ export function AgentChatPage({
   // Artifact 状态 - 用于在画布中显示
   const artifacts = useAtomValue(artifactsAtom);
   const selectedArtifact = useAtomValue(selectedArtifactAtom);
+  const setArtifacts = useSetAtom(artifactsAtom);
   const setSelectedArtifactId = useSetAtom(selectedArtifactIdAtom);
 
   // Artifact 预览状态
@@ -2166,11 +2325,23 @@ export function AgentChatPage({
       : "";
   }, [projectMemory?.style_guide, runtimeStylePrompt, runtimeStyleSelection]);
 
+  const chatMode = useMemo(
+    () => resolveAgentChatMode(mappedTheme, isContentCreationMode),
+    [isContentCreationMode, mappedTheme],
+  );
+
   // 生成系统提示词（包含项目 Memory）
   const systemPrompt = useMemo(() => {
     let prompt = "";
 
-    if (isContentCreationMode) {
+    if (chatMode === "general") {
+      prompt = buildGeneralAgentSystemPrompt(mappedTheme, {
+        toolPreferences: chatToolPreferences,
+        harness: {
+          contentId: contentId || null,
+        },
+      });
+    } else if (isContentCreationMode) {
       prompt = generateContentCreationPrompt(mappedTheme, creationMode);
     }
 
@@ -2183,7 +2354,15 @@ export function AgentChatPage({
     }
 
     return prompt || undefined;
-  }, [creationMode, isContentCreationMode, mappedTheme, projectMemory]);
+  }, [
+    chatMode,
+    chatToolPreferences,
+    contentId,
+    creationMode,
+    isContentCreationMode,
+    mappedTheme,
+    projectMemory,
+  ]);
 
   // 使用 Agent Chat Hook（传递系统提示词）
   const {
@@ -2194,6 +2373,9 @@ export function AgentChatPage({
     executionStrategy,
     setExecutionStrategy,
     messages,
+    currentTurnId,
+    turns,
+    threadItems,
     isSending,
     sendMessage,
     stopSending,
@@ -2214,18 +2396,45 @@ export function AgentChatPage({
     dismissWorkspacePathError,
   } = useAgentChatUnified({
     systemPrompt,
-    onWriteFile: (content, fileName) => {
+    onWriteFile: (content, fileName, context) => {
       // 使用 ref 调用最新的 handleWriteFile
-      handleWriteFileRef.current?.(content, fileName);
+      handleWriteFileRef.current?.(content, fileName, context);
     },
     workspaceId: projectId ?? "",
   });
   const { providers: configuredProviders } = useConfiguredProviders();
   const subAgentRuntime = useSubAgentScheduler(sessionId);
-  const harnessState = useMemo(
-    () => deriveHarnessSessionState(messages, pendingActions),
-    [messages, pendingActions],
+  const syntheticSubagentItems = useMemo(
+    () =>
+      buildSyntheticSubagentTimelineItems({
+        threadId: sessionId,
+        turnId: currentTurnId,
+        events: subAgentRuntime.events,
+      }),
+    [currentTurnId, sessionId, subAgentRuntime.events],
   );
+  const effectiveThreadItems = useMemo(
+    () => mergeThreadItems(threadItems, syntheticSubagentItems),
+    [syntheticSubagentItems, threadItems],
+  );
+  const harnessState = useMemo(
+    () => deriveHarnessSessionState(messages, pendingActions, effectiveThreadItems),
+    [effectiveThreadItems, messages, pendingActions],
+  );
+  const activeRuntimeStatusTitle = useMemo(() => {
+    if (!isSending) {
+      return null;
+    }
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role === "assistant" && message.runtimeStatus?.title) {
+        return message.runtimeStatus.title;
+      }
+    }
+
+    return "Agent 正在准备执行";
+  }, [isSending, messages]);
   const [harnessPanelVisible, setHarnessPanelVisible] = useState(() =>
     loadPersistedBoolean(HARNESS_PANEL_VISIBILITY_KEY, false),
   );
@@ -2243,6 +2452,53 @@ export function AgentChatPage({
   }, [onSessionChange, sessionId]);
 
   useEffect(() => {
+    if (activeTheme !== "general") {
+      setArtifacts([]);
+      return;
+    }
+
+    const messageArtifacts = mergeArtifacts(
+      messages.flatMap((message) => message.artifacts || []),
+    );
+    setArtifacts((currentArtifacts) =>
+      mergeMessageArtifactsIntoStore(messageArtifacts, currentArtifacts),
+    );
+  }, [activeTheme, messages, setArtifacts]);
+
+  useEffect(() => {
+    if (activeTheme !== "general") {
+      setSelectedArtifactId(null);
+      return;
+    }
+
+    if (artifacts.length === 0) {
+      if (selectedArtifact) {
+        setSelectedArtifactId(null);
+      }
+      return;
+    }
+
+    if (!selectedArtifact) {
+      setSelectedArtifactId(artifacts[artifacts.length - 1]?.id || null);
+      return;
+    }
+
+    const selectedStillExists = artifacts.some(
+      (artifact) => artifact.id === selectedArtifact.id,
+    );
+    if (!selectedStillExists) {
+      setSelectedArtifactId(artifacts[artifacts.length - 1]?.id || null);
+    }
+  }, [activeTheme, artifacts, selectedArtifact, setSelectedArtifactId]);
+
+  useEffect(() => {
+    if (activeTheme !== "general" || !selectedArtifact) {
+      return;
+    }
+    setArtifactViewMode(resolveDefaultArtifactViewMode(selectedArtifact));
+  }, [activeTheme, selectedArtifact]);
+
+  useEffect(() => {
     savePersistedBoolean(HARNESS_PANEL_VISIBILITY_KEY, harnessPanelVisible);
   }, [harnessPanelVisible]);
 
@@ -2258,10 +2514,19 @@ export function AgentChatPage({
     [skills],
   );
   const harnessPendingCount = harnessState.pendingApprovals.length;
-  const showHarnessToggle =
+  const shouldAlwaysShowHarnessToggle =
+    contextWorkspace.enabled && mappedTheme === "social-media";
+  const shouldAlwaysShowGeneralWorkbenchToggle =
+    chatMode === "general" && !contextWorkspace.enabled;
+  const hasHarnessActivity =
     harnessPanelVisible || harnessState.hasSignals || subAgentRuntime.isRunning;
+  const showHarnessToggle =
+    shouldAlwaysShowHarnessToggle ||
+    shouldAlwaysShowGeneralWorkbenchToggle ||
+    hasHarnessActivity;
   const harnessAttentionLevel =
-    harnessPendingCount > 0 ? "warning" : showHarnessToggle ? "active" : "idle";
+    harnessPendingCount > 0 ? "warning" : hasHarnessActivity ? "active" : "idle";
+  const navbarHarnessPanelVisible = harnessPanelVisible;
   const visibleContextItems = useMemo(() => {
     const activeItems = contextWorkspace.sidebarContextItems.filter(
       (item) => item.active,
@@ -2312,6 +2577,9 @@ export function AgentChatPage({
     (shouldUseCompactThemeWorkbench || mappedTheme === "novel");
   const enableThemeWorkbenchPanelCollapse =
     isThemeWorkbench && mappedTheme === "social-media";
+  const handleToggleHarnessPanel = useCallback(() => {
+    setHarnessPanelVisible((current) => !current);
+  }, []);
 
   // 加载 skills 列表
   useEffect(() => {
@@ -2682,6 +2950,59 @@ export function AgentChatPage({
     };
   }, [isSending, isThemeWorkbench, sessionId]);
 
+  const loadThemeWorkbenchHistory = useCallback(
+    async (offset: number, replace: boolean) => {
+      if (
+        !isThemeWorkbench ||
+        !sessionId ||
+        themeWorkbenchHistoryLoadingRef.current
+      ) {
+        return;
+      }
+
+      themeWorkbenchHistoryLoadingRef.current = true;
+      setThemeWorkbenchHistoryLoading(true);
+      try {
+        const page = await executionRunListThemeWorkbenchHistory(
+          sessionId,
+          THEME_WORKBENCH_HISTORY_PAGE_SIZE,
+          offset,
+        );
+        setThemeWorkbenchHistoryTerminals((previous) =>
+          replace
+            ? mergeThemeWorkbenchTerminalItems(page.items || [])
+            : mergeThemeWorkbenchTerminalItems(previous, page.items || []),
+        );
+        setThemeWorkbenchHistoryHasMore(Boolean(page.has_more));
+        setThemeWorkbenchHistoryNextOffset(page.next_offset ?? null);
+      } catch (error) {
+        console.warn("[AgentChatPage] 拉取主题工作台历史日志失败:", error);
+        if (replace) {
+          setThemeWorkbenchHistoryTerminals([]);
+          setThemeWorkbenchHistoryHasMore(false);
+          setThemeWorkbenchHistoryNextOffset(null);
+        }
+      } finally {
+        themeWorkbenchHistoryLoadingRef.current = false;
+        setThemeWorkbenchHistoryLoading(false);
+      }
+    },
+    [isThemeWorkbench, sessionId],
+  );
+
+  useEffect(() => {
+    if (!isThemeWorkbench || !sessionId) {
+      themeWorkbenchHistoryLoadingRef.current = false;
+      setThemeWorkbenchHistoryTerminals([]);
+      setThemeWorkbenchHistoryHasMore(false);
+      setThemeWorkbenchHistoryNextOffset(null);
+      setThemeWorkbenchHistoryLoading(false);
+      return;
+    }
+
+    void loadThemeWorkbenchHistory(0, true);
+  }, [isThemeWorkbench, loadThemeWorkbenchHistory, sessionId]);
+
   const themeWorkbenchRequiredSkillNames = useMemo(() => {
     if (!isThemeWorkbench) {
       return [] as string[];
@@ -2795,6 +3116,15 @@ export function AgentChatPage({
     );
   }, [themeWorkbenchBackendRunState?.queue_items]);
 
+  const themeWorkbenchMergedTerminals = useMemo(
+    () =>
+      mergeThemeWorkbenchTerminalItems(
+        resolveThemeWorkbenchRecentTerminals(themeWorkbenchBackendRunState),
+        themeWorkbenchHistoryTerminals,
+      ),
+    [themeWorkbenchBackendRunState, themeWorkbenchHistoryTerminals],
+  );
+
   const themeWorkbenchExecutionRunMap = useMemo(() => {
     const map = new Map<string, string>();
     if (!isThemeWorkbench || !themeWorkbenchBackendRunState) {
@@ -2813,13 +3143,12 @@ export function AgentChatPage({
     (themeWorkbenchBackendRunState.queue_items || []).forEach((item) => {
       register(item.execution_id, item.run_id);
     });
-    register(
-      themeWorkbenchBackendRunState.latest_terminal?.execution_id,
-      themeWorkbenchBackendRunState.latest_terminal?.run_id,
-    );
+    themeWorkbenchMergedTerminals.forEach((item) => {
+      register(item.execution_id, item.run_id);
+    });
 
     return map;
-  }, [isThemeWorkbench, themeWorkbenchBackendRunState]);
+  }, [isThemeWorkbench, themeWorkbenchBackendRunState, themeWorkbenchMergedTerminals]);
 
   const themeWorkbenchBackendActivityLogs = useMemo<
     SidebarActivityLog[]
@@ -2847,43 +3176,56 @@ export function AgentChatPage({
               : undefined,
           gateKey,
           source: item.source,
+          sourceRef: item.source_ref || undefined,
         };
       },
     );
 
-    const terminal = themeWorkbenchBackendRunState.latest_terminal;
-    const terminalLog: SidebarActivityLog[] = terminal
-      ? [
-          {
-            id: `run-terminal-${terminal.run_id}`,
-            name: terminal.title || "执行主题工作台编排",
-            status: terminal.status === "success" ? "completed" : "failed",
-            timeLabel: formatThemeWorkbenchRunTimeLabel(
-              terminal.finished_at || terminal.started_at,
-            ),
-            durationLabel: formatThemeWorkbenchRunDurationLabel(
-              terminal.started_at,
-              terminal.finished_at,
-            ),
-            applyTarget: resolveThemeWorkbenchApplyTargetByGateKey(
-              terminal.gate_key || "idle",
-            ),
-            runId: terminal.run_id,
-            executionId: terminal.execution_id || undefined,
-            sessionId: terminal.session_id || undefined,
-            artifactPaths:
-              Array.isArray(terminal.artifact_paths) &&
-              terminal.artifact_paths.length > 0
-                ? terminal.artifact_paths
-                : undefined,
-            gateKey: terminal.gate_key || "idle",
-            source: terminal.source,
-          },
-        ]
-      : [];
+    const terminalLogs: SidebarActivityLog[] = themeWorkbenchMergedTerminals.map(
+      (terminal) => ({
+      id: `run-terminal-${terminal.run_id}`,
+      name: terminal.title || "执行主题工作台编排",
+      status: terminal.status === "success" ? "completed" : "failed",
+      timeLabel: formatThemeWorkbenchRunTimeLabel(
+        terminal.finished_at || terminal.started_at,
+      ),
+      durationLabel: formatThemeWorkbenchRunDurationLabel(
+        terminal.started_at,
+        terminal.finished_at,
+      ),
+      applyTarget: resolveThemeWorkbenchApplyTargetByGateKey(
+        terminal.gate_key || "idle",
+      ),
+      runId: terminal.run_id,
+      executionId: terminal.execution_id || undefined,
+      sessionId: terminal.session_id || undefined,
+      artifactPaths:
+        Array.isArray(terminal.artifact_paths) &&
+        terminal.artifact_paths.length > 0
+          ? terminal.artifact_paths
+          : undefined,
+      gateKey: terminal.gate_key || "idle",
+      source: terminal.source,
+      sourceRef: terminal.source_ref || undefined,
+    }),
+    );
 
-    return [...runningLogs, ...terminalLog];
-  }, [isThemeWorkbench, themeWorkbenchBackendRunState]);
+    return [...runningLogs, ...terminalLogs];
+  }, [
+    isThemeWorkbench,
+    themeWorkbenchBackendRunState,
+    themeWorkbenchMergedTerminals,
+  ]);
+
+  const handleLoadMoreThemeWorkbenchHistory = useCallback(() => {
+    const nextOffset =
+      themeWorkbenchHistoryNextOffset ?? themeWorkbenchHistoryTerminals.length;
+    void loadThemeWorkbenchHistory(nextOffset, false);
+  }, [
+    loadThemeWorkbenchHistory,
+    themeWorkbenchHistoryNextOffset,
+    themeWorkbenchHistoryTerminals.length,
+  ]);
 
   const themeWorkbenchActivityLogs = useMemo<SidebarActivityLog[]>(() => {
     if (!isThemeWorkbench) {
@@ -3134,6 +3476,48 @@ export function AgentChatPage({
       status,
     };
   }, [currentGateBase, themeWorkbenchRunState]);
+
+  const socialMediaHarnessSummary = useMemo(() => {
+    if (!isThemeWorkbench || mappedTheme !== "social-media") {
+      return null;
+    }
+
+    const latestTerminal = themeWorkbenchBackendRunState?.latest_terminal ?? null;
+    const activeRun = themeWorkbenchActiveQueueItem ?? latestTerminal;
+    const artifactPaths =
+      Array.isArray(themeWorkbenchActiveQueueItem?.artifact_paths) &&
+      themeWorkbenchActiveQueueItem.artifact_paths.length > 0
+        ? themeWorkbenchActiveQueueItem.artifact_paths
+        : Array.isArray(latestTerminal?.artifact_paths) &&
+            latestTerminal.artifact_paths.length > 0
+          ? latestTerminal.artifact_paths
+          : [];
+
+    return {
+      runState: themeWorkbenchRunState,
+      stageTitle: currentGate.title,
+      stageDescription: currentGate.description,
+      runTitle: activeRun?.title || null,
+      artifactCount: artifactPaths.length,
+      updatedAt:
+        themeWorkbenchBackendRunState?.updated_at ||
+        latestTerminal?.finished_at ||
+        latestTerminal?.started_at ||
+        themeWorkbenchActiveQueueItem?.started_at ||
+        null,
+      pendingCount: harnessPendingCount,
+    };
+  }, [
+    currentGate.description,
+    currentGate.title,
+    harnessPendingCount,
+    isThemeWorkbench,
+    mappedTheme,
+    themeWorkbenchActiveQueueItem,
+    themeWorkbenchBackendRunState?.latest_terminal,
+    themeWorkbenchBackendRunState?.updated_at,
+    themeWorkbenchRunState,
+  ]);
 
   useEffect(() => {
     if (!isThemeWorkbench || themeWorkbenchRunState !== "idle") {
@@ -3757,6 +4141,34 @@ export function AgentChatPage({
           }
         }
 
+        const existingHarnessMetadata =
+          sendOptions?.requestMetadata &&
+          typeof sendOptions.requestMetadata.harness === "object" &&
+          sendOptions.requestMetadata.harness !== null &&
+          !Array.isArray(sendOptions.requestMetadata.harness)
+            ? (sendOptions.requestMetadata.harness as Record<string, unknown>)
+            : undefined;
+        const nextSendOptions: HandleSendOptions = {
+          ...(sendOptions || {}),
+          requestMetadata: {
+            ...(sendOptions?.requestMetadata || {}),
+            harness: {
+              ...(existingHarnessMetadata || {}),
+              theme: mappedTheme,
+              creation_mode: creationMode,
+              chat_mode: chatMode,
+              web_search_enabled: effectiveWebSearch,
+              thinking_enabled: effectiveThinking,
+              task_mode_enabled: chatToolPreferences.task,
+              subagent_mode_enabled: chatToolPreferences.subagent,
+              session_mode: isThemeWorkbench ? "theme_workbench" : "default",
+              gate_key: isThemeWorkbench ? currentGate.key : undefined,
+              run_title: themeWorkbenchActiveQueueItem?.title?.trim() || undefined,
+              content_id: contentId || undefined,
+            },
+          },
+        };
+
         if (autoContinuePayload) {
           await sendMessage(
             text,
@@ -3767,7 +4179,7 @@ export function AgentChatPage({
             sendExecutionStrategy,
             effectiveModel,
             autoContinuePayload,
-            sendOptions,
+            nextSendOptions,
           );
         } else {
           await sendMessage(
@@ -3779,7 +4191,7 @@ export function AgentChatPage({
             sendExecutionStrategy,
             effectiveModel,
             undefined,
-            sendOptions,
+            nextSendOptions,
           );
         }
       } catch (error) {
@@ -3796,6 +4208,10 @@ export function AgentChatPage({
       chatToolPreferences,
       contextWorkspace,
       input,
+      creationMode,
+      contentId,
+      currentGate.key,
+      chatMode,
       isThemeWorkbench,
       mentionedCharacters,
       mappedTheme,
@@ -3808,6 +4224,7 @@ export function AgentChatPage({
       sendMessage,
       sessionId,
       setModel,
+      themeWorkbenchActiveQueueItem?.title,
     ],
   );
 
@@ -4464,9 +4881,22 @@ export function AgentChatPage({
   const showNovelNavbarControls =
     layoutMode !== "chat" && resolvedCanvasState?.type === "novel";
 
+  const upsertGeneralArtifact = useCallback(
+    (artifact: Artifact) => {
+      setArtifacts((currentArtifacts) =>
+        mergeArtifacts([...currentArtifacts, artifact]),
+      );
+    },
+    [setArtifacts],
+  );
+
   // 处理文件写入 - 同名文件更新内容，不同名文件独立保存
   const handleWriteFile = useCallback(
-    (content: string, fileName: string) => {
+    (
+      content: string,
+      fileName: string,
+      context?: WriteArtifactContext,
+    ) => {
       console.log(
         "[AgentChatPage] 收到文件写入:",
         fileName,
@@ -4476,48 +4906,35 @@ export function AgentChatPage({
 
       // General 主题使用专门的画布处理
       if (activeTheme === "general") {
-        const ext = fileName.split(".").pop()?.toLowerCase() || "";
-        const isCode = [
-          "js",
-          "ts",
-          "tsx",
-          "jsx",
-          "py",
-          "rs",
-          "go",
-          "java",
-          "c",
-          "cpp",
-          "h",
-          "css",
-          "scss",
-          "json",
-          "yaml",
-          "yml",
-          "toml",
-          "xml",
-          "html",
-          "sql",
-          "sh",
-          "bash",
-        ].includes(ext);
-        const isMd = ["md", "markdown"].includes(ext);
+        const nextArtifact = context?.artifact
+          ? {
+              ...context.artifact,
+              content: content || context.artifact.content,
+              status: context.status || context.artifact.status,
+              meta: {
+                ...context.artifact.meta,
+                ...(context.metadata || {}),
+              },
+              updatedAt: Date.now(),
+            }
+          : buildArtifactFromWrite({
+              filePath: fileName,
+              content,
+              context: {
+                ...context,
+                status: context?.status || (content.length > 0 ? "complete" : "pending"),
+              },
+            });
 
-        console.log(
-          "[AgentChatPage] General 主题文件写入:",
-          fileName,
-          "类型:",
-          isCode ? "code" : isMd ? "markdown" : "file",
-        );
+        if (content.length > 0) {
+          saveSessionFile(fileName, content).catch((error) => {
+            console.error("[AgentChatPage] 持久化 artifact 失败:", error);
+          });
+        }
 
-        setGeneralCanvasState({
-          isOpen: true,
-          contentType: isCode ? "code" : isMd ? "markdown" : "file",
-          content,
-          language: isCode ? ext : undefined,
-          filename: fileName,
-          isEditing: false,
-        });
+        upsertGeneralArtifact(nextArtifact);
+        setSelectedArtifactId(nextArtifact.id);
+        setArtifactViewMode(resolveDefaultArtifactViewMode(nextArtifact));
         setLayoutMode("chat-canvas");
         return;
       }
@@ -4528,28 +4945,63 @@ export function AgentChatPage({
       const activeRunVersionId = activeQueueItem?.run_id?.trim() || null;
       const activeRunDescription =
         activeQueueItem?.title?.trim() || `产物更新 - ${fileName}`;
+      const socialGateKey =
+        currentGate.key === "idle" ||
+        currentGate.key === "topic_select" ||
+        currentGate.key === "write_mode" ||
+        currentGate.key === "publish_confirm"
+          ? currentGate.key
+          : undefined;
+      const socialArtifact =
+        mappedTheme === "social-media"
+          ? resolveSocialMediaArtifactDescriptor({
+              fileName,
+              gateKey: socialGateKey,
+              runTitle: activeRunDescription,
+            })
+          : null;
       const isThemeWorkbenchPrimaryArtifact =
         !isThemeWorkbench || isThemeWorkbenchPrimaryDocumentArtifact(fileName);
       const shouldApplyToMainDocument =
         nextFileType === "document" &&
         isThemeWorkbenchPrimaryArtifact &&
         (!isThemeWorkbench || currentGate.key !== "topic_select");
-      const effectiveThemeWorkbenchVersionId =
+      const effectiveDocumentVersionId =
         activeRunVersionId ||
-        (isThemeWorkbench && shouldApplyToMainDocument
+        ((isThemeWorkbench || mappedTheme === "social-media") &&
+        shouldApplyToMainDocument
           ? `artifact:${fileName}`
           : null);
+      const effectiveVersionDescription =
+        socialArtifact?.versionLabel || activeRunDescription;
+      const baseVersionMetadata =
+        socialArtifact && shouldApplyToMainDocument
+          ? {
+              artifactId: socialArtifact.artifactId,
+              artifactType: socialArtifact.artifactType,
+              stage: socialArtifact.stage,
+              platform: socialArtifact.platform,
+              sourceFileName: fileName,
+              runId: activeRunVersionId || undefined,
+              correlationId:
+                effectiveDocumentVersionId || activeRunVersionId || undefined,
+            }
+          : undefined;
+      const existingTaskFile = taskFilesRef.current.find(
+        (file) => file.name === fileName,
+      );
+      const hasTaskFileChanged = existingTaskFile?.content !== content;
 
-      if (isThemeWorkbench && effectiveThemeWorkbenchVersionId) {
+      if (isThemeWorkbench && effectiveDocumentVersionId) {
         const nextStatus: TopicBranchStatus =
           activeQueueItem?.status === "running" ? "in_progress" : "pending";
         setDocumentVersionStatusMap((previous) => {
-          if (previous[effectiveThemeWorkbenchVersionId] === nextStatus) {
+          if (previous[effectiveDocumentVersionId] === nextStatus) {
             return previous;
           }
           return {
             ...previous,
-            [effectiveThemeWorkbenchVersionId]: nextStatus,
+            [effectiveDocumentVersionId]: nextStatus,
           };
         });
       }
@@ -4606,6 +5058,50 @@ export function AgentChatPage({
         });
       }
 
+      if (socialArtifact && hasTaskFileChanged) {
+        activityLogger.log({
+          eventType: existingTaskFile ? "file_update" : "file_create",
+          status: "success",
+          title: `${existingTaskFile ? "更新" : "生成"}${socialArtifact.versionLabel}`,
+          description: fileName,
+          workspaceId: projectId || undefined,
+          sessionId: sessionId || undefined,
+          source: "aster-chat",
+          correlationId:
+            effectiveDocumentVersionId || activeRunVersionId || fileName,
+          metadata: {
+            ...baseVersionMetadata,
+            stageLabel: socialArtifact.stageLabel,
+            isAuxiliary: socialArtifact.isAuxiliary,
+          },
+        });
+
+        const stageLogKey = `${
+          effectiveDocumentVersionId || socialArtifact.artifactId
+        }:${socialArtifact.stage}`;
+        if (
+          !socialArtifact.isAuxiliary &&
+          socialStageLogRef.current[stageLogKey] !== socialArtifact.stage
+        ) {
+          socialStageLogRef.current[stageLogKey] = socialArtifact.stage;
+          activityLogger.log({
+            eventType: "step_complete",
+            status: "success",
+            title: socialArtifact.stageLabel,
+            description: `${socialArtifact.versionLabel}已进入版本链`,
+            workspaceId: projectId || undefined,
+            sessionId: sessionId || undefined,
+            source: "aster-chat",
+            correlationId:
+              effectiveDocumentVersionId || activeRunVersionId || fileName,
+            metadata: {
+              ...baseVersionMetadata,
+              stageLabel: socialArtifact.stageLabel,
+            },
+          });
+        }
+      }
+
       // 更新或创建文件
       setTaskFiles((prev) => {
         // 查找同名文件
@@ -4630,6 +5126,14 @@ export function AgentChatPage({
             type: nextFileType,
             content,
             updatedAt: now,
+            metadata: socialArtifact
+              ? {
+                  ...(existing.metadata || {}),
+                  ...baseVersionMetadata,
+                  stageLabel: socialArtifact.stageLabel,
+                  versionLabel: socialArtifact.versionLabel,
+                }
+              : existing.metadata,
           };
           setSelectedFileId(existing.id);
           return updated;
@@ -4645,6 +5149,13 @@ export function AgentChatPage({
           version: 1,
           createdAt: now,
           updatedAt: now,
+          metadata: socialArtifact
+            ? {
+                ...baseVersionMetadata,
+                stageLabel: socialArtifact.stageLabel,
+                versionLabel: socialArtifact.versionLabel,
+              }
+            : undefined,
         };
         setSelectedFileId(newFile.id);
         return [...prev, newFile];
@@ -4696,27 +5207,43 @@ export function AgentChatPage({
         if (!prev || prev.type !== "document") {
           console.log("[AgentChatPage] 创建新文档状态");
           const initialDocumentState = createInitialDocumentState(content);
-          if (!isThemeWorkbench || !effectiveThemeWorkbenchVersionId) {
+          if (!effectiveDocumentVersionId) {
+            if (!socialArtifact) {
+              return initialDocumentState;
+            }
+            return {
+              ...initialDocumentState,
+              platform: socialArtifact.platform || initialDocumentState.platform,
+              versions: initialDocumentState.versions.map((version) => ({
+                ...version,
+                description: effectiveVersionDescription,
+                metadata: baseVersionMetadata,
+              })),
+            };
+          }
+          if (!isThemeWorkbench && mappedTheme !== "social-media") {
             return initialDocumentState;
           }
           return {
             ...initialDocumentState,
+            platform: socialArtifact?.platform || initialDocumentState.platform,
             versions: [
               {
-                id: effectiveThemeWorkbenchVersionId,
+                id: effectiveDocumentVersionId,
                 content,
                 createdAt: now,
-                description: activeRunDescription,
+                description: effectiveVersionDescription,
+                metadata: baseVersionMetadata,
               },
             ],
-            currentVersionId: effectiveThemeWorkbenchVersionId,
+            currentVersionId: effectiveDocumentVersionId,
             content,
           };
         }
 
-        if (isThemeWorkbench && effectiveThemeWorkbenchVersionId) {
+        if (effectiveDocumentVersionId) {
           const existingIndex = prev.versions.findIndex(
-            (version) => version.id === effectiveThemeWorkbenchVersionId,
+            (version) => version.id === effectiveDocumentVersionId,
           );
 
           if (existingIndex >= 0) {
@@ -4725,37 +5252,56 @@ export function AgentChatPage({
             nextVersions[existingIndex] = {
               ...currentVersion,
               content,
-              description: currentVersion.description || activeRunDescription,
+              description: currentVersion.description || effectiveVersionDescription,
+              metadata: {
+                ...(currentVersion.metadata || {}),
+                ...(baseVersionMetadata || {}),
+              },
             };
             return {
               ...prev,
               content,
+              platform: socialArtifact?.platform || prev.platform,
               versions: nextVersions,
-              currentVersionId: effectiveThemeWorkbenchVersionId,
+              currentVersionId: effectiveDocumentVersionId,
             };
           }
 
+          const parentVersion =
+            prev.versions.find(
+              (version) => version.id === prev.currentVersionId,
+            ) || prev.versions[prev.versions.length - 1];
           const nextVersions = [
             ...prev.versions,
             {
-              id: effectiveThemeWorkbenchVersionId,
+              id: effectiveDocumentVersionId,
               content,
               createdAt: now,
-              description: activeRunDescription,
+              description: effectiveVersionDescription,
+              metadata: {
+                ...(baseVersionMetadata || {}),
+                parentVersionId:
+                  parentVersion && parentVersion.id !== effectiveDocumentVersionId
+                    ? parentVersion.id
+                    : undefined,
+                parentArtifactId: parentVersion?.metadata?.artifactId,
+              },
             },
           ].slice(-MAX_PERSISTED_DOCUMENT_VERSIONS);
 
           return {
             ...prev,
             content,
+            platform: socialArtifact?.platform || prev.platform,
             versions: nextVersions,
-            currentVersionId: effectiveThemeWorkbenchVersionId,
+            currentVersionId: effectiveDocumentVersionId,
           };
         }
         console.log("[AgentChatPage] 更新现有文档状态");
         return {
           ...prev,
           content,
+          platform: socialArtifact?.platform || prev.platform,
         };
       });
 
@@ -4764,6 +5310,8 @@ export function AgentChatPage({
     },
     [
       activeTheme, // 添加 activeTheme 依赖
+      setArtifactViewMode,
+      setSelectedArtifactId,
       currentGate.key,
       contentId,
       currentStepIndex,
@@ -4771,8 +5319,11 @@ export function AgentChatPage({
       isThemeWorkbench,
       completeStep,
       mappedTheme,
+      projectId,
       saveSessionFile,
+      sessionId,
       themeWorkbenchActiveQueueItem,
+      upsertGeneralArtifact,
       upsertNovelCanvasState,
     ],
   );
@@ -4782,49 +5333,150 @@ export function AgentChatPage({
     handleWriteFileRef.current = handleWriteFile;
   }, [handleWriteFile]);
 
+  const handleHarnessLoadFilePreview = useCallback(
+    async (path: string): Promise<HarnessFilePreviewResult> => {
+      const normalizedPath = path.trim();
+      const createFallbackResult = (
+        overrides: Partial<HarnessFilePreviewResult> = {},
+      ): HarnessFilePreviewResult => ({
+        path: normalizedPath,
+        content: null,
+        isBinary: false,
+        size: 0,
+        error: null,
+        ...overrides,
+      });
+
+      if (!normalizedPath) {
+        return createFallbackResult({ error: "文件路径为空" });
+      }
+
+      const fileName = extractFileNameFromPath(normalizedPath);
+      const candidateNames = [...new Set([normalizedPath, fileName])];
+
+      const matchedTaskFile = taskFiles.find((file) =>
+        candidateNames.includes(file.name),
+      );
+      if (matchedTaskFile) {
+        const content = matchedTaskFile.content ?? "";
+        return createFallbackResult({
+          path: matchedTaskFile.name,
+          content,
+          size: content.length,
+        });
+      }
+
+      const matchedSessionFile = sessionFiles.find((file) =>
+        candidateNames.includes(file.name),
+      );
+      if (matchedSessionFile) {
+        const content = await readSessionFile(matchedSessionFile.name);
+        if (content !== null) {
+          return createFallbackResult({
+            path: matchedSessionFile.name,
+            content,
+            size: content.length,
+          });
+        }
+      }
+
+      try {
+        const result = await readFilePreview(normalizedPath, 64 * 1024);
+
+        return createFallbackResult({
+          path: result.path || normalizedPath,
+          content: result.content ?? null,
+          isBinary: result.isBinary ?? false,
+          size: result.size ?? 0,
+          error: result.error ?? null,
+        });
+      } catch (error) {
+        return createFallbackResult({
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [readSessionFile, sessionFiles, taskFiles],
+  );
+
+  const openArtifactInWorkbench = useCallback(
+    async (artifact: Artifact) => {
+      let nextArtifact = artifact;
+      const artifactPath = resolveArtifactFilePath(artifact);
+      const shouldLoadPreview = artifact.content.length === 0 && artifactPath;
+
+      if (shouldLoadPreview) {
+        const preview = await handleHarnessLoadFilePreview(artifactPath);
+        if (preview.error) {
+          toast.error(`读取产物失败: ${preview.error}`);
+        } else if (preview.isBinary) {
+          toast.info("该产物为二进制文件，暂不支持在工作台预览");
+        } else if (typeof preview.content === "string") {
+          nextArtifact = {
+            ...artifact,
+            content: preview.content,
+            meta: {
+              ...artifact.meta,
+              filePath: preview.path || artifactPath,
+              filename:
+                artifact.meta.filename ||
+                extractFileNameFromPath(preview.path || artifactPath),
+            },
+            updatedAt: Date.now(),
+          };
+          upsertGeneralArtifact(nextArtifact);
+        }
+      }
+
+      setSelectedArtifactId(nextArtifact.id);
+      setArtifactViewMode(resolveDefaultArtifactViewMode(nextArtifact));
+      setLayoutMode("chat-canvas");
+    },
+    [
+      handleHarnessLoadFilePreview,
+      setSelectedArtifactId,
+      upsertGeneralArtifact,
+    ],
+  );
+
+  const handleArtifactClick = useCallback(
+    (artifact: Artifact) => {
+      void openArtifactInWorkbench(artifact);
+    },
+    [openArtifactInWorkbench],
+  );
+
   // 处理文件点击 - 在画布中显示文件内容
   const handleFileClick = useCallback(
     (fileName: string, content: string) => {
       console.log("[AgentChatPage] 文件点击:", fileName, "主题:", activeTheme);
 
-      // General 主题使用专门的画布
+      // General 主题统一走 artifact 工作台
       if (activeTheme === "general") {
-        const ext = fileName.split(".").pop()?.toLowerCase() || "";
-        const isCode = [
-          "js",
-          "ts",
-          "tsx",
-          "jsx",
-          "py",
-          "rs",
-          "go",
-          "java",
-          "c",
-          "cpp",
-          "h",
-          "css",
-          "scss",
-          "json",
-          "yaml",
-          "yml",
-          "toml",
-          "xml",
-          "html",
-          "sql",
-          "sh",
-          "bash",
-        ].includes(ext);
-        const isMd = ["md", "markdown"].includes(ext);
-
-        setGeneralCanvasState({
-          isOpen: true,
-          contentType: isCode ? "code" : isMd ? "markdown" : "file",
-          content,
-          language: isCode ? ext : undefined,
-          filename: fileName,
-          isEditing: false,
+        const matchingArtifact = artifacts.find((artifact) => {
+          const artifactPath = resolveArtifactFilePath(artifact);
+          return (
+            artifactPath === fileName ||
+            artifact.title === extractFileNameFromPath(fileName) ||
+            (content.trim().length > 0 && artifact.content === content)
+          );
         });
-        setLayoutMode("chat-canvas");
+        const nextArtifact =
+          matchingArtifact ||
+          buildArtifactFromWrite({
+            filePath: fileName,
+            content,
+            context: {
+              source: "message_content",
+              status: content.length > 0 ? "complete" : "pending",
+            },
+          });
+
+        if (!matchingArtifact) {
+          upsertGeneralArtifact(nextArtifact);
+        }
+
+        void openArtifactInWorkbench(nextArtifact);
         return;
       }
 
@@ -4894,73 +5546,15 @@ export function AgentChatPage({
       // 打开画布
       setLayoutMode("chat-canvas");
     },
-    [activeTheme, isThemeWorkbench, mappedTheme, upsertNovelCanvasState],
-  );
-
-  const handleHarnessLoadFilePreview = useCallback(
-    async (path: string): Promise<HarnessFilePreviewResult> => {
-      const normalizedPath = path.trim();
-      const createFallbackResult = (
-        overrides: Partial<HarnessFilePreviewResult> = {},
-      ): HarnessFilePreviewResult => ({
-        path: normalizedPath,
-        content: null,
-        isBinary: false,
-        size: 0,
-        error: null,
-        ...overrides,
-      });
-
-      if (!normalizedPath) {
-        return createFallbackResult({ error: "文件路径为空" });
-      }
-
-      const fileName = extractFileNameFromPath(normalizedPath);
-      const candidateNames = [...new Set([normalizedPath, fileName])];
-
-      const matchedTaskFile = taskFiles.find((file) =>
-        candidateNames.includes(file.name),
-      );
-      if (matchedTaskFile) {
-        const content = matchedTaskFile.content ?? "";
-        return createFallbackResult({
-          path: matchedTaskFile.name,
-          content,
-          size: content.length,
-        });
-      }
-
-      const matchedSessionFile = sessionFiles.find((file) =>
-        candidateNames.includes(file.name),
-      );
-      if (matchedSessionFile) {
-        const content = await readSessionFile(matchedSessionFile.name);
-        if (content !== null) {
-          return createFallbackResult({
-            path: matchedSessionFile.name,
-            content,
-            size: content.length,
-          });
-        }
-      }
-
-      try {
-        const result = await readFilePreview(normalizedPath, 64 * 1024);
-
-        return createFallbackResult({
-          path: result.path || normalizedPath,
-          content: result.content ?? null,
-          isBinary: result.isBinary ?? false,
-          size: result.size ?? 0,
-          error: result.error ?? null,
-        });
-      } catch (error) {
-        return createFallbackResult({
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    },
-    [readSessionFile, sessionFiles, taskFiles],
+    [
+      activeTheme,
+      artifacts,
+      isThemeWorkbench,
+      mappedTheme,
+      openArtifactInWorkbench,
+      upsertGeneralArtifact,
+      upsertNovelCanvasState,
+    ],
   );
 
   // 处理代码块点击 - 在画布中显示代码（General 主题专用）
@@ -5323,6 +5917,65 @@ export function AgentChatPage({
         : undefined,
     [enableThemeWorkbenchPanelCollapse, handleThemeWorkbenchSidebarCollapse],
   );
+  const themeWorkbenchHarnessHeaderAction = useMemo(() => {
+    if (!isThemeWorkbench || !socialMediaHarnessSummary) {
+      return null;
+    }
+
+    return (
+      <SocialMediaHarnessCard
+        runState={socialMediaHarnessSummary.runState}
+        stageTitle={socialMediaHarnessSummary.stageTitle}
+        stageDescription={socialMediaHarnessSummary.stageDescription}
+        runTitle={socialMediaHarnessSummary.runTitle}
+        artifactCount={socialMediaHarnessSummary.artifactCount}
+        updatedAt={socialMediaHarnessSummary.updatedAt}
+        pendingCount={socialMediaHarnessSummary.pendingCount}
+        harnessPanelVisible={harnessPanelVisible}
+        layout="icon"
+        onToggleHarnessPanel={handleToggleHarnessPanel}
+      />
+    );
+  }, [
+    handleToggleHarnessPanel,
+    harnessPanelVisible,
+    isThemeWorkbench,
+    socialMediaHarnessSummary,
+  ]);
+  const themeWorkbenchHarnessSlot = useMemo(() => {
+    return null;
+  }, []);
+  const themeWorkbenchHarnessDialog = useMemo(() => {
+    if (!isThemeWorkbench) {
+      return null;
+    }
+
+    return (
+      <Dialog open={harnessPanelVisible} onOpenChange={setHarnessPanelVisible}>
+        <DialogContent
+          maxWidth="max-w-6xl"
+          className="max-h-[90vh] overflow-hidden p-0"
+        >
+          <HarnessStatusPanel
+            harnessState={harnessState}
+            subAgentRuntime={subAgentRuntime}
+            environment={harnessEnvironment}
+            layout="dialog"
+            onLoadFilePreview={handleHarnessLoadFilePreview}
+            onOpenFile={handleFileClick}
+          />
+        </DialogContent>
+      </Dialog>
+    );
+  }, [
+    handleFileClick,
+    handleHarnessLoadFilePreview,
+    harnessEnvironment,
+    harnessPanelVisible,
+    harnessState,
+    isThemeWorkbench,
+    subAgentRuntime,
+  ]);
   const themeWorkbenchSidebarNode = useMemo(() => {
     if (!showThemeWorkbenchSidebar) {
       return null;
@@ -5359,6 +6012,14 @@ export function AgentChatPage({
         activeRunDetail={selectedThemeWorkbenchRunDetail}
         activeRunDetailLoading={themeWorkbenchRunDetailLoading}
         onRequestCollapse={themeWorkbenchSidebarCollapseHandler}
+        historyHasMore={themeWorkbenchHistoryHasMore}
+        historyLoading={themeWorkbenchHistoryLoading}
+        onLoadMoreHistory={
+          themeWorkbenchHistoryHasMore ? handleLoadMoreThemeWorkbenchHistory : undefined
+        }
+        skillDetailMap={themeWorkbenchSkillDetailMap}
+        headerActionSlot={themeWorkbenchHarnessHeaderAction}
+        topSlot={themeWorkbenchHarnessSlot}
         messages={messages}
       />
     );
@@ -5385,13 +6046,19 @@ export function AgentChatPage({
     handleSwitchBranchVersion,
     handleThemeWorkbenchDeleteTopic,
     handleViewContextDetail,
+    handleLoadMoreThemeWorkbenchHistory,
     handleViewThemeWorkbenchRunDetail,
     selectedThemeWorkbenchRunDetail,
     showThemeWorkbenchSidebar,
+    themeWorkbenchHarnessHeaderAction,
+    themeWorkbenchHarnessSlot,
     themeWorkbenchCreationTaskEvents,
     themeWorkbenchActivityLogs,
+    themeWorkbenchHistoryHasMore,
+    themeWorkbenchHistoryLoading,
     themeWorkbenchRunDetailLoading,
     themeWorkbenchSidebarCollapseHandler,
+    themeWorkbenchSkillDetailMap,
     themeWorkbenchWorkflowSteps,
     messages,
   ]);
@@ -5706,6 +6373,59 @@ export function AgentChatPage({
     ],
   );
 
+  const generalWorkbenchDialog = useMemo(() => {
+    if (chatMode !== "general" || isThemeWorkbench) {
+      return null;
+    }
+
+    return (
+      <Dialog open={harnessPanelVisible} onOpenChange={setHarnessPanelVisible}>
+        <DialogContent
+          maxWidth="max-w-5xl"
+          className="max-h-[88vh] overflow-hidden p-0"
+        >
+        <HarnessStatusPanel
+          harnessState={harnessState}
+          subAgentRuntime={subAgentRuntime}
+          environment={harnessEnvironment}
+          layout="dialog"
+          title="Agent 工作台"
+          description="集中查看计划、审批、子代理、文件活动与工具产物。"
+          toggleLabel="工作台详情"
+          leadContent={
+            <AgentRuntimeStrip
+              activeTheme={mappedTheme}
+              toolPreferences={chatToolPreferences}
+              harnessState={harnessState}
+              subAgentRuntime={subAgentRuntime}
+              variant="embedded"
+              isSending={isSending}
+              runtimeStatusTitle={activeRuntimeStatusTitle}
+            />
+          }
+          onLoadFilePreview={handleHarnessLoadFilePreview}
+          onOpenFile={handleFileClick}
+        />
+        </DialogContent>
+      </Dialog>
+    );
+  }, [
+    chatMode,
+    chatToolPreferences,
+    activeRuntimeStatusTitle,
+    handleFileClick,
+    handleHarnessLoadFilePreview,
+    harnessPanelVisible,
+    harnessEnvironment,
+    harnessState,
+    isSending,
+    isThemeWorkbench,
+    mappedTheme,
+    subAgentRuntime,
+  ]);
+
+  const shouldRenderInlineA2UI = isContentCreationMode;
+
   // 聊天区域内容
   const chatContent = useMemo(
     () => (
@@ -5747,110 +6467,125 @@ export function AgentChatPage({
               actionsDisabled={styleActionsDisabled}
             />
           ) : null}
-
-          {harnessPanelVisible ? (
-            <HarnessStatusPanel
-              harnessState={harnessState}
-              subAgentRuntime={subAgentRuntime}
-              environment={harnessEnvironment}
-              onLoadFilePreview={handleHarnessLoadFilePreview}
-              onOpenFile={handleFileClick}
-            />
-          ) : null}
-
           {showChatLayout ? (
             <ChatContent>
-              {contextWorkspace.enabled ? (
-                <MessageViewport>
+              <>
+                {contextWorkspace.enabled ? (
+                  <MessageViewport>
+                    <MessageList
+                      messages={messages}
+                      turns={turns}
+                      threadItems={effectiveThreadItems}
+                      currentTurnId={currentTurnId}
+                      onDeleteMessage={deleteMessage}
+                      onEditMessage={editMessage}
+                      onA2UISubmit={handleA2UISubmit}
+                      onWriteFile={handleWriteFile}
+                      onFileClick={handleFileClick}
+                      onArtifactClick={handleArtifactClick}
+                      onPermissionResponse={handlePermissionResponse}
+                      renderA2UIInline={shouldRenderInlineA2UI}
+                      collapseCodeBlocks={shouldCollapseCodeBlocks}
+                      onCodeBlockClick={handleCodeBlockClick}
+                    />
+                  </MessageViewport>
+                ) : (
                   <MessageList
                     messages={messages}
+                    turns={turns}
+                    threadItems={effectiveThreadItems}
+                    currentTurnId={currentTurnId}
                     onDeleteMessage={deleteMessage}
                     onEditMessage={editMessage}
                     onA2UISubmit={handleA2UISubmit}
                     onWriteFile={handleWriteFile}
                     onFileClick={handleFileClick}
+                    onArtifactClick={handleArtifactClick}
                     onPermissionResponse={handlePermissionResponse}
+                    renderA2UIInline={shouldRenderInlineA2UI}
                     collapseCodeBlocks={shouldCollapseCodeBlocks}
                     onCodeBlockClick={handleCodeBlockClick}
                   />
-                </MessageViewport>
-              ) : (
-                <MessageList
-                  messages={messages}
-                  onDeleteMessage={deleteMessage}
-                  onEditMessage={editMessage}
-                  onA2UISubmit={handleA2UISubmit}
-                  onWriteFile={handleWriteFile}
-                  onFileClick={handleFileClick}
-                  onPermissionResponse={handlePermissionResponse}
-                  collapseCodeBlocks={shouldCollapseCodeBlocks}
-                  onCodeBlockClick={handleCodeBlockClick}
-                />
-              )}
-              {contextWorkspace.enabled && !isThemeWorkbench ? (
-                <FloatingInputbarContainer>
-                  {inputbarNode}
-                </FloatingInputbarContainer>
-              ) : null}
+                )}
+                {contextWorkspace.enabled && !isThemeWorkbench ? (
+                  <FloatingInputbarContainer>
+                    {inputbarNode}
+                  </FloatingInputbarContainer>
+                ) : null}
+              </>
             </ChatContent>
           ) : (
-            <EmptyState
-              input={input}
-              setInput={setInput}
-              onSend={(text, sendExecutionStrategy, images) => {
-                handleSend(
-                  images || [],
-                  chatToolPreferences.webSearch,
-                  chatToolPreferences.thinking,
-                  text,
-                  sendExecutionStrategy,
-                );
-              }}
-              providerType={providerType}
-              setProviderType={setProviderType}
-              model={model}
-              setModel={setModel}
-              executionStrategy={executionStrategy}
-              setExecutionStrategy={setExecutionStrategy}
-              onManageProviders={handleManageProviders}
-              webSearchEnabled={chatToolPreferences.webSearch}
-              onWebSearchEnabledChange={(enabled) =>
-                setChatToolPreferences((prev) => ({
-                  ...prev,
-                  webSearch: enabled,
-                }))
-              }
-              thinkingEnabled={chatToolPreferences.thinking}
-              onThinkingEnabledChange={(enabled) =>
-                setChatToolPreferences((prev) => ({
-                  ...prev,
-                  thinking: enabled,
-                }))
-              }
-              creationMode={creationMode}
-              onCreationModeChange={setCreationMode}
-              activeTheme={activeTheme}
-              onThemeChange={(theme) => {
-                if (!lockTheme) {
-                  setActiveTheme(theme);
+              <EmptyState
+                input={input}
+                setInput={setInput}
+                onSend={(text, sendExecutionStrategy, images) => {
+                  handleSend(
+                    images || [],
+                    chatToolPreferences.webSearch,
+                    chatToolPreferences.thinking,
+                    text,
+                    sendExecutionStrategy,
+                  );
+                }}
+                providerType={providerType}
+                setProviderType={setProviderType}
+                model={model}
+                setModel={setModel}
+                executionStrategy={executionStrategy}
+                setExecutionStrategy={setExecutionStrategy}
+                onManageProviders={handleManageProviders}
+                webSearchEnabled={chatToolPreferences.webSearch}
+                onWebSearchEnabledChange={(enabled) =>
+                  setChatToolPreferences((prev) => ({
+                    ...prev,
+                    webSearch: enabled,
+                  }))
                 }
-              }}
-              showThemeTabs={false}
-              hasCanvasContent={
-                activeTheme === "general"
-                  ? Boolean(generalCanvasState.content?.trim())
-                  : !isCanvasStateEmpty(resolvedCanvasState)
-              }
-              hasContentId={Boolean(contentId)}
-              selectedText={selectedText}
-              onRecommendationClick={(shortLabel, fullPrompt) => {
-                setInput(fullPrompt);
-              }}
-              characters={projectMemory?.characters || []}
-              skills={skills}
-              onNavigateToSettings={handleNavigateToSkillSettings}
-            />
-          )}
+                thinkingEnabled={chatToolPreferences.thinking}
+                onThinkingEnabledChange={(enabled) =>
+                  setChatToolPreferences((prev) => ({
+                    ...prev,
+                    thinking: enabled,
+                  }))
+                }
+                taskEnabled={chatToolPreferences.task}
+                onTaskEnabledChange={(enabled) =>
+                  setChatToolPreferences((prev) => ({
+                    ...prev,
+                    task: enabled,
+                  }))
+                }
+                subagentEnabled={chatToolPreferences.subagent}
+                onSubagentEnabledChange={(enabled) =>
+                  setChatToolPreferences((prev) => ({
+                    ...prev,
+                    subagent: enabled,
+                  }))
+                }
+                creationMode={creationMode}
+                onCreationModeChange={setCreationMode}
+                activeTheme={activeTheme}
+                onThemeChange={(theme) => {
+                  if (!lockTheme) {
+                    setActiveTheme(theme);
+                  }
+                }}
+                showThemeTabs={false}
+                hasCanvasContent={
+                  activeTheme === "general"
+                    ? artifacts.length > 0 || Boolean(generalCanvasState.content?.trim())
+                    : !isCanvasStateEmpty(resolvedCanvasState)
+                }
+                hasContentId={Boolean(contentId)}
+                selectedText={selectedText}
+                onRecommendationClick={(shortLabel, fullPrompt) => {
+                  setInput(fullPrompt);
+                }}
+                characters={projectMemory?.characters || []}
+                skills={skills}
+                onNavigateToSettings={handleNavigateToSkillSettings}
+              />
+            )}
 
           {showChatLayout && (
             <>
@@ -5890,12 +6625,13 @@ export function AgentChatPage({
     ),
     [
       activeTheme,
-      chatToolPreferences.thinking,
-      chatToolPreferences.webSearch,
+      artifacts.length,
+      chatToolPreferences,
       contentId,
       contextWorkspace.enabled,
       creationMode,
       currentStepIndex,
+      currentTurnId,
       deleteMessage,
       dismissWorkspacePathError,
       entryBannerMessage,
@@ -5905,19 +6641,16 @@ export function AgentChatPage({
       generalCanvasState.content,
       goToStep,
       handleA2UISubmit,
+      handleArtifactClick,
       handleCodeBlockClick,
       handleFileClick,
-      handleHarnessLoadFilePreview,
       handleManageProviders,
       handleNavigateToSkillSettings,
       handlePermissionResponse,
       handleSelectWorkspaceDirectory,
       handleSend,
       handleWriteFile,
-      harnessEnvironment,
-      harnessPanelVisible,
       hasMessages,
-      harnessState,
       hideInlineStepProgress,
       input,
       inputbarNode,
@@ -5926,6 +6659,7 @@ export function AgentChatPage({
       lockTheme,
       messages,
       model,
+      turns,
       projectId,
       projectMemory?.characters,
       projectMemory?.style_guide,
@@ -5940,18 +6674,19 @@ export function AgentChatPage({
       selectedText,
       setEntryBannerVisible,
       showChatLayout,
+      effectiveThreadItems,
       handleRunStyleAudit,
       handleRunStyleRewrite,
       mappedTheme,
       runtimeStyleSelection,
       styleActionsDisabled,
-      subAgentRuntime,
       skills,
       steps,
       workspaceHealthError,
       workspacePathMissing,
       resolvedCanvasState,
       shouldHideThemeWorkbenchInputForTheme,
+      shouldRenderInlineA2UI,
     ],
   );
 
@@ -5967,26 +6702,28 @@ export function AgentChatPage({
       (artifacts.length > 0 ? artifacts[artifacts.length - 1] : null);
     if (renderCanvasTheme === "general" && currentArtifact) {
       return (
-        <div className="flex flex-col h-full bg-[#1e2227]">
-          {/* 使用 ArtifactToolbar 组件 */}
-          <ArtifactToolbar
-            artifact={currentArtifact}
-            onClose={handleCloseCanvas}
-            isStreaming={currentArtifact.status === "streaming"}
-            viewMode={artifactViewMode}
-            onViewModeChange={setArtifactViewMode}
-            previewSize={artifactPreviewSize}
-            onPreviewSizeChange={setArtifactPreviewSize}
-          />
-          {/* 渲染区域 */}
-          <div className="flex-1 overflow-auto">
-            <ArtifactRenderer
+        <div className="flex h-full flex-col rounded-[14px] border border-border bg-background">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <ArtifactToolbar
               artifact={currentArtifact}
+              onClose={handleCloseCanvas}
               isStreaming={currentArtifact.status === "streaming"}
-              hideToolbar={true}
               viewMode={artifactViewMode}
+              onViewModeChange={setArtifactViewMode}
               previewSize={artifactPreviewSize}
+              onPreviewSizeChange={setArtifactPreviewSize}
+              tone="light"
             />
+            <div className="flex-1 overflow-auto bg-background">
+              <ArtifactRenderer
+                artifact={currentArtifact}
+                isStreaming={currentArtifact.status === "streaming"}
+                hideToolbar={true}
+                viewMode={artifactViewMode}
+                previewSize={artifactPreviewSize}
+                tone="light"
+              />
+            </div>
           </div>
         </div>
       );
@@ -6127,12 +6864,15 @@ export function AgentChatPage({
               workspaceType={activeTheme}
               onBackHome={handleBackHome}
               showHarnessToggle={showHarnessToggle}
-              harnessPanelVisible={harnessPanelVisible}
-              onToggleHarnessPanel={() =>
-                setHarnessPanelVisible((current) => !current)
-              }
+              harnessPanelVisible={navbarHarnessPanelVisible}
+              onToggleHarnessPanel={handleToggleHarnessPanel}
               harnessPendingCount={harnessPendingCount}
               harnessAttentionLevel={harnessAttentionLevel}
+              harnessToggleLabel={
+                chatMode === "general" && !isThemeWorkbench
+                  ? "工作台"
+                  : undefined
+              }
               onToggleSettings={() => {
                 _onNavigate?.("settings", {
                   tab: SettingsTabs.ChatAppearance,
@@ -6214,6 +6954,8 @@ export function AgentChatPage({
             canvasContent={canvasContent}
           />
         </ThemeWorkbenchLayoutShell>
+        {generalWorkbenchDialog}
+        {themeWorkbenchHarnessDialog}
         {isThemeWorkbench &&
         showChatLayout &&
         !shouldHideThemeWorkbenchInputForTheme ? (
@@ -6238,6 +6980,7 @@ export function AgentChatPage({
       handleBackToResources,
       handleCloseCanvas,
       handleProjectChange,
+      handleToggleHarnessPanel,
       handleToggleNovelChapterList,
       handleToggleSidebar,
       hideHistoryToggle,
@@ -6245,8 +6988,10 @@ export function AgentChatPage({
       inputbarNode,
       isSending,
       isThemeWorkbench,
+      chatMode,
+      generalWorkbenchDialog,
       harnessAttentionLevel,
-      harnessPanelVisible,
+      navbarHarnessPanelVisible,
       harnessPendingCount,
       layoutMode,
       novelChapterListCollapsed,
@@ -6259,6 +7004,7 @@ export function AgentChatPage({
       showHarnessToggle,
       showNovelNavbarControls,
       syncStatus,
+      themeWorkbenchHarnessDialog,
       themeWorkbenchRunState,
     ],
   );

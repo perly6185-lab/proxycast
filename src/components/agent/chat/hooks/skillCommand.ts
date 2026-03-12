@@ -6,7 +6,7 @@ import {
   skillExecutionApi,
   type ExecutableSkillInfo,
 } from "@/lib/api/skill-execution";
-import type { ActionRequired, Message } from "../types";
+import type { ActionRequired, Message, WriteArtifactContext } from "../types";
 import {
   formatSkillFailureMessage,
   resolveSkillFailure,
@@ -34,7 +34,11 @@ export interface SlashSkillExecutionContext {
   isExecutionCancelled: () => boolean;
   playTypewriterSound: () => void;
   playToolcallSound: () => void;
-  onWriteFile?: (content: string, fileName: string) => void;
+  onWriteFile?: (
+    content: string,
+    fileName: string,
+    context?: WriteArtifactContext,
+  ) => void;
 }
 
 const VALID_ACTION_TYPES = new Set<ActionRequired["actionType"]>([
@@ -180,7 +184,12 @@ function appendThinkingPart(
 function tryHandleToolWriteFile(
   toolName: string,
   toolArguments: string | undefined,
-  onWriteFile?: (content: string, fileName: string) => void,
+  onWriteFile?: (
+    content: string,
+    fileName: string,
+    context?: WriteArtifactContext,
+  ) => void,
+  assistantMsgId?: string,
 ) {
   if (!onWriteFile || !toolArguments) {
     return;
@@ -207,7 +216,12 @@ function tryHandleToolWriteFile(
       (typeof parsed.text === "string" ? parsed.text : undefined);
 
     if (filePath && fileContent) {
-      onWriteFile(fileContent, filePath);
+      onWriteFile(fileContent, filePath, {
+        artifactId: `artifact:${assistantMsgId || "skill"}:${filePath}`,
+        source: "tool_start",
+        sourceMessageId: assistantMsgId,
+        status: "streaming",
+      });
     }
   } catch (error) {
     console.warn("[SkillCommand] 解析 tool_start 参数失败:", error);
@@ -417,6 +431,7 @@ export async function tryExecuteSlashSkillCommand(
             streamEvent.tool_name,
             streamEvent.arguments,
             onWriteFile,
+            assistantMsgId,
           );
 
           const newToolCall = {

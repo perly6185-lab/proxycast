@@ -1,5 +1,9 @@
-import type { ContextTraceStep, ToolCallState } from "@/lib/api/agentStream";
-import type { ActionRequired, Message } from "../types";
+import type {
+  AgentThreadItem,
+  ContextTraceStep,
+  ToolCallState,
+} from "@/lib/api/agentStream";
+import type { ActionRequired, AgentRuntimeStatus, Message } from "../types";
 
 export type HarnessTodoStatus = "pending" | "in_progress" | "completed";
 export type HarnessPlanPhase = "idle" | "planning" | "ready";
@@ -87,6 +91,7 @@ export interface HarnessFileEvent {
 }
 
 export interface HarnessSessionState {
+  runtimeStatus: AgentRuntimeStatus | null;
   pendingApprovals: ActionRequired[];
   latestContextTrace: ContextTraceStep[];
   plan: HarnessPlanState;
@@ -100,6 +105,19 @@ export interface HarnessSessionState {
 interface ToolCallEntry {
   toolCall: ToolCallState;
   messageTimestamp: Date;
+}
+
+function extractLatestRuntimeStatus(
+  messages: Message[],
+): AgentRuntimeStatus | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "assistant" && message.runtimeStatus) {
+      return message.runtimeStatus;
+    }
+  }
+
+  return null;
 }
 
 const PLANNING_TOOL_NAMES = new Set([
@@ -935,13 +953,287 @@ function extractDelegatedTask(toolCall: ToolCallState): HarnessDelegatedTask {
   };
 }
 
-export function deriveHarnessSessionState(
+function parsePlanTextToTodoItems(text: string): HarnessTodoItem[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) =>
+      /^(\d+\.\s+|[-*]\s+|\[[ xX]\]\s+)/.test(line),
+    )
+    .map((line, index) => {
+      const completed = /^\[[xX]\]/.test(line);
+      return {
+        id: `plan-${index + 1}`,
+        content: line.replace(/^(\d+\.\s+|[-*]\s+|\[[ xX]\]\s+)/, "").trim(),
+        status: completed ? "completed" : "pending",
+      } as HarnessTodoItem;
+    })
+    .filter((item) => item.content.length > 0);
+}
+
+function itemTimestamp(item: AgentThreadItem): number {
+  return resolveTimestamp(item.completed_at, item.updated_at, item.started_at);
+}
+
+function pickItemPath(item: AgentThreadItem): string | undefined {
+  if (item.type === "file_artifact") {
+    return item.path;
+  }
+
+  if (item.type === "tool_call") {
+    const metadata = asRecord(item.metadata);
+    return extractPathFromRecord(metadata);
+  }
+
+  return undefined;
+}
+
+function toActionRequired(item: AgentThreadItem): ActionRequired | null {
+  if (item.type === "approval_request") {
+    return {
+      requestId: item.request_id,
+      actionType: item.action_type as ActionRequired["actionType"],
+      prompt: item.prompt,
+      toolName: item.tool_name,
+      arguments: asRecord(item.arguments) || undefined,
+      status: item.status === "completed" ? "submitted" : "pending",
+      submittedUserData: item.response,
+      submittedResponse:
+        typeof item.response === "string" ? item.response : undefined,
+    };
+  }
+
+  if (item.type === "request_user_input") {
+    return {
+      requestId: item.request_id,
+      actionType: item.action_type as ActionRequired["actionType"],
+      prompt: item.prompt,
+      questions: item.questions?.map((question) => ({
+        question: question.question,
+        header: question.header,
+        options: question.options?.map((option) => ({
+          label: option.label,
+          description: option.description,
+        })),
+        multiSelect: question.multi_select,
+      })),
+      status: item.status === "completed" ? "submitted" : "pending",
+      submittedUserData: item.response,
+      submittedResponse:
+        typeof item.response === "string" ? item.response : undefined,
+    };
+  }
+
+  return null;
+}
+
+function deriveHarnessSessionStateFromItems(
+  messages: Message[],
+  pendingApprovals: ActionRequired[],
+  items: AgentThreadItem[],
+): HarnessSessionState {
+  const safePendingApprovals = Array.isArray(pendingApprovals)
+    ? pendingApprovals
+    : [];
+  const sortedItems = [...items].sort((left, right) => itemTimestamp(left) - itemTimestamp(right));
+  const latestContextTrace =
+    [...messages]
+      .reverse()
+      .find(
+        (message) =>
+          Array.isArray(message.contextTrace) &&
+          message.contextTrace.length > 0,
+      )?.contextTrace || [];
+  const runtimeStatus = extractLatestRuntimeStatus(messages);
+
+  const activity: HarnessToolActivity = {
+    planning: 0,
+    filesystem: 0,
+    execution: 0,
+    web: 0,
+    skills: 0,
+    delegation: 0,
+  };
+  const delegatedTasks: HarnessDelegatedTask[] = [];
+  const outputSignals: HarnessOutputSignal[] = [];
+  const recentFileEvents: HarnessFileEvent[] = [];
+  const derivedApprovalMap = new Map<string, ActionRequired>();
+  let latestPlanItem: AgentThreadItem | null = null;
+
+  for (const item of sortedItems) {
+    switch (item.type) {
+      case "plan":
+        activity.planning += 1;
+        latestPlanItem = item;
+        break;
+      case "file_artifact": {
+        activity.filesystem += 1;
+        recentFileEvents.push({
+          id: item.id,
+          toolCallId: item.id,
+          path: item.path,
+          displayName: fileNameFromPath(item.path),
+          kind: resolveFileKind(item.path, "artifact"),
+          action: "persist",
+          sourceToolName: "Artifact",
+          timestamp: normalizeDate(item.completed_at || item.updated_at) ?? undefined,
+          preview: buildTextPreview(item.content),
+          content: maybeKeepTextContent(item.content),
+          clickable: true,
+        });
+        outputSignals.push({
+          id: `${item.id}:artifact`,
+          toolCallId: item.id,
+          toolName: "artifact",
+          title: "产物已写入",
+          summary: fileNameFromPath(item.path),
+          preview: buildTextPreview(item.content),
+          artifactPath: item.path,
+        });
+        break;
+      }
+      case "command_execution":
+        activity.execution += 1;
+        outputSignals.push({
+          id: `${item.id}:command`,
+          toolCallId: item.id,
+          toolName: "command_execution",
+          title: "命令执行摘要",
+          summary: item.command,
+          preview: buildTextPreview(item.aggregated_output),
+          exitCode: item.exit_code,
+        });
+        break;
+      case "web_search":
+        activity.web += 1;
+        outputSignals.push({
+          id: `${item.id}:web`,
+          toolCallId: item.id,
+          toolName: item.action || "web_search",
+          title: "联网检索摘要",
+          summary: item.query || "联网检索",
+          preview: buildTextPreview(item.output),
+        });
+        break;
+      case "tool_call": {
+        const normalizedName = normalizeToolName(item.tool_name);
+        classifyToolActivity(activity, normalizedName);
+        const artifactPath = pickItemPath(item);
+        outputSignals.push({
+          id: `${item.id}:tool`,
+          toolCallId: item.id,
+          toolName: item.tool_name,
+          title: artifactPath ? "产物已写入" : "工具执行摘要",
+          summary: artifactPath || item.tool_name,
+          preview: buildTextPreview(item.output),
+          artifactPath,
+        });
+        if (artifactPath) {
+          recentFileEvents.push({
+            id: `${item.id}:tool-file`,
+            toolCallId: item.id,
+            path: artifactPath,
+            displayName: fileNameFromPath(artifactPath),
+            kind: resolveFileKind(artifactPath, "artifact"),
+            action: "persist",
+            sourceToolName: item.tool_name,
+            timestamp: normalizeDate(item.completed_at || item.updated_at) ?? undefined,
+            preview: buildTextPreview(item.output),
+            content: maybeKeepTextContent(item.output),
+            clickable: true,
+          });
+        }
+        break;
+      }
+      case "subagent_activity":
+        activity.delegation += 1;
+        delegatedTasks.push({
+          id: item.id,
+          title: item.title || "子代理任务",
+          status:
+            item.status === "failed"
+              ? "failed"
+              : item.status === "completed"
+                ? "completed"
+                : "running",
+          role: item.role,
+          model: item.model,
+          summary: item.summary,
+          startedAt: normalizeDate(item.started_at) ?? undefined,
+        });
+        break;
+      case "approval_request":
+      case "request_user_input": {
+        const derived = toActionRequired(item);
+        if (derived) {
+          derivedApprovalMap.set(derived.requestId, derived);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  const planItems =
+    latestPlanItem && latestPlanItem.type === "plan"
+      ? parsePlanTextToTodoItems(latestPlanItem.text)
+      : [];
+  const mergedApprovals = [...safePendingApprovals];
+  for (const derived of derivedApprovalMap.values()) {
+    if (!mergedApprovals.some((item) => item.requestId === derived.requestId)) {
+      mergedApprovals.push(derived);
+    }
+  }
+
+  const planPhase: HarnessPlanPhase =
+    !latestPlanItem
+      ? "idle"
+      : latestPlanItem.status === "completed"
+        ? "ready"
+        : "planning";
+  const hasSignals =
+    runtimeStatus !== null ||
+    mergedApprovals.length > 0 ||
+    latestContextTrace.length > 0 ||
+    planItems.length > 0 ||
+    delegatedTasks.length > 0 ||
+    outputSignals.length > 0 ||
+    recentFileEvents.length > 0 ||
+    Object.values(activity).some((count) => count > 0);
+
+  return {
+    runtimeStatus,
+    pendingApprovals: mergedApprovals,
+    latestContextTrace,
+    plan: {
+      phase: planPhase,
+      items: planItems,
+      sourceToolCallId: latestPlanItem?.id,
+    },
+    activity,
+    delegatedTasks: delegatedTasks.slice(-5).reverse(),
+    outputSignals: outputSignals.slice(-5).reverse(),
+    recentFileEvents: recentFileEvents
+      .sort((left, right) => {
+        const leftTime = left.timestamp?.getTime() ?? 0;
+        const rightTime = right.timestamp?.getTime() ?? 0;
+        return rightTime - leftTime;
+      })
+      .slice(0, 5),
+    hasSignals,
+  };
+}
+
+function deriveHarnessSessionStateFromMessages(
   messages: Message[],
   pendingApprovals: ActionRequired[],
 ): HarnessSessionState {
   const safePendingApprovals = Array.isArray(pendingApprovals)
     ? pendingApprovals
     : [];
+  const runtimeStatus = extractLatestRuntimeStatus(messages);
   const toolCalls = collectToolCalls(messages);
   const activity: HarnessToolActivity = {
     planning: 0,
@@ -1052,6 +1344,7 @@ export function deriveHarnessSessionState(
         : "planning";
 
   const hasSignals =
+    runtimeStatus !== null ||
     safePendingApprovals.length > 0 ||
     latestContextTrace.length > 0 ||
     latestTodoItems.length > 0 ||
@@ -1061,6 +1354,7 @@ export function deriveHarnessSessionState(
     Object.values(activity).some((count) => count > 0);
 
   return {
+    runtimeStatus,
     pendingApprovals: safePendingApprovals,
     latestContextTrace,
     plan: {
@@ -1074,4 +1368,20 @@ export function deriveHarnessSessionState(
     recentFileEvents,
     hasSignals,
   };
+}
+
+export function deriveHarnessSessionState(
+  messages: Message[],
+  pendingApprovals: ActionRequired[],
+  threadItems?: AgentThreadItem[],
+): HarnessSessionState {
+  if (Array.isArray(threadItems) && threadItems.length > 0) {
+    return deriveHarnessSessionStateFromItems(
+      messages,
+      pendingApprovals,
+      threadItems,
+    );
+  }
+
+  return deriveHarnessSessionStateFromMessages(messages, pendingApprovals);
 }

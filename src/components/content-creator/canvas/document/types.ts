@@ -17,6 +17,27 @@ export type ExportFormat = "markdown" | "word" | "text" | "clipboard";
 /**
  * 文档版本
  */
+export interface DocumentVersionMetadata {
+  /** 产物 ID（用于同类版本聚合） */
+  artifactId?: string;
+  /** 父版本 ID（用于构建版本链） */
+  parentVersionId?: string;
+  /** 父产物 ID */
+  parentArtifactId?: string;
+  /** 产物类型 */
+  artifactType?: string;
+  /** 语义阶段 */
+  stage?: string;
+  /** 适配平台 */
+  platform?: PlatformType;
+  /** 来源文件名 */
+  sourceFileName?: string;
+  /** 关联运行 ID */
+  runId?: string;
+  /** 关联追踪 ID */
+  correlationId?: string;
+}
+
 export interface DocumentVersion {
   /** 版本 ID */
   id: string;
@@ -26,6 +47,8 @@ export interface DocumentVersion {
   createdAt: number;
   /** 版本描述 */
   description?: string;
+  /** 版本元数据 */
+  metadata?: DocumentVersionMetadata;
 }
 
 /**

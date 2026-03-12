@@ -4,38 +4,49 @@
  * 封装所有工作流相关的 Tauri 命令调用
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { safeInvoke } from "@/lib/dev-bridge";
 
 /**
  * 步骤状态
  */
-export type StepStatus = 'pending' | 'active' | 'completed' | 'skipped' | 'error';
+export type StepStatus =
+  | "pending"
+  | "active"
+  | "completed"
+  | "skipped"
+  | "error";
 
 /**
  * 步骤类型
  */
-export type StepType = 'clarify' | 'research' | 'outline' | 'write' | 'polish' | 'adapt';
+export type StepType =
+  | "clarify"
+  | "research"
+  | "outline"
+  | "write"
+  | "polish"
+  | "adapt";
 
 /**
  * 主题类型
  */
 export type ThemeType =
-  | 'general'
-  | 'knowledge'
-  | 'planning'
-  | 'social-media'
-  | 'poster'
-  | 'document'
-  | 'paper'
-  | 'novel'
-  | 'script'
-  | 'music'
-  | 'video';
+  | "general"
+  | "knowledge"
+  | "planning"
+  | "social-media"
+  | "poster"
+  | "document"
+  | "paper"
+  | "novel"
+  | "script"
+  | "music"
+  | "video";
 
 /**
  * 创作模式
  */
-export type CreationMode = 'guided' | 'fast' | 'hybrid' | 'framework';
+export type CreationMode = "guided" | "fast" | "hybrid" | "framework";
 
 /**
  * 步骤行为配置
@@ -49,7 +60,15 @@ export interface StepBehavior {
 /**
  * 表单字段类型
  */
-export type FormFieldType = 'text' | 'textarea' | 'select' | 'radio' | 'checkbox' | 'slider' | 'tags' | 'outline';
+export type FormFieldType =
+  | "text"
+  | "textarea"
+  | "select"
+  | "radio"
+  | "checkbox"
+  | "slider"
+  | "tags"
+  | "outline";
 
 /**
  * 表单字段选项
@@ -69,7 +88,7 @@ export interface FormField {
   required: boolean;
   placeholder?: string;
   options?: FormFieldOption[];
-  default_value?: any;
+  default_value?: unknown;
 }
 
 /**
@@ -101,15 +120,15 @@ export interface ContentFile {
   created_at: number;
   updated_at: number;
   thumbnail?: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 /**
  * 步骤结果
  */
 export interface StepResult {
-  user_input?: Record<string, any>;
-  ai_output?: any;
+  user_input?: Record<string, unknown>;
+  ai_output?: unknown;
   artifacts?: ContentFile[];
 }
 
@@ -155,8 +174,12 @@ export const contentWorkflowApi = {
   /**
    * 创建工作流
    */
-  async create(contentId: string, theme: ThemeType, mode: CreationMode): Promise<WorkflowState> {
-    return invoke<WorkflowState>('content_workflow_create', {
+  async create(
+    contentId: string,
+    theme: ThemeType,
+    mode: CreationMode,
+  ): Promise<WorkflowState> {
+    return safeInvoke<WorkflowState>("content_workflow_create", {
       contentId,
       theme,
       mode,
@@ -167,7 +190,7 @@ export const contentWorkflowApi = {
    * 获取工作流
    */
   async get(workflowId: string): Promise<WorkflowState | null> {
-    return invoke<WorkflowState | null>('content_workflow_get', {
+    return safeInvoke<WorkflowState | null>("content_workflow_get", {
       workflowId,
     });
   },
@@ -176,7 +199,7 @@ export const contentWorkflowApi = {
    * 根据 content_id 获取工作流
    */
   async getByContent(contentId: string): Promise<WorkflowState | null> {
-    return invoke<WorkflowState | null>('content_workflow_get_by_content', {
+    return safeInvoke<WorkflowState | null>("content_workflow_get_by_content", {
       contentId,
     });
   },
@@ -184,8 +207,11 @@ export const contentWorkflowApi = {
   /**
    * 推进工作流（完成当前步骤）
    */
-  async advance(workflowId: string, stepResult: StepResult): Promise<WorkflowState> {
-    return invoke<WorkflowState>('content_workflow_advance', {
+  async advance(
+    workflowId: string,
+    stepResult: StepResult,
+  ): Promise<WorkflowState> {
+    return safeInvoke<WorkflowState>("content_workflow_advance", {
       workflowId,
       stepResult,
     });
@@ -195,7 +221,7 @@ export const contentWorkflowApi = {
    * 重试失败的步骤
    */
   async retry(workflowId: string): Promise<WorkflowState> {
-    return invoke<WorkflowState>('content_workflow_retry', {
+    return safeInvoke<WorkflowState>("content_workflow_retry", {
       workflowId,
     });
   },
@@ -204,7 +230,7 @@ export const contentWorkflowApi = {
    * 取消工作流
    */
   async cancel(workflowId: string): Promise<void> {
-    return invoke<void>('content_workflow_cancel', {
+    return safeInvoke<void>("content_workflow_cancel", {
       workflowId,
     });
   },

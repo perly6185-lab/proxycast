@@ -1,9 +1,12 @@
 pub mod dao;
 pub mod migration;
+mod migration_support;
 pub mod migration_v2;
 pub mod migration_v3;
 pub mod migration_v4;
+mod pending_general_chat;
 pub mod schema;
+mod startup_migrations;
 pub mod system_providers;
 
 use crate::app_paths;
@@ -12,6 +15,111 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub type DbConnection = Arc<Mutex<Connection>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingGeneralMessage {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: i64,
+}
+
+impl From<pending_general_chat::PendingGeneralMessageRow> for PendingGeneralMessage {
+    fn from(message: pending_general_chat::PendingGeneralMessageRow) -> Self {
+        Self {
+            id: message.id,
+            session_id: message.session_id,
+            role: message.role,
+            content: message.content,
+            created_at: message.created_at,
+        }
+    }
+}
+
+fn run_pending_general_query<T, F>(
+    conn: &Connection,
+    empty_value: T,
+    query: F,
+) -> Result<T, rusqlite::Error>
+where
+    F: FnOnce(&Connection) -> Result<T, rusqlite::Error>,
+{
+    if migration::is_general_chat_migration_completed(conn) {
+        return Ok(empty_value);
+    }
+
+    query(conn)
+}
+
+pub fn load_pending_general_session_messages(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Vec<PendingGeneralMessage>, rusqlite::Error> {
+    run_pending_general_query(conn, Vec::new(), |tx| {
+        pending_general_chat::load_pending_general_session_messages_raw(tx, session_id)
+            .map(|messages| messages.into_iter().map(Into::into).collect())
+    })
+}
+
+pub fn load_pending_general_messages(
+    conn: &Connection,
+    from_timestamp_ms: Option<i64>,
+    to_timestamp_ms: Option<i64>,
+    limit: usize,
+) -> Result<Vec<PendingGeneralMessage>, rusqlite::Error> {
+    run_pending_general_query(conn, Vec::new(), |tx| {
+        pending_general_chat::load_pending_general_messages_raw(
+            tx,
+            from_timestamp_ms,
+            to_timestamp_ms,
+            limit,
+        )
+        .map(|messages| messages.into_iter().map(Into::into).collect())
+    })
+}
+
+pub fn count_pending_general_sessions(
+    conn: &Connection,
+    from_timestamp_ms: Option<i64>,
+    to_timestamp_ms: Option<i64>,
+) -> Result<i64, rusqlite::Error> {
+    run_pending_general_query(conn, 0, |tx| {
+        pending_general_chat::count_pending_general_sessions_raw(
+            tx,
+            from_timestamp_ms,
+            to_timestamp_ms,
+        )
+    })
+}
+
+pub fn count_pending_general_messages(
+    conn: &Connection,
+    from_timestamp_ms: Option<i64>,
+    to_timestamp_ms: Option<i64>,
+) -> Result<i64, rusqlite::Error> {
+    run_pending_general_query(conn, 0, |tx| {
+        pending_general_chat::count_pending_general_messages_raw(
+            tx,
+            from_timestamp_ms,
+            to_timestamp_ms,
+        )
+    })
+}
+
+pub fn sum_pending_general_message_chars(
+    conn: &Connection,
+    from_timestamp_ms: Option<i64>,
+    to_timestamp_ms: Option<i64>,
+) -> Result<i64, rusqlite::Error> {
+    run_pending_general_query(conn, 0, |tx| {
+        pending_general_chat::sum_pending_general_message_chars_raw(
+            tx,
+            from_timestamp_ms,
+            to_timestamp_ms,
+        )
+    })
+}
 
 /// 获取数据库连接锁（自动处理 poisoned lock）
 pub fn lock_db(db: &DbConnection) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
@@ -53,124 +161,44 @@ pub fn init_database() -> Result<DbConnection, String> {
     // 创建表结构
     schema::create_tables(&conn).map_err(|e| e.to_string())?;
     migration::migrate_from_json(&conn)?;
-
-    // 执行 Provider ID 迁移（修复旧 ID 与模型注册表不匹配的问题）
-    match migration::migrate_provider_ids(&conn) {
-        Ok(count) => {
-            if count > 0 {
-                tracing::info!("[数据库] 已迁移 {} 个 Provider ID", count);
-                // 标记需要刷新模型注册表
-                migration::mark_model_registry_refresh_needed(&conn);
-            }
-        }
-        Err(e) => {
-            tracing::warn!("[数据库] Provider ID 迁移失败（非致命）: {}", e);
-        }
-    }
-
-    // 检查是否需要刷新模型注册表（版本升级时）
-    migration::check_model_registry_version(&conn);
-
-    // 执行 API Keys 到 Provider Pool 的迁移
-    match migration::migrate_api_keys_to_pool(&conn) {
-        Ok(count) => {
-            if count > 0 {
-                tracing::info!("[数据库] 已将 {} 条 API Key 迁移到凭证池", count);
-            }
-        }
-        Err(e) => {
-            tracing::warn!("[数据库] API Key 迁移失败（非致命）: {}", e);
-        }
-    }
-
-    // 清理旧的 API Key 凭证（openai_key, claude_key 类型）
-    match migration::cleanup_legacy_api_key_credentials(&conn) {
-        Ok(count) => {
-            if count > 0 {
-                tracing::info!("[数据库] 已清理 {} 条旧 API Key 凭证", count);
-            }
-        }
-        Err(e) => {
-            tracing::warn!("[数据库] 旧 API Key 凭证清理失败（非致命）: {}", e);
-        }
-    }
-
-    // 修复历史 MCP 导入数据（补齐 enabled_proxycast）
-    match migration::migrate_mcp_proxycast_enabled(&conn) {
-        Ok(count) => {
-            if count > 0 {
-                tracing::info!("[数据库] 已修复 {} 条 MCP ProxyCast 启用状态", count);
-            }
-        }
-        Err(e) => {
-            tracing::warn!("[数据库] MCP ProxyCast 启用状态修复失败（非致命）: {}", e);
-        }
-    }
-
-    // 归一化历史 MCP created_at 字段（TEXT -> INTEGER）
-    match migration::migrate_mcp_created_at_to_integer(&conn) {
-        Ok(count) => {
-            if count > 0 {
-                tracing::info!("[数据库] 已归一化 {} 条 MCP created_at 字段", count);
-            }
-        }
-        Err(e) => {
-            tracing::warn!("[数据库] MCP created_at 归一化失败（非致命）: {}", e);
-        }
-    }
-
-    // 执行统一内容系统迁移（创建默认项目，迁移话题）
-    // _Requirements: 2.1, 2.2, 2.3, 2.4_
-    match migration_v2::migrate_unified_content_system(&conn) {
-        Ok(result) => {
-            if result.executed {
-                if let Some(stats) = result.stats {
-                    tracing::info!(
-                        "[数据库] 统一内容系统迁移完成: 默认项目={}, 迁移内容数={}",
-                        stats.default_project_id,
-                        stats.migrated_contents_count
-                    );
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!("[数据库] 统一内容系统迁移失败（非致命）: {}", e);
-        }
-    }
-
-    // 执行 Playwright MCP Server 迁移
-    match migration_v3::migrate_playwright_mcp_server(&conn) {
-        Ok(result) => {
-            if result.executed {
-                if let Some(server_id) = result.server_id {
-                    tracing::info!(
-                        "[数据库] Playwright MCP Server 迁移完成: server_id={}",
-                        server_id
-                    );
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!("[数据库] Playwright MCP Server 迁移失败（非致命）: {}", e);
-        }
-    }
-
-    // 修复 [object Promise] 路径污染问题（历史 bug 遗留数据）
-    match migration_v4::migrate_fix_promise_paths(&conn) {
-        Ok(result) => {
-            if result.executed {
-                tracing::info!(
-                    "[数据库] 路径修复和会话统一完成: workspaces={}, sessions={}, unified={}",
-                    result.fixed_workspaces,
-                    result.fixed_sessions,
-                    result.unified_sessions
-                );
-            }
-        }
-        Err(e) => {
-            tracing::warn!("[数据库] 路径修复和会话统一失败（非致命）: {}", e);
-        }
-    }
+    startup_migrations::run_startup_migrations(&conn);
 
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_completed_general_migration_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, 'true')",
+            [migration::GENERAL_CHAT_MIGRATION_COMPLETED_KEY],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn pending_general_queries_short_circuit_after_migration_completed() {
+        let conn = setup_completed_general_migration_db();
+
+        let messages = load_pending_general_messages(&conn, None, None, 10).unwrap();
+        let session_messages = load_pending_general_session_messages(&conn, "session-1").unwrap();
+        let session_count = count_pending_general_sessions(&conn, None, None).unwrap();
+        let message_count = count_pending_general_messages(&conn, None, None).unwrap();
+        let char_count = sum_pending_general_message_chars(&conn, None, None).unwrap();
+
+        assert!(messages.is_empty());
+        assert!(session_messages.is_empty());
+        assert_eq!(session_count, 0);
+        assert_eq!(message_count, 0);
+        assert_eq!(char_count, 0);
+    }
 }
