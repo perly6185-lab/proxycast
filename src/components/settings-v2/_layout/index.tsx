@@ -53,6 +53,7 @@ import { WebSearchSettings } from "../system/web-search";
 import { ChromeRelaySettings } from "../system/chrome-relay";
 
 import { SettingHeader } from "../features/SettingHeader";
+import { SettingsHomePage } from "../home";
 
 const LayoutContainer = styled.div`
   display: flex;
@@ -90,7 +91,7 @@ const ContentContainer = styled.main`
 
 const ContentWrapper = styled.div<{ $wide: boolean }>`
   width: 100%;
-  max-width: ${({ $wide }) => ($wide ? "none" : "800px")};
+  max-width: ${({ $wide }) => ($wide ? "1440px" : "800px")};
 `;
 
 const PlaceholderPage = styled.div`
@@ -111,8 +112,14 @@ const PlaceholderPage = styled.div`
 /**
  * 渲染设置内容
  */
-function renderSettingsContent(tab: SettingsTabs): ReactNode {
+function renderSettingsContent(
+  tab: SettingsTabs,
+  onTabChange: (tab: SettingsTabs) => void,
+): ReactNode {
   switch (tab) {
+    case SettingsTabs.Home:
+      return <SettingsHomePage onTabChange={onTabChange} />;
+
     // 账号组
     case SettingsTabs.Profile:
       return (
@@ -326,7 +333,9 @@ interface SettingsLayoutV2Props {
 }
 
 const WIDE_CONTENT_TABS = new Set<SettingsTabs>([
+  SettingsTabs.Home,
   SettingsTabs.Providers,
+  SettingsTabs.Skills,
   SettingsTabs.ApiServer,
   SettingsTabs.McpServer,
   SettingsTabs.Channels,
@@ -339,7 +348,7 @@ export function SettingsLayoutV2({
   initialTab,
 }: SettingsLayoutV2Props) {
   const [activeTab, setActiveTab] = useState<SettingsTabs>(
-    initialTab || SettingsTabs.Appearance,
+    initialTab || SettingsTabs.Home,
   );
   const contentContainerRef = useRef<HTMLElement | null>(null);
 
@@ -367,7 +376,7 @@ export function SettingsLayoutV2({
         <SettingsSidebar activeTab={activeTab} onTabChange={setActiveTab} />
         <ContentContainer ref={contentContainerRef}>
           <ContentWrapper $wide={WIDE_CONTENT_TABS.has(activeTab)}>
-            {renderSettingsContent(activeTab)}
+            {renderSettingsContent(activeTab, setActiveTab)}
           </ContentWrapper>
         </ContentContainer>
       </LayoutContainer>

@@ -26,6 +26,7 @@ use aster::agents::{Agent, SessionConfig};
 use aster::model::ModelConfig;
 #[cfg(test)]
 use aster::skills::{global_registry, load_skills_from_directory, SkillSource};
+use aster::tools::{create_shared_history, EditTool, WriteTool};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -33,8 +34,249 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::credential_bridge::{create_aster_provider, AsterProviderConfig, CredentialBridge};
+use crate::queued_turn::QueuedTurnSnapshot;
 use proxycast_core::database::DbConnection;
 use proxycast_services::aster_session_store::ProxyCastSessionStore;
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
+
+async fn configure_proxycast_native_file_tools(agent: &Agent) {
+    let shared_history = create_shared_history();
+    let registry_arc = agent.tool_registry().clone();
+    let mut registry = registry_arc.write().await;
+    registry.register(Box::new(
+        WriteTool::new(shared_history.clone()).with_require_read_before_overwrite(false),
+    ));
+    registry.register(Box::new(
+        EditTool::new(shared_history).with_require_read_before_edit(false),
+    ));
+}
+
+/// 会话级 turn 排队任务
+#[derive(Debug, Clone)]
+pub struct QueuedTurnTask<T> {
+    pub queued_turn_id: String,
+    pub session_id: String,
+    pub event_name: String,
+    pub message_preview: String,
+    pub message_text: String,
+    pub created_at: i64,
+    pub image_count: usize,
+    pub payload: T,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveTurnMeta {
+    #[cfg_attr(not(test), allow(dead_code))]
+    queued_turn_id: String,
+}
+
+#[derive(Debug)]
+struct SessionTurnQueueState<T> {
+    active: Option<ActiveTurnMeta>,
+    pending: VecDeque<QueuedTurnTask<T>>,
+}
+
+impl<T> Default for SessionTurnQueueState<T> {
+    fn default() -> Self {
+        Self {
+            active: None,
+            pending: VecDeque::new(),
+        }
+    }
+}
+
+impl<T> QueuedTurnTask<T> {
+    fn active_meta(&self) -> ActiveTurnMeta {
+        ActiveTurnMeta {
+            queued_turn_id: self.queued_turn_id.clone(),
+        }
+    }
+
+    fn snapshot(&self, position: usize) -> QueuedTurnSnapshot {
+        QueuedTurnSnapshot {
+            queued_turn_id: self.queued_turn_id.clone(),
+            message_preview: self.message_preview.clone(),
+            message_text: self.message_text.clone(),
+            created_at: self.created_at,
+            image_count: self.image_count,
+            position,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum QueueInsertResult<T> {
+    StartNow(QueuedTurnTask<T>),
+    Enqueued {
+        event_name: String,
+        snapshot: QueuedTurnSnapshot,
+    },
+}
+
+/// 会话级 turn 队列
+#[derive(Debug, Clone)]
+pub struct SessionTurnQueueManager<T> {
+    inner: Arc<Mutex<HashMap<String, SessionTurnQueueState<T>>>>,
+}
+
+impl<T> Default for SessionTurnQueueManager<T> {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl<T> SessionTurnQueueManager<T> {
+    pub fn has_session_state(&self, session_id: &str) -> bool {
+        let sessions = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        sessions.contains_key(session_id)
+    }
+
+    pub fn restore_pending(&self, session_id: &str, tasks: Vec<QueuedTurnTask<T>>) {
+        if tasks.is_empty() {
+            return;
+        }
+
+        let mut sessions = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        let state = sessions
+            .entry(session_id.to_string())
+            .or_insert_with(SessionTurnQueueState::default);
+
+        if state.active.is_some() || !state.pending.is_empty() {
+            return;
+        }
+
+        state.pending = tasks.into_iter().collect();
+    }
+
+    pub fn start_or_enqueue(&self, task: QueuedTurnTask<T>) -> QueueInsertResult<T> {
+        let mut sessions = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        let state = sessions
+            .entry(task.session_id.clone())
+            .or_insert_with(SessionTurnQueueState::default);
+
+        if state.active.is_none() {
+            state.active = Some(task.active_meta());
+            return QueueInsertResult::StartNow(task);
+        }
+
+        let position = state.pending.len() + 1;
+        let event_name = task.event_name.clone();
+        let snapshot = task.snapshot(position);
+        state.pending.push_back(task);
+
+        QueueInsertResult::Enqueued {
+            event_name,
+            snapshot,
+        }
+    }
+
+    pub fn finish_and_take_next(&self, session_id: &str) -> Option<QueuedTurnTask<T>> {
+        let mut sessions = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        let state = sessions.get_mut(session_id)?;
+        state.active = None;
+        let next = state.pending.pop_front();
+        if let Some(task) = next.as_ref() {
+            state.active = Some(task.active_meta());
+        }
+        if state.active.is_none() && state.pending.is_empty() {
+            sessions.remove(session_id);
+        }
+        next
+    }
+
+    pub fn remove_queued(
+        &self,
+        session_id: &str,
+        queued_turn_id: &str,
+    ) -> Option<QueuedTurnTask<T>> {
+        let mut sessions = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        let state = sessions.get_mut(session_id)?;
+        let index = state
+            .pending
+            .iter()
+            .position(|task| task.queued_turn_id == queued_turn_id)?;
+        let removed = state.pending.remove(index);
+        if state.active.is_none() && state.pending.is_empty() {
+            sessions.remove(session_id);
+        }
+        removed
+    }
+
+    pub fn clear_pending(&self, session_id: &str) -> Vec<QueuedTurnTask<T>> {
+        let mut sessions = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        let Some(state) = sessions.get_mut(session_id) else {
+            return Vec::new();
+        };
+        let cleared = state.pending.drain(..).collect::<Vec<_>>();
+        if state.active.is_none() && state.pending.is_empty() {
+            sessions.remove(session_id);
+        }
+        cleared
+    }
+
+    pub fn snapshot(&self, session_id: &str) -> Vec<QueuedTurnSnapshot> {
+        let sessions = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        sessions
+            .get(session_id)
+            .map(|state| {
+                state
+                    .pending
+                    .iter()
+                    .enumerate()
+                    .map(|(index, task)| task.snapshot(index + 1))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn has_active(&self, session_id: &str) -> bool {
+        let sessions = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        sessions
+            .get(session_id)
+            .and_then(|state| state.active.as_ref())
+            .is_some()
+    }
+
+    #[cfg(test)]
+    fn active_queued_turn_id(&self, session_id: &str) -> Option<String> {
+        let sessions = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        sessions
+            .get(session_id)
+            .and_then(|state| state.active.as_ref())
+            .map(|meta| meta.queued_turn_id.clone())
+    }
+}
 
 /// Provider 配置信息
 #[derive(Debug, Clone)]
@@ -67,6 +309,22 @@ pub struct AsterAgentState {
     initialized_cache: Arc<AtomicBool>,
     /// Provider 配置状态缓存（避免每次都获取锁）
     provider_configured_cache: Arc<AtomicBool>,
+    /// 会话级 turn 队列
+    turn_queue: SessionTurnQueueManager<serde_json::Value>,
+}
+
+impl Clone for AsterAgentState {
+    fn clone(&self) -> Self {
+        Self {
+            agent: self.agent.clone(),
+            cancel_tokens: self.cancel_tokens.clone(),
+            current_provider_config: self.current_provider_config.clone(),
+            credential_bridge: CredentialBridge::new(),
+            initialized_cache: self.initialized_cache.clone(),
+            provider_configured_cache: self.provider_configured_cache.clone(),
+            turn_queue: self.turn_queue.clone(),
+        }
+    }
 }
 
 impl Default for AsterAgentState {
@@ -85,6 +343,7 @@ impl AsterAgentState {
             credential_bridge: CredentialBridge::new(),
             initialized_cache: Arc::new(AtomicBool::new(false)),
             provider_configured_cache: Arc::new(AtomicBool::new(false)),
+            turn_queue: SessionTurnQueueManager::default(),
         }
     }
 
@@ -174,6 +433,7 @@ impl AsterAgentState {
             // 使用异步方法设置 ProxyCast 专属身份
             let identity = crate::create_proxycast_identity();
             agent.set_identity(identity).await;
+            configure_proxycast_native_file_tools(&agent).await;
 
             // 加载 ProxyCast Skills 到 aster-rust 的 global_registry
             crate::reload_proxycast_skills();
@@ -492,6 +752,11 @@ impl AsterAgentState {
         self.agent.clone()
     }
 
+    /// 获取会话级 turn 队列管理器
+    pub fn turn_queue(&self) -> SessionTurnQueueManager<serde_json::Value> {
+        self.turn_queue.clone()
+    }
+
     /// 创建新的取消令牌
     pub async fn create_cancel_token(&self, session_id: &str) -> CancellationToken {
         let token = CancellationToken::new();
@@ -648,6 +913,108 @@ mod tests {
 
         state.remove_cancel_token(session_id).await;
         assert!(!state.cancel_session(session_id).await);
+    }
+
+    #[test]
+    fn test_session_turn_queue_manager() {
+        let manager = SessionTurnQueueManager::default();
+
+        let first = QueuedTurnTask {
+            queued_turn_id: "turn-1".to_string(),
+            session_id: "session-queue".to_string(),
+            event_name: "event-1".to_string(),
+            message_preview: "first".to_string(),
+            message_text: "first body".to_string(),
+            created_at: 1_700_000_000_000,
+            image_count: 0,
+            payload: serde_json::json!({ "message": "first" }),
+        };
+        let second = QueuedTurnTask {
+            queued_turn_id: "turn-2".to_string(),
+            session_id: "session-queue".to_string(),
+            event_name: "event-2".to_string(),
+            message_preview: "second".to_string(),
+            message_text: "second body".to_string(),
+            created_at: 1_700_000_000_001,
+            image_count: 1,
+            payload: serde_json::json!({ "message": "second" }),
+        };
+
+        match manager.start_or_enqueue(first) {
+            QueueInsertResult::StartNow(task) => {
+                assert_eq!(task.queued_turn_id, "turn-1");
+            }
+            QueueInsertResult::Enqueued { .. } => panic!("首条 turn 不应进入队列"),
+        }
+
+        match manager.start_or_enqueue(second) {
+            QueueInsertResult::Enqueued { snapshot, .. } => {
+                assert_eq!(snapshot.queued_turn_id, "turn-2");
+                assert_eq!(snapshot.message_text, "second body");
+                assert_eq!(snapshot.position, 1);
+            }
+            QueueInsertResult::StartNow(_) => panic!("第二条 turn 应进入队列"),
+        }
+
+        assert_eq!(
+            manager.active_queued_turn_id("session-queue").as_deref(),
+            Some("turn-1")
+        );
+        assert_eq!(manager.snapshot("session-queue").len(), 1);
+
+        let promoted = manager
+            .finish_and_take_next("session-queue")
+            .expect("应提升下一条 turn");
+        assert_eq!(promoted.queued_turn_id, "turn-2");
+        assert_eq!(
+            manager.active_queued_turn_id("session-queue").as_deref(),
+            Some("turn-2")
+        );
+    }
+
+    #[test]
+    fn test_session_turn_queue_manager_restore_pending() {
+        let manager = SessionTurnQueueManager::default();
+
+        manager.restore_pending(
+            "session-restore",
+            vec![
+                QueuedTurnTask {
+                    queued_turn_id: "turn-restore-1".to_string(),
+                    session_id: "session-restore".to_string(),
+                    event_name: "event-restore-1".to_string(),
+                    message_preview: "restore-1".to_string(),
+                    message_text: "restore body 1".to_string(),
+                    created_at: 1_700_000_000_000,
+                    image_count: 0,
+                    payload: serde_json::json!({ "message": "restore-1" }),
+                },
+                QueuedTurnTask {
+                    queued_turn_id: "turn-restore-2".to_string(),
+                    session_id: "session-restore".to_string(),
+                    event_name: "event-restore-2".to_string(),
+                    message_preview: "restore-2".to_string(),
+                    message_text: "restore body 2".to_string(),
+                    created_at: 1_700_000_000_001,
+                    image_count: 0,
+                    payload: serde_json::json!({ "message": "restore-2" }),
+                },
+            ],
+        );
+
+        assert!(manager.has_session_state("session-restore"));
+        let snapshot = manager.snapshot("session-restore");
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].queued_turn_id, "turn-restore-1");
+
+        let promoted = manager
+            .finish_and_take_next("session-restore")
+            .expect("应从恢复队列中取出首条任务");
+        assert_eq!(promoted.queued_turn_id, "turn-restore-1");
+        assert_eq!(
+            manager.active_queued_turn_id("session-restore").as_deref(),
+            Some("turn-restore-1")
+        );
     }
 
     // =========================================================================

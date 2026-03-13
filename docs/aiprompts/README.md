@@ -21,6 +21,7 @@ AI Agent 专用文档目录，提供模块级别的详细说明。
 ### 前端模块
 
 - `components.md` - React 组件系统
+- `design-language.md` - 全局 UI 视觉语言（配色、渐变、排版、宽度策略）
 - `hooks.md` - 自定义 React Hooks
 - `lib.md` - 工具库和 API 封装
 
@@ -53,6 +54,9 @@ AI Agent 在处理特定模块时，应先阅读对应的 aiprompts 文档：
 ```
 # 处理 Provider 相关任务
 → 先读 docs/aiprompts/providers.md
+
+# 处理 UI 配色、页面重排、视觉统一
+→ 先读 docs/aiprompts/design-language.md
 
 # 处理新旧并存、迁移、重构、架构收口
 → 先读 docs/aiprompts/governance.md

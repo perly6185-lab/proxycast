@@ -29,6 +29,11 @@ import { StreamingRenderer } from "./StreamingRenderer";
 import { TokenUsageDisplay } from "./TokenUsageDisplay";
 import { AgentThreadTimeline } from "./AgentThreadTimeline";
 import {
+  formatArtifactWritePhaseLabel,
+  resolveArtifactPreviewText,
+  resolveArtifactWritePhase,
+} from "../utils/messageArtifacts";
+import {
   Message,
   type AgentThreadItem,
   type AgentThreadTurn,
@@ -204,12 +209,9 @@ const MessageListInner: React.FC<MessageListProps> = ({
             typeof artifact.meta.filePath === "string"
               ? artifact.meta.filePath
               : artifact.meta.filename || artifact.title;
-          const statusLabel =
-            artifact.status === "streaming"
-              ? "生成中"
-              : artifact.status === "error"
-                ? "失败"
-                : "已生成";
+          const writePhase = resolveArtifactWritePhase(artifact);
+          const statusLabel = formatArtifactWritePhaseLabel(writePhase);
+          const previewText = resolveArtifactPreviewText(artifact, 180);
 
           return (
             <button
@@ -232,11 +234,24 @@ const MessageListInner: React.FC<MessageListProps> = ({
                 <div className="truncate text-xs text-muted-foreground">
                   {filePath}
                 </div>
+                <div className="mt-1 flex items-center gap-2">
+                  <span
+                    className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+                  >
+                    {statusLabel}
+                  </span>
+                  {previewText ? (
+                    <span className="line-clamp-1 text-xs text-muted-foreground">
+                      {previewText}
+                    </span>
+                  ) : artifact.status === "streaming" ? (
+                    <span className="text-xs text-muted-foreground">
+                      正在准备文件内容...
+                    </span>
+                  ) : null}
+                </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <span className="text-xs text-muted-foreground">
-                  {statusLabel}
-                </span>
                 <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
               </div>
             </button>

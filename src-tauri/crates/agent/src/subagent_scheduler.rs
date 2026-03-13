@@ -393,6 +393,12 @@ pub struct SubAgentProgressEvent {
     pub failed: usize,
     /// 运行中数
     pub running: usize,
+    /// 等待中数
+    pub pending: usize,
+    /// 已跳过数
+    pub skipped: usize,
+    /// 是否已取消
+    pub cancelled: bool,
     /// 进度百分比
     pub percentage: f64,
     /// 当前任务
@@ -408,6 +414,9 @@ impl From<SchedulerProgress> for SubAgentProgressEvent {
             completed: progress.completed,
             failed: progress.failed,
             running: progress.running,
+            pending: progress.pending,
+            skipped: progress.skipped,
+            cancelled: progress.cancelled,
             percentage: progress.percentage,
             current_tasks: progress.current_tasks,
             role: None,
@@ -542,6 +551,9 @@ mod tests {
             completed: 1,
             failed: 0,
             running: 1,
+            pending: 1,
+            skipped: 0,
+            cancelled: false,
             percentage: 33.3,
             current_tasks: vec!["task-1".to_string()],
             role: None,

@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@/lib/dev-bridge", () => ({
   safeListen: mockSafeListen,
+  safeInvoke: mockInvoke,
 }));
 
 import {

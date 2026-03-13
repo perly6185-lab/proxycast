@@ -24,6 +24,7 @@
 - `develop/execution-tracker-p0-acceptance-report.md`：统一执行追踪 P0 验收报告
 - `develop/execution-tracker-p1-p2-roadmap.md`：统一执行追踪后续路线（P1/P2）
 - `develop/scheduler-task-governance-p1.md`：调度任务治理 P1（连续失败、自动停用、冷却恢复）
+- `roadmap/proxycast-skills-standardization-roadmap.md`：Skills 标准化与产品化路线图
 - `ops.md`：运维与发布说明
 - `app.config.ts` / `nuxt.config.ts` / `package.json`：文档站配置
 

@@ -4,7 +4,12 @@ import type {
   ArtifactStatus,
   ArtifactType,
 } from "@/lib/artifact/types";
-import type { Message, WriteArtifactContext } from "../types";
+import type {
+  ArtifactWriteMetadata,
+  ArtifactWritePhase,
+  Message,
+  WriteArtifactContext,
+} from "../types";
 
 const MARKDOWN_EXTENSIONS = new Set([
   "md",
@@ -60,6 +65,7 @@ const ARTIFACT_TYPE_ALIASES: Record<string, ArtifactType> = {
   svg: "svg",
   text: "document",
 };
+const ARTIFACT_PREVIEW_MAX_CHARS = 240;
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, "/").trim();
@@ -86,6 +92,104 @@ function readStringValue(
 ): string | undefined {
   const value = record?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizePreviewText(
+  value: string,
+  maxChars = ARTIFACT_PREVIEW_MAX_CHARS,
+): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxChars).trimEnd()}…`;
+}
+
+export function resolveArtifactWritePhase(
+  artifact: Pick<Artifact, "status" | "meta">,
+): ArtifactWritePhase | null {
+  const explicitPhase =
+    typeof artifact.meta.writePhase === "string"
+      ? (artifact.meta.writePhase as ArtifactWritePhase)
+      : null;
+  if (explicitPhase) {
+    return explicitPhase;
+  }
+
+  switch (artifact.status) {
+    case "pending":
+      return "preparing";
+    case "streaming":
+      return "streaming";
+    case "complete":
+      return "completed";
+    case "error":
+      return "failed";
+    default:
+      return null;
+  }
+}
+
+export function formatArtifactWritePhaseLabel(
+  phase: ArtifactWritePhase | null,
+): string {
+  switch (phase) {
+    case "preparing":
+      return "准备写入";
+    case "streaming":
+      return "正在写入";
+    case "persisted":
+      return "已落盘";
+    case "completed":
+      return "已完成";
+    case "failed":
+      return "失败";
+    default:
+      return "待处理";
+  }
+}
+
+export function resolveArtifactPreviewText(
+  artifact: Pick<Artifact, "content" | "meta">,
+  maxChars = ARTIFACT_PREVIEW_MAX_CHARS,
+): string | undefined {
+  const previewCandidate =
+    typeof artifact.meta.previewText === "string" && artifact.meta.previewText.trim()
+      ? artifact.meta.previewText
+      : artifact.content;
+
+  if (typeof previewCandidate !== "string" || !previewCandidate.trim()) {
+    return undefined;
+  }
+
+  return normalizePreviewText(previewCandidate, maxChars);
+}
+
+export function findMessageArtifact(
+  message: Pick<Message, "artifacts">,
+  options: {
+    artifactId?: string;
+    filePath?: string;
+  },
+): Artifact | undefined {
+  const artifacts = message.artifacts || [];
+  const normalizedPath = options.filePath ? normalizePath(options.filePath) : null;
+
+  return artifacts.find((artifact) => {
+    if (options.artifactId && artifact.id === options.artifactId) {
+      return true;
+    }
+
+    if (!normalizedPath) {
+      return false;
+    }
+
+    const artifactPath =
+      typeof artifact.meta.filePath === "string"
+        ? normalizePath(artifact.meta.filePath)
+        : null;
+    return artifactPath === normalizedPath;
+  });
 }
 
 export function resolveArtifactTypeFromFile(
@@ -175,9 +279,22 @@ export function buildArtifactFromWrite({
     type === "code" || type === "document"
       ? resolveArtifactLanguageFromFile(normalizedPath)
       : undefined;
+  const previewText =
+    typeof content === "string" && content.trim()
+      ? normalizePreviewText(content)
+      : undefined;
+  const existingMeta =
+    context?.artifact?.meta && typeof context.artifact.meta === "object"
+      ? (context.artifact.meta as ArtifactWriteMetadata)
+      : undefined;
   const baseMeta: ArtifactMeta = {
+    ...(existingMeta || {}),
     ...(metadata || {}),
     ...(language ? { language } : {}),
+    ...(previewText &&
+    !(typeof metadata?.previewText === "string" && metadata.previewText.trim())
+      ? { previewText }
+      : {}),
     filePath: normalizedPath,
     filename: title,
     source: context?.source,
@@ -194,7 +311,7 @@ export function buildArtifactFromWrite({
     content,
     status: context?.status || "complete",
     meta: baseMeta,
-    position: context?.artifact?.position || { start: 0, end: 0 },
+    position: context?.artifact?.position || { start: 0, end: content.length },
     createdAt: context?.artifact?.createdAt || now,
     updatedAt: now,
     error: context?.artifact?.error,
@@ -242,6 +359,15 @@ export function updateMessageArtifactsStatus(
       ? {
           ...artifact,
           status: nextStatus,
+          meta: {
+            ...artifact.meta,
+            writePhase:
+              nextStatus === "complete"
+                ? "completed"
+                : nextStatus === "error"
+                  ? "failed"
+                  : artifact.meta.writePhase,
+          },
           updatedAt: Date.now(),
         }
       : artifact,

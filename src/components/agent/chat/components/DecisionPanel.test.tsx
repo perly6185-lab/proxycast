@@ -240,7 +240,7 @@ describe("DecisionPanel ask_user", () => {
     });
   });
 
-  it("fallback ask 在 request_id 未就绪时应允许先选择答案但禁用提交", () => {
+  it("fallback ask 在 request_id 未就绪时应允许先记录答案", () => {
     const request: ActionRequired = {
       requestId: "fallback:tool-1",
       actionType: "ask_user",
@@ -254,14 +254,20 @@ describe("DecisionPanel ask_user", () => {
     };
     const { container, onSubmit } = renderDecisionPanel(request);
 
-    expect(container.textContent).toContain("正在等待系统生成可提交的 Ask 请求");
-    const waitingSubmitButton = findButtonByText(container, "等待系统就绪...");
+    expect(container.textContent).toContain("会先被记录");
+    const waitingSubmitButton = findButtonByText(container, "记录答案");
     expect(waitingSubmitButton.disabled).toBe(true);
     const optionButton = findButtonByText(container, "自动执行（Auto）");
     expect(optionButton.disabled).toBe(false);
     clickButton(optionButton);
-    expect(optionButton.className).toContain("border-blue-500");
-    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith({
+      requestId: "fallback:tool-1",
+      confirmed: true,
+      response: "自动执行（Auto）",
+      actionType: "ask_user",
+      userData: { answer: "自动执行（Auto）" },
+    });
   });
 
   it("提交后应显示只读回显，不应再次出现可提交按钮", () => {

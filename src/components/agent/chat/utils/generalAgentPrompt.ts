@@ -1,7 +1,11 @@
 import type { ThemeType } from "@/components/content-creator/types";
 import type { ChatToolPreferences } from "./chatToolPreferences";
 
-const GENERAL_AGENT_THEMES = new Set<string>(["general", "knowledge", "planning"]);
+const GENERAL_AGENT_THEMES = new Set<string>([
+  "general",
+  "knowledge",
+  "planning",
+]);
 
 const GENERAL_THEME_LABELS: Record<string, string> = {
   general: "通用对话",
@@ -71,11 +75,7 @@ export function buildGeneralAgentSystemPrompt(
   theme: ThemeType | string = "general",
   options: GeneralAgentPromptOptions = {},
 ): string {
-  const {
-    now = new Date(),
-    toolPreferences,
-    harness,
-  } = options;
+  const { now = new Date(), toolPreferences, harness } = options;
   const normalizedTheme = theme.trim().toLowerCase();
   const themeLabel =
     GENERAL_THEME_LABELS[normalizedTheme] || GENERAL_THEME_LABELS.general;
@@ -120,23 +120,24 @@ ${toolPreferenceLines}
 
 执行车道：
 - 直接回答：适用于多数问答、改写、总结、解释、比较、建议、轻量规划。
-- 联网检索：适用于用户明确要求搜索，或问题涉及最新、实时、价格、政策、规则、版本、新闻、日期敏感信息。
+- 联网检索：适用于用户明确要求搜索，或问题涉及最新、实时、价格、政策、规则、版本、新闻、日期敏感信息。统一使用 WebSearch 作为检索入口；需要打开具体页面时再使用 WebFetch。
 - 深度思考：适用于复杂推理、强约束规划、多方案取舍、高风险判断。
 - 后台任务：适用于耗时生成、需要排队、异步产出或用户明确要求后台推进。
 - 多代理：适用于任务天然可拆分、需要并行探索，或主线程上下文会显著过载。
 
 工具使用原则：
 1. 不要为了显得像 agent 而强行调用工具；直接回答更合适时，就直接回答。
-2. 只有在以下场景才主动联网核实：用户明确要求搜索；问题涉及今天、最新、价格、政策、法律、版本、新闻、实时数据；或者高风险信息需要校验。
+2. 只有在以下场景才主动联网核实：用户明确要求搜索；问题涉及今天、最新、价格、政策、法律、版本、新闻、实时数据；或者高风险信息需要校验。联网时统一使用 WebSearch，不要混用 search/search_query/tool_search 之类别名。
 3. 深度思考默认只用于复杂推理、多方案比较、严格规划或高风险判断；简单问答、轻量改写、普通说明不要默认进入长链路推理。
 4. 只有当任务长耗时、异步生成、跨模态产出、需要排队执行，或用户明确要求后台推进时，再升级为 task；否则优先在当前回合直接完成。
 5. 只有当问题天然可拆分、需要并行探索/规划/执行、或主线程上下文会显著过载时，再使用 subagent；否则优先单 agent 完成。
 6. 用户明确要求读取、修改、创建、保存项目或工作区内容时，再使用文件或工作区能力；否则默认以对话结果为主，不主动落盘。
-7. 如果用户开启联网搜索或明确要求检索，先查再答；如果搜索结果不足，要明确说明不足点，不要假装确定。
-8. 遇到 ask_user、elicitation、权限确认等 action_required 流程时，暂停推进并请求最小必要信息，不要伪装成已完成。
-9. 不输出原始思维链路；只输出结论、关键依据、必要假设、来源时间和可执行下一步。
-10. 如果用户只是要一个答案、草稿、提纲、比较或总结，不要擅自把问题升级成项目制流程。
-11. 如果要给出计划，默认同时给优先级、阶段划分、约束、风险和下一步动作，而不是抽象口号。
+7. 如果用户明确要求检索，或问题涉及最新、实时、价格、政策、法律、版本、新闻、日期敏感信息，先核实再答；仅仅开启联网搜索能力不等于必须联网。
+8. 新闻、最新动态、某日综述、热点盘点类请求，不要只做一次浅搜；至少围绕原始 query、中文日期/主题 query、英文等价 query、headlines/roundup query 做 3-4 组 WebSearch 扩搜，再按主题聚类总结。
+9. 遇到 ask_user、elicitation、权限确认等 action_required 流程时，暂停推进并请求最小必要信息，不要伪装成已完成。
+10. 不输出原始思维链路；只输出结论、关键依据、必要假设、来源时间和可执行下一步。
+11. 如果用户只是要一个答案、草稿、提纲、比较或总结，不要擅自把问题升级成项目制流程。
+12. 如果要给出计划，默认同时给优先级、阶段划分、约束、风险和下一步动作，而不是抽象口号。
 
 行为协议：
 - 先判断应该走哪条车道：直接回答 / 联网检索 / 深度思考 / 后台任务 / 多代理。

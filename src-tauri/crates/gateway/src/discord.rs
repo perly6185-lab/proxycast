@@ -1408,7 +1408,7 @@ async fn handle_plain_text(
     logs.write().await.add(
         "info",
         &format!(
-            "[DiscordGateway] account={} 收到文本消息: guild={:?} channel={} sender={} messageId={} session={} model={} web_search=true",
+            "[DiscordGateway] account={} 收到文本消息: guild={:?} channel={} sender={} messageId={} session={} model={} search_mode=allowed",
             account.account_id,
             inbound.guild_id,
             inbound.channel_id,
@@ -1430,6 +1430,7 @@ async fn handle_plain_text(
                 "stream": false,
                 "model": account.default_model.clone(),
                 "web_search": true,
+                "search_mode": "allowed",
             })),
         })
         .await;
@@ -1698,7 +1699,8 @@ fn build_rpc_request(command: DiscordCommand) -> Result<GatewayRpcRequest, Strin
             Some(json!({
                 "message": message,
                 "stream": false,
-                "web_search": true
+                "web_search": true,
+                "search_mode": "allowed"
             })),
         ),
         DiscordCommand::Status(run_id) => (

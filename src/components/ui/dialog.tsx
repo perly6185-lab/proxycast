@@ -66,12 +66,16 @@ interface DialogContentProps {
   className?: string;
   children: React.ReactNode;
   maxWidth?: string;
+  draggable?: boolean;
+  dragHandleSelector?: string;
 }
 
 const DialogContent: React.FC<DialogContentProps> = ({
   className,
   children,
   maxWidth,
+  draggable = false,
+  dragHandleSelector,
 }) => {
   const context = useContext(DialogContext);
   if (!context) throw new Error("DialogContent must be used within Dialog");
@@ -91,6 +95,8 @@ const DialogContent: React.FC<DialogContentProps> = ({
       onClose={() => setOpen(false)}
       className={cn("p-6", filteredClassName)}
       maxWidth={finalMaxWidth}
+      draggable={draggable}
+      dragHandleSelector={dragHandleSelector}
     >
       {children}
     </Modal>

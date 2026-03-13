@@ -213,6 +213,78 @@ describe("tryExecuteSlashSkillCommand 社媒主链路", () => {
     expect(onWriteFile).not.toHaveBeenCalled();
   });
 
+  it("收到 artifact_snapshot 时应立刻透传给 onWriteFile", async () => {
+    const store = createMessageStore([buildBaseMessage()]);
+    const onWriteFile = vi.fn();
+    let streamHandler: ((event: { payload: unknown }) => void) | null = null;
+
+    mockSafeListen.mockImplementation(async (_eventName, handler) => {
+      streamHandler = handler as (event: { payload: unknown }) => void;
+      return () => {
+        streamHandler = null;
+      };
+    });
+
+    mockExecuteSkill.mockImplementation(async () => {
+      streamHandler?.({
+        payload: {
+          type: "artifact_snapshot",
+          artifact: {
+            artifactId: "artifact-1",
+            filePath: "social-posts/live.md",
+            content: "# 实时稿",
+            metadata: {
+              complete: false,
+              writePhase: "streaming",
+              lastUpdateSource: "artifact_snapshot",
+            },
+          },
+        },
+      });
+      streamHandler?.({ payload: { type: "final_done" } });
+
+      return {
+        success: true,
+        output:
+          '<write_file path="social-posts/live.md">\n# 实时稿\n</write_file>',
+        steps_completed: [],
+      };
+    });
+
+    const handled = await tryExecuteSlashSkillCommand({
+      command: {
+        skillName: "social_post_with_cover",
+        userInput: "实时写作",
+      },
+      rawContent: "/social_post_with_cover 实时写作",
+      assistantMsgId: "assistant-1",
+      providerType: "anthropic",
+      model: "claude-sonnet-4-20250514",
+      ensureSession: async () => "session-1",
+      setMessages: store.setMessages,
+      setIsSending: vi.fn(),
+      setCurrentAssistantMsgId: vi.fn(),
+      setStreamUnlisten: vi.fn(),
+      setActiveSessionIdForStop: vi.fn(),
+      isExecutionCancelled: () => false,
+      playTypewriterSound: vi.fn(),
+      playToolcallSound: vi.fn(),
+      onWriteFile,
+    });
+
+    expect(handled).toBe(true);
+    expect(onWriteFile).toHaveBeenCalledTimes(1);
+    expect(onWriteFile).toHaveBeenCalledWith(
+      "# 实时稿",
+      "social-posts/live.md",
+      expect.objectContaining({
+        artifactId: "artifact-1",
+        source: "artifact_snapshot",
+        status: "streaming",
+      }),
+    );
+  });
+
   it("当社媒结果无 write_file 时应走前端兜底写入", async () => {
     const store = createMessageStore([buildBaseMessage()]);
     const onWriteFile = vi.fn();

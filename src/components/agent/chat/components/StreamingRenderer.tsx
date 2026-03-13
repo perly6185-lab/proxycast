@@ -511,6 +511,7 @@ interface StreamingRendererProps {
   /** 代码块点击回调（用于在画布中显示） */
   onCodeBlockClick?: (language: string, code: string) => void;
   runtimeStatus?: AgentRuntimeStatus;
+  showRuntimeStatusInline?: boolean;
 }
 
 const RUNTIME_PHASE_LABELS: Record<AgentRuntimeStatus["phase"], string> = {
@@ -579,6 +580,7 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
     collapseCodeBlocks,
     onCodeBlockClick,
     runtimeStatus,
+    showRuntimeStatusInline = false,
   }) => {
     // 判断是否使用交错显示模式
     const useInterleavedMode = contentParts && contentParts.length > 0;
@@ -626,26 +628,103 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
       return result;
     }, [parsedVisibleText, isStreaming, useInterleavedMode]);
 
-    // 处理文件写入 - 使用 ref 来追踪已处理的内容
-    const processedWriteFilesRef = useRef<Set<string>>(new Set());
+    const interleavedParsedContent = useMemo(() => {
+      if (!useInterleavedMode) {
+        return [];
+      }
+
+      return (contentParts || []).map((part) => {
+        if (part.type !== "text") {
+          return EMPTY_PARSE_RESULT;
+        }
+
+        return getCachedStructuredParse(parseCacheRef, part.text, isStreaming);
+      });
+    }, [contentParts, isStreaming, useInterleavedMode]);
+
+    // 处理文件写入 - 使用 ref 追踪同一路径的最新阶段与内容签名
+    const processedWriteFilesRef = useRef<Map<string, string>>(new Map());
+
+    const emitWriteFile = React.useCallback(
+      (part: ParsedMessageContent, signatureKey: string) => {
+        if (
+          !onWriteFile ||
+          (part.type !== "write_file" && part.type !== "pending_write_file") ||
+          !part.filePath
+        ) {
+          return;
+        }
+
+        const contentValue =
+          typeof part.content === "string" ? part.content : "";
+        const signature = `${part.type}:${signatureKey}:${contentValue}`;
+        const previousSignature = processedWriteFilesRef.current.get(
+          part.filePath,
+        );
+        if (previousSignature === signature) {
+          return;
+        }
+
+        processedWriteFilesRef.current.set(part.filePath, signature);
+        const metadata: WriteArtifactContext["metadata"] = {
+          writePhase:
+            part.type === "pending_write_file"
+              ? "streaming"
+              : isStreaming
+                ? "streaming"
+                : "completed",
+          previewText: contentValue.trim()
+            ? contentValue.slice(0, 480).trim()
+            : undefined,
+          latestChunk: contentValue.trim()
+            ? contentValue.slice(-240).trim()
+            : undefined,
+          isPartial: part.type === "pending_write_file" || isStreaming,
+          lastUpdateSource: "message_content",
+        };
+
+        onWriteFile(contentValue, part.filePath, {
+          source: "message_content",
+          status:
+            part.type === "pending_write_file" || isStreaming
+              ? "streaming"
+              : "complete",
+          metadata,
+        });
+      },
+      [isStreaming, onWriteFile],
+    );
 
     useEffect(() => {
       if (!onWriteFile) return;
 
-      for (const part of parsedContent.parts) {
+      const writeCandidates = useInterleavedMode
+        ? interleavedParsedContent.flatMap((parsed, index) =>
+            parsed.parts.map((part, partIndex) => ({
+              part,
+              signatureKey: `interleaved:${index}:${partIndex}`,
+            })),
+          )
+        : parsedContent.parts.map((part, index) => ({
+            part,
+            signatureKey: `standard:${index}`,
+          }));
+
+      for (const candidate of writeCandidates) {
         if (
-          part.type === "write_file" &&
-          part.filePath &&
-          typeof part.content === "string"
+          candidate.part.type === "write_file" ||
+          candidate.part.type === "pending_write_file"
         ) {
-          const key = `${part.filePath}:${part.content.length}`;
-          if (!processedWriteFilesRef.current.has(key)) {
-            processedWriteFilesRef.current.add(key);
-            onWriteFile(part.content, part.filePath);
-          }
+          emitWriteFile(candidate.part, candidate.signatureKey);
         }
       }
-    }, [parsedContent.parts, onWriteFile]);
+    }, [
+      emitWriteFile,
+      interleavedParsedContent,
+      onWriteFile,
+      parsedContent.parts,
+      useInterleavedMode,
+    ]);
 
     // 使用外部提供的思考内容或解析出的内容
     const finalThinking = externalThinking || thinkingText;
@@ -689,11 +768,8 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
               if (!partText) return null;
 
               // 解析 write_file 标签
-              const partParsed = getCachedStructuredParse(
-                parseCacheRef,
-                partText,
-                isStreaming,
-              );
+              const partParsed =
+                interleavedParsedContent[index] || EMPTY_PARSE_RESULT;
               const isLastPart = index === contentParts.length - 1;
 
               // 添加调试日志
@@ -706,23 +782,6 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
                       p.type === "pending_write_file",
                   ),
                 );
-              }
-
-              // 处理文件写入回调
-              if (onWriteFile) {
-                for (const p of partParsed.parts) {
-                  if (
-                    p.type === "write_file" &&
-                    p.filePath &&
-                    typeof p.content === "string"
-                  ) {
-                    const key = `interleaved-${p.filePath}:${p.content.length}`;
-                    if (!processedWriteFilesRef.current.has(key)) {
-                      processedWriteFilesRef.current.add(key);
-                      onWriteFile(p.content, p.filePath);
-                    }
-                  }
-                }
               }
 
               // 如果包含 write_file，按部分渲染
@@ -742,7 +801,6 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
                             className="flex items-center gap-2 px-3 py-2 bg-muted/50 rounded-lg text-sm text-muted-foreground cursor-pointer hover:bg-muted/70 transition-colors"
                             onClick={() =>
                               p.filePath &&
-                              fileContent &&
                               onFileClick?.(p.filePath, fileContent)
                             }
                           >
@@ -858,6 +916,7 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
     const hasToolCalls = toolCalls && toolCalls.length > 0;
     const hasActionRequests = actionRequests && actionRequests.length > 0;
     const shouldShowRuntimeStatus =
+      showRuntimeStatusInline &&
       Boolean(runtimeStatus) &&
       isStreaming &&
       !hasVisibleContent &&
@@ -899,9 +958,7 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
                 key={`write-${index}`}
                 className="flex items-center gap-2 px-3 py-2 bg-muted/50 rounded-lg text-sm text-muted-foreground cursor-pointer hover:bg-muted/70 transition-colors"
                 onClick={() =>
-                  part.filePath &&
-                  fileContent &&
-                  onFileClick?.(part.filePath, fileContent)
+                  part.filePath && onFileClick?.(part.filePath, fileContent)
                 }
               >
                 <FileText className="w-4 h-4" />

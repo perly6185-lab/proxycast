@@ -7,16 +7,28 @@
  * **Validates: Requirements 5.1, 5.2**
  */
 
-import { describe, expect, it } from "vitest";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { test } from "@fast-check/vitest";
 import * as fc from "fast-check";
 import {
+  SkillCard,
+  canInspectSkill,
   canManageSkillInstallation,
   canViewLocalSkillContent,
+  getInspectActionLabel,
   getSkillSource,
   type SkillSource,
 } from "./SkillCard";
 import type { Skill } from "@/lib/api/skills";
+
+interface RenderResult {
+  container: HTMLDivElement;
+  root: Root;
+}
+
+const mountedRoots: RenderResult[] = [];
 
 /**
  * 创建一个基础 Skill 对象的辅助函数
@@ -33,12 +45,56 @@ function createSkill(overrides: Partial<Skill> = {}): Skill {
   };
 }
 
+function renderSkillCard(skill: Skill): RenderResult {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  act(() => {
+    root.render(
+      createElement(SkillCard, {
+        skill,
+        onInstall: () => {},
+        onUninstall: () => {},
+        installing: false,
+      }),
+    );
+  });
+
+  const rendered = { container, root };
+  mountedRoots.push(rendered);
+  return rendered;
+}
+
+beforeEach(() => {
+  (
+    globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
+});
+
+afterEach(() => {
+  while (mountedRoots.length > 0) {
+    const mounted = mountedRoots.pop();
+    if (!mounted) {
+      break;
+    }
+    act(() => {
+      mounted.root.unmount();
+    });
+    mounted.container.remove();
+  }
+});
+
 describe("getSkillSource", () => {
   /**
    * Property 4: Source Classification Logic
    *
    * *For any* Skill object, the source classification SHALL return:
-   * - "builtin" if sourceKind="builtin"
+    * - "builtin" if sourceKind="builtin"
+    * - "project" if catalogSource="project" and sourceKind!="builtin"
+   * - "local" if catalogSource="user"
    * - "official" if repoOwner="proxycast" AND repoName="skills"
    * - "community" if repoOwner and repoName are present but not proxycast/skills
    * - "local" if repoOwner or repoName is missing
@@ -64,7 +120,11 @@ describe("getSkillSource", () => {
     })(
       "官方仓库 (proxycast/skills) 应返回 'official'",
       (repoOwner, repoName) => {
-        const skill = createSkill({ repoOwner, repoName });
+        const skill = createSkill({
+          catalogSource: "remote",
+          repoOwner,
+          repoName,
+        });
         const source = getSkillSource(skill);
         expect(source).toBe("official" as SkillSource);
       },
@@ -73,7 +133,11 @@ describe("getSkillSource", () => {
     test.prop([nonProxycastOwnerArb, repoNameArb], { numRuns: 100 })(
       "非 proxycast 所有者的仓库应返回 'community'",
       (repoOwner, repoName) => {
-        const skill = createSkill({ repoOwner, repoName });
+        const skill = createSkill({
+          catalogSource: "remote",
+          repoOwner,
+          repoName,
+        });
         const source = getSkillSource(skill);
         expect(source).toBe("community" as SkillSource);
       },
@@ -82,7 +146,11 @@ describe("getSkillSource", () => {
     test.prop([fc.constant("proxycast"), nonSkillsNameArb], { numRuns: 100 })(
       "proxycast 所有者但非 skills 仓库应返回 'community'",
       (repoOwner, repoName) => {
-        const skill = createSkill({ repoOwner, repoName });
+        const skill = createSkill({
+          catalogSource: "remote",
+          repoOwner,
+          repoName,
+        });
         const source = getSkillSource(skill);
         expect(source).toBe("community" as SkillSource);
       },
@@ -121,6 +189,24 @@ describe("getSkillSource", () => {
       },
     );
 
+    it("项目级 skills 应返回 'project'", () => {
+      const skill = createSkill({
+        catalogSource: "project",
+        repoOwner: undefined,
+        repoName: undefined,
+      });
+      expect(getSkillSource(skill)).toBe("project" as SkillSource);
+    });
+
+    it("用户级 skills 应优先返回 'local'", () => {
+      const skill = createSkill({
+        catalogSource: "user",
+        repoOwner: "proxycast",
+        repoName: "skills",
+      });
+      expect(getSkillSource(skill)).toBe("local" as SkillSource);
+    });
+
     // 综合属性测试：验证分类的完备性和互斥性
     test.prop([fc.option(repoNameArb), fc.option(repoNameArb)], {
       numRuns: 100,
@@ -132,7 +218,13 @@ describe("getSkillSource", () => {
           repoName: repoName ?? undefined,
         });
         const source = getSkillSource(skill);
-        expect(["builtin", "official", "community", "local"]).toContain(source);
+        expect([
+          "builtin",
+          "project",
+          "official",
+          "community",
+          "local",
+        ]).toContain(source);
       },
     );
   });
@@ -153,6 +245,17 @@ describe("canViewLocalSkillContent", () => {
     const skill = createSkill({
       installed: true,
       sourceKind: "other",
+      repoOwner: undefined,
+      repoName: undefined,
+    });
+    expect(canViewLocalSkillContent(skill)).toBe(true);
+  });
+
+  it("项目级且可用 skill 应可查看内容", () => {
+    const skill = createSkill({
+      installed: true,
+      sourceKind: "other",
+      catalogSource: "project",
       repoOwner: undefined,
       repoName: undefined,
     });
@@ -190,10 +293,78 @@ describe("canManageSkillInstallation", () => {
     const skill = createSkill({ sourceKind: "other" });
     expect(canManageSkillInstallation(skill)).toBe(true);
   });
+
+  it("项目级 skill 不应显示安装或卸载入口", () => {
+    const skill = createSkill({
+      sourceKind: "other",
+      catalogSource: "project",
+    });
+    expect(canManageSkillInstallation(skill)).toBe(false);
+  });
 });
+
+describe("canInspectSkill", () => {
+  it("远程 skill 即使未安装也应支持安装前预检", () => {
+    const skill = createSkill({
+      installed: false,
+      catalogSource: "remote",
+      repoOwner: "proxycast",
+      repoName: "skills",
+      repoBranch: "main",
+    });
+    expect(canInspectSkill(skill)).toBe(true);
+  });
+
+  it("缺少仓库信息且未本地可用的 skill 不应支持预检", () => {
+    const skill = createSkill({
+      installed: false,
+      repoOwner: undefined,
+      repoName: undefined,
+      repoBranch: undefined,
+    });
+    expect(canInspectSkill(skill)).toBe(false);
+  });
+});
+
+describe("getInspectActionLabel", () => {
+  it("本地可用 skill 应显示查看内容", () => {
+    const skill = createSkill({
+      installed: true,
+      repoOwner: undefined,
+      repoName: undefined,
+    });
+    expect(getInspectActionLabel(skill)).toBe("查看内容");
+  });
+
+  it("远程 skill 应显示检查详情", () => {
+    const skill = createSkill({
+      installed: false,
+      catalogSource: "remote",
+      repoOwner: "proxycast",
+      repoName: "skills",
+      repoBranch: "main",
+    });
+    expect(getInspectActionLabel(skill)).toBe("检查详情");
+  });
+});
+
+describe("SkillCard", () => {
+  it("standardCompliance 缺少兼容字段数组时不应崩溃", () => {
+    const skill = createSkill({
+      standardCompliance: {
+        isStandard: true,
+      } as Skill["standardCompliance"],
+    });
+
+    expect(() => renderSkillCard(skill)).not.toThrow();
+    expect(document.body.textContent).toContain("标准");
+  });
+});
+
 it("内置技能应优先返回 'builtin'", () => {
   const skill = createSkill({
     sourceKind: "builtin",
+    catalogSource: "remote",
     repoOwner: "proxycast",
     repoName: "skills",
   });

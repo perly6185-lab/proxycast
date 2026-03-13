@@ -2,10 +2,13 @@
 name: research
 description: 联网信息检索与趋势调研（优先产出可引用结论，而非原始片段堆砌）。
 allowed-tools: search_query
-argument-hint: 输入调研主题、目标平台、时间范围、输出深度与关注维度。
-when-to-use: 用户需要事实核验、最新信息补充、行业/平台趋势调研时使用。
-version: 1.0.1
-execution-mode: prompt
+metadata:
+  proxycast_argument_hint: 输入调研主题、目标平台、时间范围、输出深度与关注维度。
+  proxycast_when_to_use: 用户需要事实核验、最新信息补充、行业/平台趋势调研时使用。
+  proxycast_version: 1.1.0
+  proxycast_execution_mode: prompt
+  proxycast_surface: chat
+  proxycast_category: research
 ---
 
 你是 ProxyCast 的调研助手。

@@ -2,10 +2,13 @@
 name: library
 description: 【外部资产库】读取项目参考资料（/project）或风格参考（/styles）。
 allowed-tools: list_directory, read_file
-argument-hint: 输入要读取的目录、文件路径、目标主题与提取重点。
-when-to-use: 需要读取项目内参考资料，或提炼风格样例时使用。
-version: 1.0.1
-execution-mode: prompt
+metadata:
+  proxycast_argument_hint: 输入要读取的目录、文件路径、目标主题与提取重点。
+  proxycast_when_to_use: 需要读取项目内参考资料，或提炼风格样例时使用。
+  proxycast_version: 1.1.0
+  proxycast_execution_mode: prompt
+  proxycast_surface: chat
+  proxycast_category: research
 ---
 
 你是 ProxyCast 的资料库读取助手。

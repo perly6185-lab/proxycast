@@ -23,7 +23,7 @@ export function buildInitialAgentRuntimeStatus(options: {
 }): AgentRuntimeStatus {
   const checkpoints = [
     buildExecutionLabel(options.executionStrategy),
-    options.webSearch ? "已允许联网检索" : "优先本地直接回答",
+    options.webSearch ? "联网搜索仅作为候选能力待命" : "优先本地直接回答",
     options.thinking ? "必要时启用深度思考" : "先走轻量推理",
     options.skipUserMessage ? "系统引导请求" : "用户请求已入队",
   ];
@@ -44,7 +44,7 @@ export function buildWaitingAgentRuntimeStatus(options: {
   const checkpoints = [
     "会话已建立",
     buildExecutionLabel(options.executionStrategy),
-    options.webSearch ? "检索能力待命" : "直接回答优先",
+    options.webSearch ? "先理解意图，再决定是否联网" : "直接回答优先",
     options.thinking ? "推理增强已待命" : "等待首个模型事件",
   ];
 

@@ -227,6 +227,17 @@ const rustTextSurfaceMonitors = [
     allowedPaths: [],
   },
   {
+    id: "rust-request-tool-policy-compat-service",
+    classification: "deprecated",
+    description: "request_tool_policy 旧服务壳回流",
+    patterns: [
+      "crate::services::request_tool_policy_prompt_service::",
+      "proxycast_lib::services::request_tool_policy_prompt_service::",
+      "services::request_tool_policy_prompt_service::",
+    ],
+    allowedPaths: [],
+  },
+  {
     id: "rust-migration-setting-key-leak",
     classification: "deprecated",
     description: "Rust 迁移 settings 标记字符串扩散",

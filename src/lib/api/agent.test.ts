@@ -145,6 +145,40 @@ describe("Agent API 治理护栏", () => {
     });
   });
 
+  it("submitAgentRuntimeTurn 应透传 search_mode 与 queue_if_busy", async () => {
+    mockSafeInvoke.mockResolvedValueOnce(undefined);
+
+    await submitAgentRuntimeTurn({
+      message: "查一下今天的汇率",
+      session_id: "session-runtime-search",
+      event_name: "event-runtime-search",
+      workspace_id: "workspace-runtime-search",
+      queue_if_busy: true,
+      queued_turn_id: "queued-turn-1",
+      turn_config: {
+        execution_strategy: "auto",
+        web_search: true,
+        search_mode: "allowed",
+      },
+    });
+
+    expect(mockSafeInvoke).toHaveBeenCalledWith("agent_runtime_submit_turn", {
+      request: {
+        message: "查一下今天的汇率",
+        session_id: "session-runtime-search",
+        event_name: "event-runtime-search",
+        workspace_id: "workspace-runtime-search",
+        queue_if_busy: true,
+        queued_turn_id: "queued-turn-1",
+        turn_config: {
+          execution_strategy: "auto",
+          web_search: true,
+          search_mode: "allowed",
+        },
+      },
+    });
+  });
+
   it("respondAgentRuntimeAction 应走统一 action 响应命令", async () => {
     mockSafeInvoke.mockResolvedValueOnce(undefined);
 

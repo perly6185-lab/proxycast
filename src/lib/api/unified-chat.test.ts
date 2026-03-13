@@ -118,6 +118,25 @@ describe("unified-chat API", () => {
         metadata: undefined,
       },
     });
+    expect(
+      parseStreamEvent({
+        type: "artifact_snapshot",
+        artifact: {
+          artifactId: "artifact-2",
+          filePath: "nested.md",
+          content: "nested content",
+          metadata: { complete: false },
+        },
+      }),
+    ).toEqual({
+      type: "artifact_snapshot",
+      artifact: {
+        artifactId: "artifact-2",
+        filePath: "nested.md",
+        content: "nested content",
+        metadata: { complete: false },
+      },
+    });
     expect(parseStreamEvent({ type: "unknown" })).toBeNull();
     expect(generateEventName("session-1")).toMatch(
       /^unified-chat-stream-session-1-/,

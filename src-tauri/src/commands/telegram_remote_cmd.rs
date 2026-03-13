@@ -495,7 +495,12 @@ fn build_rpc_request(command: TelegramCommand) -> Result<GatewayRpcRequest, Stri
     let (method, params) = match command {
         TelegramCommand::Run(message) => (
             RpcMethod::AgentRun,
-            Some(json!({ "message": message, "stream": false })),
+            Some(json!({
+                "message": message,
+                "stream": false,
+                "web_search": true,
+                "search_mode": "allowed"
+            })),
         ),
         TelegramCommand::Status(run_id) => (
             RpcMethod::AgentWait,

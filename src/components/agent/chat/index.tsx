@@ -25,9 +25,11 @@ import { readFilePreview } from "@/lib/api/fileBrowser";
 import { uploadImageToSession, importDocument } from "@/lib/api/session-files";
 import {
   useAgentChatUnified,
+  useArtifactAutoPreviewSync,
   useThemeContextWorkspace,
   useTopicBranchBoard,
 } from "./hooks";
+import { useArtifactDisplayState } from "./hooks/useArtifactDisplayState";
 import type { SidebarActivityLog } from "./hooks/useThemeContextWorkspace";
 import type { TopicBranchStatus } from "./hooks/useTopicBranchBoard";
 import { useSessionFiles } from "./hooks/useSessionFiles";
@@ -79,7 +81,11 @@ import {
   selectedArtifactAtom,
   selectedArtifactIdAtom,
 } from "@/lib/artifact/store";
-import { ArtifactRenderer, ArtifactToolbar } from "@/components/artifact";
+import {
+  ArtifactCanvasOverlay,
+  ArtifactRenderer,
+  ArtifactToolbar,
+} from "@/components/artifact";
 import type { Artifact } from "@/lib/artifact/types";
 import { useAtomValue, useSetAtom } from "jotai";
 import { createInitialMusicState } from "@/components/content-creator/canvas/music/types";
@@ -119,7 +125,6 @@ import { skillsApi, type Skill } from "@/lib/api/skills";
 import { buildHomeAgentParams } from "@/lib/workspace/navigation";
 import { useConfiguredProviders } from "@/hooks/useConfiguredProviders";
 import { useSubAgentScheduler } from "@/hooks/useSubAgentScheduler";
-import { LatestRunStatusBadge } from "@/components/execution/LatestRunStatusBadge";
 import {
   executionRunGet,
   executionRunGetThemeWorkbenchState,
@@ -260,9 +265,11 @@ function mergeMessageArtifactsIntoStore(
       }
 
       const shouldReuseExistingContent =
-        artifact.content.length === 0 &&
-        artifact.meta.source === "tool_result" &&
-        existing.content.length > 0;
+        existing.content.length > 0 &&
+        (artifact.content.length === 0 ||
+          (artifact.status === "streaming" &&
+            artifact.content.length < existing.content.length &&
+            existing.content.startsWith(artifact.content)));
 
       return {
         ...existing,
@@ -621,12 +628,7 @@ function resolveThemeWorkbenchToolTaskTitle(toolCall: ToolCallState): string {
       ? `写入 ${getThemeWorkbenchFileLabel(pathValue)}`
       : "写入主稿文件";
   }
-  if (
-    normalized.includes("websearch") ||
-    normalized.includes("search_query") ||
-    normalized.includes("web_search") ||
-    normalized.includes("search")
-  ) {
+  if (normalized.includes("websearch")) {
     return queryValue
       ? `检索 ${truncateThemeWorkbenchLabel(queryValue)}`
       : "检索参考资料";
@@ -2045,6 +2047,15 @@ export function AgentChatPage({
   const selectedArtifact = useAtomValue(selectedArtifactAtom);
   const setArtifacts = useSetAtom(artifactsAtom);
   const setSelectedArtifactId = useSetAtom(selectedArtifactIdAtom);
+  const liveArtifact = useMemo(
+    () =>
+      selectedArtifact ||
+      (artifacts.length > 0 ? artifacts[artifacts.length - 1] : null),
+    [artifacts, selectedArtifact],
+  );
+  const artifactDisplayState = useArtifactDisplayState(liveArtifact, artifacts);
+  const currentCanvasArtifact = artifactDisplayState.liveArtifact;
+  const displayedCanvasArtifact = artifactDisplayState.displayArtifact;
 
   // Artifact 预览状态
   const [artifactViewMode, setArtifactViewMode] = useState<
@@ -2376,9 +2387,11 @@ export function AgentChatPage({
     currentTurnId,
     turns,
     threadItems,
+    queuedTurns = [],
     isSending,
     sendMessage,
     stopSending,
+    removeQueuedTurn = async () => false,
     clearMessages,
     deleteMessage,
     editMessage,
@@ -2492,11 +2505,11 @@ export function AgentChatPage({
   }, [activeTheme, artifacts, selectedArtifact, setSelectedArtifactId]);
 
   useEffect(() => {
-    if (activeTheme !== "general" || !selectedArtifact) {
+    if (activeTheme !== "general" || !displayedCanvasArtifact) {
       return;
     }
-    setArtifactViewMode(resolveDefaultArtifactViewMode(selectedArtifact));
-  }, [activeTheme, selectedArtifact]);
+    setArtifactViewMode(resolveDefaultArtifactViewMode(displayedCanvasArtifact));
+  }, [activeTheme, displayedCanvasArtifact]);
 
   useEffect(() => {
     savePersistedBoolean(HARNESS_PANEL_VISIBILITY_KEY, harnessPanelVisible);
@@ -4906,12 +4919,36 @@ export function AgentChatPage({
 
       // General 主题使用专门的画布处理
       if (activeTheme === "general") {
+        const existingArtifact = artifacts.find((artifact) => {
+          if (context?.artifactId && artifact.id === context.artifactId) {
+            return true;
+          }
+
+          if (context?.artifact?.id && artifact.id === context.artifact.id) {
+            return true;
+          }
+
+          return (
+            typeof artifact.meta.filePath === "string" &&
+            artifact.meta.filePath === fileName
+          );
+        });
+        const nextContent =
+          content.length > 0
+            ? content
+            : context?.artifact?.content || existingArtifact?.content || "";
         const nextArtifact = context?.artifact
           ? {
+              ...(existingArtifact || {}),
               ...context.artifact,
-              content: content || context.artifact.content,
-              status: context.status || context.artifact.status,
+              content: nextContent,
+              status:
+                context.status ||
+                context.artifact.status ||
+                existingArtifact?.status ||
+                "pending",
               meta: {
+                ...(existingArtifact?.meta || {}),
                 ...context.artifact.meta,
                 ...(context.metadata || {}),
               },
@@ -4919,15 +4956,18 @@ export function AgentChatPage({
             }
           : buildArtifactFromWrite({
               filePath: fileName,
-              content,
+              content: nextContent,
               context: {
                 ...context,
-                status: context?.status || (content.length > 0 ? "complete" : "pending"),
+                artifact: existingArtifact,
+                status:
+                  context?.status ||
+                  (nextContent.length > 0 ? "complete" : "pending"),
               },
             });
 
-        if (content.length > 0) {
-          saveSessionFile(fileName, content).catch((error) => {
+        if (nextContent.length > 0) {
+          saveSessionFile(fileName, nextContent).catch((error) => {
             console.error("[AgentChatPage] 持久化 artifact 失败:", error);
           });
         }
@@ -5310,6 +5350,7 @@ export function AgentChatPage({
     },
     [
       activeTheme, // 添加 activeTheme 依赖
+      artifacts,
       setArtifactViewMode,
       setSelectedArtifactId,
       currentGate.key,
@@ -5398,6 +5439,13 @@ export function AgentChatPage({
     },
     [readSessionFile, sessionFiles, taskFiles],
   );
+
+  useArtifactAutoPreviewSync({
+    enabled: activeTheme === "general",
+    artifact: currentCanvasArtifact,
+    loadPreview: handleHarnessLoadFilePreview,
+    onSyncArtifact: upsertGeneralArtifact,
+  });
 
   const openArtifactInWorkbench = useCallback(
     async (artifact: Artifact) => {
@@ -5953,8 +6001,10 @@ export function AgentChatPage({
     return (
       <Dialog open={harnessPanelVisible} onOpenChange={setHarnessPanelVisible}>
         <DialogContent
-          maxWidth="max-w-6xl"
-          className="max-h-[90vh] overflow-hidden p-0"
+          maxWidth="max-w-7xl"
+          className="flex h-[90vh] max-h-[90vh] flex-col overflow-hidden p-0"
+          draggable={true}
+          dragHandleSelector='[data-harness-drag-handle="true"]'
         >
           <HarnessStatusPanel
             harnessState={harnessState}
@@ -6308,7 +6358,7 @@ export function AgentChatPage({
         themeWorkbenchRunState={themeWorkbenchRunState}
         onSend={handleSend}
         onStop={stopSending}
-        isLoading={isSending}
+        isLoading={isSending || queuedTurns.length > 0}
         providerType={providerType}
         setProviderType={setProviderType}
         model={model}
@@ -6332,6 +6382,8 @@ export function AgentChatPage({
         onToolStatesChange={setChatToolPreferences}
         onSelectCharacter={handleSelectCharacter}
         onNavigateToSettings={handleNavigateToSkillSettings}
+        queuedTurns={queuedTurns}
+        onRemoveQueuedTurn={removeQueuedTurn}
       />
     ),
     [
@@ -6348,6 +6400,7 @@ export function AgentChatPage({
       handleToggleCanvas,
       handleToggleTaskFiles,
       input,
+      queuedTurns,
       isSending,
       isThemeWorkbench,
       layoutMode,
@@ -6355,6 +6408,7 @@ export function AgentChatPage({
       projectId,
       projectMemory?.characters,
       providerType,
+      removeQueuedTurn,
       setExecutionStrategy,
       setInput,
       setModel,
@@ -6381,31 +6435,33 @@ export function AgentChatPage({
     return (
       <Dialog open={harnessPanelVisible} onOpenChange={setHarnessPanelVisible}>
         <DialogContent
-          maxWidth="max-w-5xl"
-          className="max-h-[88vh] overflow-hidden p-0"
+          maxWidth="max-w-6xl"
+          className="flex h-[90vh] max-h-[90vh] flex-col overflow-hidden p-0"
+          draggable={true}
+          dragHandleSelector='[data-harness-drag-handle="true"]'
         >
-        <HarnessStatusPanel
-          harnessState={harnessState}
-          subAgentRuntime={subAgentRuntime}
-          environment={harnessEnvironment}
-          layout="dialog"
-          title="Agent 工作台"
-          description="集中查看计划、审批、子代理、文件活动与工具产物。"
-          toggleLabel="工作台详情"
-          leadContent={
-            <AgentRuntimeStrip
-              activeTheme={mappedTheme}
-              toolPreferences={chatToolPreferences}
-              harnessState={harnessState}
-              subAgentRuntime={subAgentRuntime}
-              variant="embedded"
-              isSending={isSending}
-              runtimeStatusTitle={activeRuntimeStatusTitle}
-            />
-          }
-          onLoadFilePreview={handleHarnessLoadFilePreview}
-          onOpenFile={handleFileClick}
-        />
+          <HarnessStatusPanel
+            harnessState={harnessState}
+            subAgentRuntime={subAgentRuntime}
+            environment={harnessEnvironment}
+            layout="dialog"
+            title="Agent 工作台"
+            description="集中查看计划、审批、子代理、文件活动与工具产物。"
+            toggleLabel="工作台详情"
+            leadContent={
+              <AgentRuntimeStrip
+                activeTheme={mappedTheme}
+                toolPreferences={chatToolPreferences}
+                harnessState={harnessState}
+                subAgentRuntime={subAgentRuntime}
+                variant="embedded"
+                isSending={isSending}
+                runtimeStatusTitle={activeRuntimeStatusTitle}
+              />
+            }
+            onLoadFilePreview={handleHarnessLoadFilePreview}
+            onOpenFile={handleFileClick}
+          />
         </DialogContent>
       </Dialog>
     );
@@ -6697,32 +6753,44 @@ export function AgentChatPage({
     ) as ThemeType;
 
     // 如果有 artifact，优先使用 ArtifactRenderer 渲染
-    const currentArtifact =
-      selectedArtifact ||
-      (artifacts.length > 0 ? artifacts[artifacts.length - 1] : null);
-    if (renderCanvasTheme === "general" && currentArtifact) {
+    if (
+      renderCanvasTheme === "general" &&
+      currentCanvasArtifact &&
+      displayedCanvasArtifact
+    ) {
       return (
         <div className="flex h-full flex-col rounded-[14px] border border-border bg-background">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <ArtifactToolbar
-              artifact={currentArtifact}
+              artifact={currentCanvasArtifact}
               onClose={handleCloseCanvas}
-              isStreaming={currentArtifact.status === "streaming"}
+              isStreaming={currentCanvasArtifact.status === "streaming"}
               viewMode={artifactViewMode}
               onViewModeChange={setArtifactViewMode}
               previewSize={artifactPreviewSize}
               onPreviewSizeChange={setArtifactPreviewSize}
               tone="light"
+              displayBadgeLabel={
+                artifactDisplayState.showPreviousVersionBadge
+                  ? "预览上一版本"
+                  : undefined
+              }
             />
-            <div className="flex-1 overflow-auto bg-background">
+            <div className="relative flex-1 overflow-auto bg-background">
               <ArtifactRenderer
-                artifact={currentArtifact}
-                isStreaming={currentArtifact.status === "streaming"}
+                artifact={displayedCanvasArtifact}
+                isStreaming={
+                  currentCanvasArtifact.id === displayedCanvasArtifact.id &&
+                  currentCanvasArtifact.status === "streaming"
+                }
                 hideToolbar={true}
                 viewMode={artifactViewMode}
                 previewSize={artifactPreviewSize}
                 tone="light"
               />
+              {artifactDisplayState.overlay ? (
+                <ArtifactCanvasOverlay overlay={artifactDisplayState.overlay} />
+              ) : null}
             </div>
           </div>
         </div>
@@ -6811,8 +6879,10 @@ export function AgentChatPage({
     }
     return null;
   }, [
-    artifacts,
-    selectedArtifact,
+    currentCanvasArtifact,
+    displayedCanvasArtifact,
+    artifactDisplayState.overlay,
+    artifactDisplayState.showPreviousVersionBadge,
     generalCanvasState,
     canvasState,
     resolvedCanvasState,
@@ -6889,14 +6959,6 @@ export function AgentChatPage({
                   : null
               }
             />
-
-            {!isThemeWorkbench ? (
-              <LatestRunStatusBadge
-                source="chat"
-                label="统一执行状态"
-                className="px-4 py-1 border-b border-border/60"
-              />
-            ) : null}
 
             {!isThemeWorkbench && contentId && syncStatus !== "idle" && (
               <div

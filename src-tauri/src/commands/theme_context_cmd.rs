@@ -14,7 +14,8 @@ use crate::services::web_search_runtime_service::apply_web_search_runtime_env;
 use crate::services::workspace_health_service::ensure_workspace_ready_with_auto_relocate;
 use crate::workspace::WorkspaceManager;
 use proxycast_agent::{
-    resolve_request_tool_policy, stream_reply_with_policy, SessionConfigBuilder,
+    resolve_request_tool_policy_with_mode, stream_reply_with_policy, RequestToolPolicyMode,
+    SessionConfigBuilder,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -380,7 +381,11 @@ pub async fn aster_agent_theme_context_search(
             }
         });
 
-    let request_tool_policy = resolve_request_tool_policy(Some(true), false);
+    let request_tool_policy = resolve_request_tool_policy_with_mode(
+        Some(true),
+        Some(RequestToolPolicyMode::Required),
+        false,
+    );
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let system_prompt = proxycast_agent::merge_system_prompt_with_request_tool_policy(
         merge_system_prompt_with_web_search(

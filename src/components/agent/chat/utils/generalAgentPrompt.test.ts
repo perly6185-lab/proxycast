@@ -41,6 +41,8 @@ describe("generalAgentPrompt", () => {
     expect(prompt).toContain("执行车道");
     expect(prompt).toContain("后台任务：已开启");
     expect(prompt).toContain("多代理：已开启");
+    expect(prompt).toContain("统一使用 WebSearch");
+    expect(prompt).toContain("不要混用 search/search_query/tool_search");
   });
 
   it("知识主题 Prompt 应强调事实与时效性", () => {
@@ -49,6 +51,7 @@ describe("generalAgentPrompt", () => {
     expect(prompt).toContain("知识探索");
     expect(prompt).toContain("区分事实、推断与不确定性");
     expect(prompt).toContain("优先核对时间与来源");
+    expect(prompt).toContain("3-4 组 WebSearch 扩搜");
   });
 
   it("计划主题 Prompt 应强调执行节奏与风险", () => {

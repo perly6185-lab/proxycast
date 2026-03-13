@@ -233,6 +233,12 @@ export const RightSection = styled.div`
   }
 `;
 
+export const ActionButtonGroup = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
 // --- InputbarTools Styles ---
 
 export const ToolButton = styled.button`
@@ -272,13 +278,16 @@ export const Divider = styled.div`
   margin: 0 4px;
 `;
 
-export const SendButton = styled.button<{ $isStop?: boolean }>`
+export const SendButton = styled.button<{ $isStop?: boolean; $hasLabel?: boolean }>`
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
+  gap: ${({ $hasLabel }) => ($hasLabel ? "6px" : "0")};
+  width: ${({ $hasLabel }) => ($hasLabel ? "auto" : "30px")};
+  min-width: ${({ $hasLabel }) => ($hasLabel ? "68px" : "30px")};
   height: 30px;
-  border-radius: 50%;
+  padding: ${({ $hasLabel }) => ($hasLabel ? "0 12px" : "0")};
+  border-radius: ${({ $hasLabel }) => ($hasLabel ? "999px" : "50%")};
   background-color: ${({ $isStop }) =>
     $isStop ? "hsl(var(--destructive))" : "transparent"};
   color: ${({ $isStop }) => ($isStop ? "white" : "hsl(var(--primary))")};
@@ -298,6 +307,32 @@ export const SendButton = styled.button<{ $isStop?: boolean }>`
     cursor: default;
     color: hsl(var(--muted-foreground));
     opacity: 0.5;
+  }
+`;
+
+export const SecondaryActionButton = styled.button`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 68px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+  color: hsl(var(--destructive));
+  transition: all 0.2s;
+
+  &:hover:not(:disabled) {
+    border-color: hsl(var(--destructive) / 0.4);
+    background: hsl(var(--destructive) / 0.06);
+  }
+
+  &:disabled {
+    cursor: default;
+    color: hsl(var(--muted-foreground));
+    opacity: 0.6;
   }
 `;
 

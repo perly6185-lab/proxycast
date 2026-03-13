@@ -1353,7 +1353,7 @@ async fn handle_plain_text(
     logs.write().await.add(
         "info",
         &format!(
-            "[FeishuGateway] account={} 收到文本消息: chat={} sender={:?} messageId={} session={} model={} web_search=true",
+            "[FeishuGateway] account={} 收到文本消息: chat={} sender={:?} messageId={} session={} model={} search_mode=allowed",
             account.account_id,
             inbound.chat_id,
             inbound.sender_id,
@@ -1374,6 +1374,7 @@ async fn handle_plain_text(
                 "stream": false,
                 "model": account.default_model.clone(),
                 "web_search": true,
+                "search_mode": "allowed",
             })),
         })
         .await;
@@ -1678,7 +1679,8 @@ fn build_rpc_request(command: FeishuCommand) -> Result<GatewayRpcRequest, String
             Some(json!({
                 "message": message,
                 "stream": false,
-                "web_search": true
+                "web_search": true,
+                "search_mode": "allowed"
             })),
         ),
         FeishuCommand::Status(run_id) => (

@@ -228,6 +228,20 @@ function tryHandleToolWriteFile(
   }
 }
 
+function resolveSnapshotStatus(
+  metadata: Record<string, unknown> | undefined,
+): WriteArtifactContext["status"] {
+  const writePhase =
+    typeof metadata?.writePhase === "string" ? metadata.writePhase : undefined;
+  if (writePhase === "failed") {
+    return "error";
+  }
+  if (metadata?.complete === false) {
+    return "streaming";
+  }
+  return "complete";
+}
+
 interface MatchedSkillResult {
   matchedSkill: ExecutableSkillInfo | null;
   catalogLoadFailed: boolean;
@@ -354,6 +368,7 @@ export async function tryExecuteSlashSkillCommand(
     thinking_delta: 0,
     tool_start: 0,
     tool_end: 0,
+    artifact_snapshot: 0,
     done: 0,
     final_done: 0,
     error: 0,
@@ -507,6 +522,28 @@ export async function tryExecuteSlashSkillCommand(
                 contentParts: updatedParts,
               };
             }),
+          );
+          break;
+        }
+        case "artifact_snapshot": {
+          streamCounters.artifact_snapshot += 1;
+          const filePath = streamEvent.artifact.filePath;
+          if (!filePath) {
+            break;
+          }
+
+          onWriteFile?.(
+            typeof streamEvent.artifact.content === "string"
+              ? streamEvent.artifact.content
+              : "",
+            filePath,
+            {
+              artifactId: streamEvent.artifact.artifactId,
+              source: "artifact_snapshot",
+              sourceMessageId: assistantMsgId,
+              status: resolveSnapshotStatus(streamEvent.artifact.metadata),
+              metadata: streamEvent.artifact.metadata,
+            },
           );
           break;
         }

@@ -12,7 +12,10 @@ import { useAgentContext } from "./useAgentContext";
 import { useAgentSession } from "./useAgentSession";
 import { useAgentTools } from "./useAgentTools";
 import { useAgentStream } from "./useAgentStream";
-import type { SendMessageFn, UseAsterAgentChatOptions } from "./agentChatShared";
+import type {
+  SendMessageFn,
+  UseAsterAgentChatOptions,
+} from "./agentChatShared";
 
 export type { Topic } from "./agentChatShared";
 
@@ -27,7 +30,8 @@ export function useAsterAgentChat(options: UseAsterAgentChatOptions) {
   const sendMessageRef = useRef<SendMessageFn | null>(null);
   const resetPendingActionsRef = useRef<(() => void) | null>(null);
   const topicsUpdaterRef = useRef<
-    ((sessionId: string, executionStrategy: AsterExecutionStrategy) => void) | null
+    | ((sessionId: string, executionStrategy: AsterExecutionStrategy) => void)
+    | null
   >(null);
 
   const resetPendingActions = useCallback(() => {
@@ -88,6 +92,8 @@ export function useAsterAgentChat(options: UseAsterAgentChatOptions) {
     setThreadItems: session.setThreadItems,
     setThreadTurns: session.setThreadTurns,
     setCurrentTurnId: session.setCurrentTurnId,
+    queuedTurns: session.queuedTurns,
+    setQueuedTurns: session.setQueuedTurns,
     setPendingActions: tools.setPendingActions,
   });
 
@@ -110,6 +116,37 @@ export function useAsterAgentChat(options: UseAsterAgentChatOptions) {
     };
     init();
   }, [runtime]);
+
+  useEffect(() => {
+    const refreshSessionDetail = session.refreshSessionDetail;
+    const activeSessionId = session.sessionId;
+    const queuedTurnCount = session.queuedTurns.length;
+    const threadTurns = session.threadTurns;
+
+    if (!activeSessionId || stream.isSending) {
+      return;
+    }
+
+    const hasRecoveredQueueWork =
+      queuedTurnCount > 0 || threadTurns.some((turn) => turn.status === "running");
+    if (!hasRecoveredQueueWork) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshSessionDetail(activeSessionId);
+    }, 1500);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    session.queuedTurns.length,
+    session.refreshSessionDetail,
+    session.sessionId,
+    session.threadTurns,
+    stream.isSending,
+  ]);
 
   const handleStartProcess = async () => {
     // Aster 不需要显式启动独立进程，初始化在 effect 中完成。
@@ -138,9 +175,11 @@ export function useAsterAgentChat(options: UseAsterAgentChatOptions) {
     currentTurnId: session.currentTurnId,
     turns: session.threadTurns,
     threadItems: session.threadItems,
+    queuedTurns: session.queuedTurns,
     isSending: stream.isSending,
     sendMessage: stream.sendMessage,
     stopSending: stream.stopSending,
+    removeQueuedTurn: stream.removeQueuedTurn,
     clearMessages: session.clearMessages,
     deleteMessage: session.deleteMessage,
     editMessage: session.editMessage,

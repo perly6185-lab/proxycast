@@ -10,6 +10,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::tool_io_offload::{maybe_offload_tool_arguments, maybe_offload_tool_result_payload};
+use crate::QueuedTurnSnapshot;
 
 const JSON_RECURSION_LIMIT: usize = 50;
 const JSON_TRAVERSAL_NODE_LIMIT: usize = 4_096;
@@ -576,6 +577,10 @@ pub enum TauriAgentEvent {
         result: TauriToolResult,
     },
 
+    /// 文件产物快照
+    #[serde(rename = "artifact_snapshot")]
+    ArtifactSnapshot { artifact: TauriArtifactSnapshot },
+
     /// 需要用户操作（权限确认、用户输入等）
     #[serde(rename = "action_required")]
     ActionRequired {
@@ -591,6 +596,38 @@ pub enum TauriAgentEvent {
     /// 上下文准备轨迹
     #[serde(rename = "context_trace")]
     ContextTrace { steps: Vec<TauriContextTraceStep> },
+
+    /// 当前回合运行态摘要
+    #[serde(rename = "runtime_status")]
+    RuntimeStatus { status: TauriRuntimeStatus },
+
+    /// 队列新增
+    #[serde(rename = "queue_added")]
+    QueueAdded {
+        session_id: String,
+        queued_turn: QueuedTurnSnapshot,
+    },
+
+    /// 队列项移除
+    #[serde(rename = "queue_removed")]
+    QueueRemoved {
+        session_id: String,
+        queued_turn_id: String,
+    },
+
+    /// 队列项开始执行
+    #[serde(rename = "queue_started")]
+    QueueStarted {
+        session_id: String,
+        queued_turn_id: String,
+    },
+
+    /// 队列被清空
+    #[serde(rename = "queue_cleared")]
+    QueueCleared {
+        session_id: String,
+        queued_turn_ids: Vec<String>,
+    },
 
     /// 完成（单次响应完成）
     #[serde(rename = "done")]
@@ -646,6 +683,18 @@ pub struct TauriToolResult {
     pub metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
+/// 文件产物快照
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TauriArtifactSnapshot {
+    pub artifact_id: String,
+    pub file_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
 /// Token 使用量
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TauriTokenUsage {
@@ -658,6 +707,15 @@ pub struct TauriTokenUsage {
 pub struct TauriContextTraceStep {
     pub stage: String,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TauriRuntimeStatus {
+    pub phase: String,
+    pub title: String,
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkpoints: Vec<String>,
 }
 
 /// 简化的消息结构

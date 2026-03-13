@@ -39,8 +39,10 @@ export interface SchedulerProgress {
 
 export type SchedulerEvent =
   | { type: "started"; totalTasks: number }
+  | { type: "queueRejected"; requested: number; limit: number }
   | { type: "taskStarted"; taskId: string; taskType: string }
   | { type: "taskCompleted"; taskId: string; durationMs: number }
+  | { type: "taskTimedOut"; taskId: string; timeoutMs: number }
   | { type: "taskFailed"; taskId: string; error: string }
   | { type: "taskRetry"; taskId: string; retryCount: number }
   | { type: "taskSkipped"; taskId: string; reason: string }
@@ -65,6 +67,7 @@ export interface SchedulerExecutionResult {
 
 export interface SchedulerConfig {
   maxConcurrency?: number;
+  maxQueueSize?: number;
   defaultTimeoutMs?: number;
   retryOnFailure?: boolean;
   stopOnFirstError?: boolean;

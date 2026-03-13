@@ -5,6 +5,7 @@
  */
 
 import { useAsterAgentChat } from "./useAsterAgentChat";
+export { useArtifactAutoPreviewSync } from "./useArtifactAutoPreviewSync";
 
 export type { Topic } from "./useAgentChat";
 

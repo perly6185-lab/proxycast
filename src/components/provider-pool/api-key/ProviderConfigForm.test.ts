@@ -12,9 +12,16 @@ import { describe, expect } from "vitest";
 import { test } from "@fast-check/vitest";
 import * as fc from "fast-check";
 import {
+  getLatestSelectableModel,
   getFieldsForProviderType,
+  parseCustomModelsValue,
   providerTypeRequiresField,
-} from "./ProviderConfigForm";
+  PROVIDER_TYPE_FIELDS,
+  PROVIDER_TYPE_VALUES,
+  serializeCustomModels,
+  sortSelectableModels,
+} from "./ProviderConfigForm.utils";
+import type { EnhancedModelMetadata } from "@/lib/types/modelRegistry";
 import type { ProviderType } from "@/lib/types/provider";
 
 // ============================================================================
@@ -24,19 +31,7 @@ import type { ProviderType } from "@/lib/types/provider";
 /**
  * 所有有效的 Provider 类型
  */
-const ALL_PROVIDER_TYPES: ProviderType[] = [
-  "openai",
-  "openai-response",
-  "anthropic",
-  "gemini",
-  "azure-openai",
-  "vertexai",
-  "aws-bedrock",
-  "ollama",
-  "fal",
-  "new-api",
-  "gateway",
-];
+const ALL_PROVIDER_TYPES: ProviderType[] = PROVIDER_TYPE_VALUES;
 
 /**
  * 生成随机 Provider 类型
@@ -48,21 +43,44 @@ const providerTypeArbitrary: fc.Arbitrary<ProviderType> = fc.constantFrom(
 /**
  * Provider 类型与其额外字段的映射
  */
-const EXPECTED_EXTRA_FIELDS: Record<ProviderType, string[]> = {
-  openai: [],
-  "openai-response": [],
-  codex: [],
-  anthropic: [],
-  "anthropic-compatible": [],
-  gemini: [],
-  "azure-openai": ["apiVersion"],
-  vertexai: ["project", "location"],
-  "aws-bedrock": ["region"],
-  ollama: [],
-  fal: [],
-  "new-api": [],
-  gateway: [],
-};
+const EXPECTED_EXTRA_FIELDS: Record<ProviderType, string[]> =
+  PROVIDER_TYPE_FIELDS;
+
+function createModel(
+  overrides: Partial<EnhancedModelMetadata> &
+    Pick<EnhancedModelMetadata, "id" | "display_name">,
+): EnhancedModelMetadata {
+  return {
+    id: overrides.id,
+    display_name: overrides.display_name,
+    provider_id: overrides.provider_id ?? "openai",
+    provider_name: overrides.provider_name ?? "OpenAI",
+    family: overrides.family ?? null,
+    tier: overrides.tier ?? "pro",
+    capabilities: overrides.capabilities ?? {
+      vision: true,
+      tools: true,
+      streaming: true,
+      json_mode: true,
+      function_calling: true,
+      reasoning: true,
+    },
+    pricing: overrides.pricing ?? null,
+    limits: overrides.limits ?? {
+      context_length: null,
+      max_output_tokens: null,
+      requests_per_minute: null,
+      tokens_per_minute: null,
+    },
+    status: overrides.status ?? "active",
+    release_date: overrides.release_date ?? null,
+    is_latest: overrides.is_latest ?? false,
+    description: overrides.description ?? null,
+    source: overrides.source ?? "local",
+    created_at: overrides.created_at ?? 0,
+    updated_at: overrides.updated_at ?? 0,
+  };
+}
 
 // ============================================================================
 // Property 7: Provider 类型处理正确性
@@ -232,5 +250,68 @@ describe("Property 7: Provider 类型处理正确性", () => {
         expect(providerTypeRequiresField(type, "nonExistentField")).toBe(false);
       }
     });
+  });
+});
+
+describe("模型辅助函数", () => {
+  test("parseCustomModelsValue 应去重并保留输入顺序", () => {
+    expect(
+      parseCustomModelsValue(
+        "gpt-5.3-codex, babbage-002, GPT-5.3-codex, , gpt-5.2",
+      ),
+    ).toEqual(["gpt-5.3-codex", "babbage-002", "gpt-5.2"]);
+  });
+
+  test("serializeCustomModels 应输出稳定的逗号分隔字符串", () => {
+    expect(
+      serializeCustomModels(["gpt-5.3-codex", "gpt-5.2", "GPT-5.3-codex"]),
+    ).toBe("gpt-5.3-codex, gpt-5.2");
+  });
+
+  test("sortSelectableModels 应优先最新和带发布日期的模型", () => {
+    const models = [
+      createModel({
+        id: "babbage-002",
+        display_name: "babbage-002",
+      }),
+      createModel({
+        id: "gpt-5.2",
+        display_name: "GPT-5.2",
+        release_date: "2025-12-11",
+      }),
+      createModel({
+        id: "gpt-5.3-codex",
+        display_name: "GPT-5.3 Codex",
+        release_date: "2026-02-05",
+        is_latest: true,
+      }),
+    ];
+
+    expect(sortSelectableModels(models).map((model) => model.id)).toEqual([
+      "gpt-5.3-codex",
+      "gpt-5.2",
+      "babbage-002",
+    ]);
+  });
+
+  test("getLatestSelectableModel 不应把按字母序靠前的旧模型当成最新", () => {
+    const latestModel = getLatestSelectableModel([
+      createModel({
+        id: "babbage-002",
+        display_name: "babbage-002",
+      }),
+      createModel({
+        id: "gpt-5.3-codex",
+        display_name: "GPT-5.3 Codex",
+        release_date: "2026-02-05",
+        is_latest: true,
+      }),
+    ]);
+
+    expect(latestModel?.id).toBe("gpt-5.3-codex");
+  });
+
+  test("getLatestSelectableModel 在空列表时应返回 null", () => {
+    expect(getLatestSelectableModel([])).toBeNull();
   });
 });

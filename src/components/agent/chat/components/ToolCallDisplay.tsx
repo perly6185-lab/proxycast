@@ -12,7 +12,9 @@ import React, {
   useMemo,
   useCallback,
 } from "react";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import {
+  ChevronDown,
   Terminal,
   FileText,
   Edit3,
@@ -31,6 +33,15 @@ import {
 import { cn } from "@/lib/utils";
 import type { ToolCallState, ToolResultImage } from "@/lib/api/agentStream";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { SearchResultPreviewList } from "./SearchResultPreviewList";
+import {
+  isUnifiedWebSearchToolName,
+  resolveSearchResultPreviewItemsFromText,
+} from "../utils/searchResultPreview";
+import {
+  classifySearchQuerySemantic,
+  summarizeSearchQuerySemantics,
+} from "../utils/searchQueryGrouping";
 
 // ============ 类型定义 ============
 
@@ -131,6 +142,26 @@ const getToolIcon = (toolName: string) => {
 
 const normalizeToolNameKey = (value: string): string =>
   value.replace(/[\s_-]+/g, "").trim().toLowerCase();
+
+const extractSearchQueryLabel = (toolCall: ToolCallState): string => {
+  try {
+    const args = toolCall.arguments ? JSON.parse(toolCall.arguments) : {};
+    const record =
+      args && typeof args === "object" && !Array.isArray(args)
+        ? (args as Record<string, unknown>)
+        : {};
+    for (const key of ["query", "q", "pattern", "search", "url"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+  } catch {
+    // ignore parse failure
+  }
+
+  return toolCall.name;
+};
 
 const PLANNING_TOOL_KEYS = new Set([
   "todowrite",
@@ -623,6 +654,7 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
+  const hasUserToggledExpandedRef = useRef(false);
 
   // 解析参数
   const parsedArgs = useMemo(() => {
@@ -777,17 +809,46 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
     () => resultPath?.value || filePath,
     [filePath, resultPath?.value],
   );
+  const searchResultItems = useMemo(() => {
+    if (!isUnifiedWebSearchToolName(toolCall.name)) {
+      return [];
+    }
+
+    return resolveSearchResultPreviewItemsFromText(toolCall.result?.output);
+  }, [toolCall.name, toolCall.result?.output]);
+  const searchSemantic = useMemo(
+    () => classifySearchQuerySemantic(extractSearchQueryLabel(toolCall)),
+    [toolCall],
+  );
   const hasResultImages = resultImages.length > 0;
+  const hasSearchResults = searchResultItems.length > 0;
+
+  const handleOpenExternalUrl = useCallback(async (url: string) => {
+    try {
+      await openExternal(url);
+    } catch {
+      if (typeof window !== "undefined" && typeof window.open === "function") {
+        window.open(url, "_blank");
+        return;
+      }
+      throw new Error("当前环境不支持打开外部链接");
+    }
+  }, []);
 
   useEffect(() => {
-    if (isMessageStreaming && (isRunning || hasResult || hasResultImages)) {
+    if (
+      isMessageStreaming &&
+      (isRunning || hasResult || hasResultImages || hasSearchResults)
+    ) {
       setIsExpanded(true);
-      return;
     }
-    if (!isMessageStreaming && !isRunning) {
-      setIsExpanded(false);
+  }, [isMessageStreaming, isRunning, hasResult, hasResultImages, hasSearchResults]);
+
+  useEffect(() => {
+    if (hasSearchResults && !hasUserToggledExpandedRef.current) {
+      setIsExpanded(true);
     }
-  }, [isMessageStreaming, isRunning, hasResult, hasResultImages]);
+  }, [hasSearchResults]);
 
   // 处理点击事件 - 如果是文件写入工具，打开右边栏
   const handleOpenFile = useCallback(() => {
@@ -795,6 +856,11 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
       onFileClick(openableFilePath, fileContent || "");
     }
   }, [fileContent, onFileClick, openableFilePath]);
+
+  const handleToggleExpanded = useCallback(() => {
+    hasUserToggledExpandedRef.current = true;
+    setIsExpanded((prev) => !prev);
+  }, []);
 
   // 简洁模式：单行显示 - Claude 风格
   return (
@@ -863,9 +929,9 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
           )}
 
           {/* 展开/折叠按钮 */}
-          {hasResult && (
+          {(hasResult || hasSearchResults) && (
             <button
-              onClick={() => setIsExpanded(!isExpanded)}
+              onClick={handleToggleExpanded}
               className="p-1.5 rounded-md hover:bg-[var(--surface-secondary)] transition-colors"
               title={isExpanded ? "收起详情" : "展开详情"}
             >
@@ -897,6 +963,22 @@ export const ToolCallDisplay: React.FC<ToolCallDisplayProps> = ({
               />
             </button>
           ))}
+        </div>
+      )}
+
+      {hasSearchResults && isExpanded && (
+        <div className="ml-4 mt-2 mb-2">
+          <div className="mb-2 flex flex-wrap gap-2">
+            <span className="rounded-full bg-[var(--surface-secondary)] px-2 py-1 text-[11px] text-[var(--ink-600)]">
+              {searchSemantic.label}
+            </span>
+          </div>
+          <SearchResultPreviewList
+            items={searchResultItems}
+            onOpenUrl={handleOpenExternalUrl}
+            popoverSide="right"
+            popoverAlign="start"
+          />
         </div>
       )}
 
@@ -971,19 +1053,146 @@ export const ToolCallList: React.FC<ToolCallListProps> = ({
 }) => {
   if (!toolCalls || toolCalls.length === 0) return null;
 
+  const groups: Array<
+    | {
+        type: "search";
+        id: string;
+        items: ToolCallState[];
+      }
+    | {
+        type: "single";
+        id: string;
+        item: ToolCallState;
+      }
+  > = [];
+
+  for (const toolCall of toolCalls) {
+    const isSearch = isUnifiedWebSearchToolName(toolCall.name);
+    const lastGroup = groups[groups.length - 1];
+    if (
+      isSearch &&
+      lastGroup &&
+      lastGroup.type === "search"
+    ) {
+      lastGroup.items.push(toolCall);
+      continue;
+    }
+
+    if (isSearch) {
+      groups.push({
+        type: "search",
+        id: `search-group:${toolCall.id}`,
+        items: [toolCall],
+      });
+      continue;
+    }
+
+    groups.push({
+      type: "single",
+      id: toolCall.id,
+      item: toolCall,
+    });
+  }
+
   return (
     <div className="flex flex-col gap-1">
-      {toolCalls.map((tc) => (
-        <ToolCallDisplay
-          key={tc.id}
-          toolCall={tc}
-          isMessageStreaming={isMessageStreaming}
-          onFileClick={onFileClick}
-        />
-      ))}
+      {groups.map((group) => {
+        if (group.type === "single") {
+          return (
+            <ToolCallDisplay
+              key={group.id}
+              toolCall={group.item}
+              isMessageStreaming={isMessageStreaming}
+              onFileClick={onFileClick}
+            />
+          );
+        }
+
+        return (
+          <SearchToolCallGroup
+            key={group.id}
+            toolCalls={group.items}
+            isMessageStreaming={isMessageStreaming}
+            onFileClick={onFileClick}
+          />
+        );
+      })}
     </div>
   );
 };
+
+function SearchToolCallGroup({
+  toolCalls,
+  isMessageStreaming,
+  onFileClick,
+}: {
+  toolCalls: ToolCallState[];
+  isMessageStreaming: boolean;
+  onFileClick?: (fileName: string, content: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const semanticSummaries = summarizeSearchQuerySemantics(
+    toolCalls.map(extractSearchQueryLabel),
+  );
+  const queryPreview = toolCalls
+    .slice(0, 2)
+    .map(extractSearchQueryLabel)
+    .join(" · ");
+  const hiddenCount = Math.max(toolCalls.length - 2, 0);
+
+  return (
+    <div className="rounded-2xl border border-[var(--ink-900)]/10 bg-[var(--surface-tertiary)]/70">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+        onClick={() => setExpanded((prev) => !prev)}
+        aria-label={expanded ? "收起搜索批次" : "展开搜索批次"}
+      >
+        <Search className="h-4 w-4 text-[var(--claude-accent)]" />
+        <span
+          className="text-sm font-medium"
+          style={{ color: "var(--claude-accent)" }}
+        >
+          已搜索 {toolCalls.length} 组查询
+        </span>
+        <span className="min-w-0 flex-1 truncate text-xs text-[var(--ink-600)]">
+          {queryPreview}
+          {hiddenCount > 0 ? ` 等 ${hiddenCount} 组` : ""}
+        </span>
+        <ChevronDown
+          className={cn(
+            "h-4 w-4 text-[var(--ink-600)] transition-transform",
+            expanded && "rotate-180",
+          )}
+        />
+      </button>
+      {semanticSummaries.length > 0 ? (
+        <div className="flex flex-wrap gap-2 px-3 pb-2">
+          {semanticSummaries.map((item) => (
+            <span
+              key={item.key}
+              className="rounded-full bg-[var(--surface-secondary)] px-2 py-1 text-[11px] text-[var(--ink-600)]"
+            >
+              {item.label} {item.count}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {expanded ? (
+        <div className="space-y-1 border-t border-[var(--ink-900)]/10 px-2 py-2">
+          {toolCalls.map((toolCall) => (
+            <ToolCallDisplay
+              key={toolCall.id}
+              toolCall={toolCall}
+              isMessageStreaming={isMessageStreaming}
+              onFileClick={onFileClick}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 // 导出别名，用于交错显示模式
 export const ToolCallItem = ToolCallDisplay;

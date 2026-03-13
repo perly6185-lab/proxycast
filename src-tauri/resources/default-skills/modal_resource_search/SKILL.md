@@ -2,10 +2,13 @@
 name: modal_resource_search
 description: 提交资源检索任务（图片、背景音乐、音效等），供前端资源面板消费。
 allowed-tools: proxycast_create_modal_resource_search_task
-argument-hint: 输入资源类型、关键词、风格、用途、数量与限制条件。
-when-to-use: 用户需要为当前内容补充外部素材资源时使用。
-version: 1.0.1
-execution-mode: prompt
+metadata:
+  proxycast_argument_hint: 输入资源类型、关键词、风格、用途、数量与限制条件。
+  proxycast_when_to_use: 用户需要为当前内容补充外部素材资源时使用。
+  proxycast_version: 1.1.0
+  proxycast_execution_mode: prompt
+  proxycast_surface: creator
+  proxycast_category: media
 ---
 
 你是 ProxyCast 的资源检索编排助手。

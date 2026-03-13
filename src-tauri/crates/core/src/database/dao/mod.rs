@@ -1,6 +1,7 @@
 pub mod a2ui_form_dao;
 pub mod agent;
 pub mod agent_run;
+pub mod agent_runtime_queue;
 pub mod agent_timeline;
 pub mod api_key_provider;
 pub mod brand_persona_dao;

@@ -12,12 +12,14 @@ import {
   Wrench,
   Brain,
   Sparkles,
+  Check,
   Loader2,
   RefreshCw,
   Cloud,
   HardDrive,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Tooltip,
   TooltipContent,
@@ -31,6 +33,7 @@ import {
   buildCatalogAliasMap,
   resolveRegistryProviderId,
 } from "./providerTypeMapping";
+import { getLatestSelectableModel } from "./ProviderConfigForm.utils";
 import { invoke } from "@tauri-apps/api/core";
 
 // ============================================================================
@@ -42,6 +45,14 @@ export interface ProviderModelListProps {
   providerId: string;
   /** Provider 类型（API 协议），如 "anthropic", "openai", "gemini" */
   providerType: string;
+  /** 当前默认模型 ID */
+  selectedModelId?: string | null;
+  /** 推荐最新模型 ID */
+  latestModelId?: string | null;
+  /** 点击模型时设为默认模型 */
+  onSelectModel?: (modelId: string) => void;
+  /** 当前列表解析出的最新模型变化回调 */
+  onLatestModelResolved?: (modelId: string | null) => void;
   /** 是否有可用的 API Key（用于显示刷新按钮） */
   hasApiKey?: boolean;
   /** 额外的 CSS 类名 */
@@ -71,6 +82,17 @@ interface FetchModelsResult {
   should_prompt_error?: boolean;
 }
 
+interface CachedProviderModels {
+  models: EnhancedModelMetadata[];
+  source: "Api" | "LocalFallback" | null;
+  error: string | null;
+  requestUrl: string | null;
+  diagnosticHint: string | null;
+  shouldPromptError: boolean;
+}
+
+const providerModelsCache = new Map<string, CachedProviderModels>();
+
 function buildApiDiagnosticLines(result: {
   error: string | null;
   request_url?: string | null;
@@ -99,15 +121,42 @@ function buildApiDiagnosticLines(result: {
 
 interface ModelItemProps {
   model: EnhancedModelMetadata;
+  isDefault: boolean;
+  isLatest: boolean;
+  onSelect?: (modelId: string) => void;
 }
 
 /**
  * 单个模型项
  */
-const ModelItem: React.FC<ModelItemProps> = ({ model }) => {
+const ModelItem: React.FC<ModelItemProps> = ({
+  model,
+  isDefault,
+  isLatest,
+  onSelect,
+}) => {
   return (
     <div
-      className="flex items-center justify-between py-2 px-3 rounded-md hover:bg-muted/50 transition-colors"
+      className={cn(
+        "flex items-center justify-between rounded-lg border px-3 py-2 transition-colors",
+        onSelect ? "cursor-pointer hover:bg-muted/50" : "hover:bg-muted/50",
+        isDefault
+          ? "border-primary/30 bg-primary/5"
+          : "border-transparent bg-transparent",
+      )}
+      onClick={onSelect ? () => onSelect(model.id) : undefined}
+      role={onSelect ? "button" : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onKeyDown={
+        onSelect
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect(model.id);
+              }
+            }
+          : undefined
+      }
       data-testid={`model-item-${model.id}`}
     >
       <div className="flex-1 min-w-0">
@@ -115,12 +164,15 @@ const ModelItem: React.FC<ModelItemProps> = ({ model }) => {
           <span className="text-sm font-medium truncate">
             {model.display_name}
           </span>
+          {isLatest ? <Badge variant="outline">最新</Badge> : null}
+          {isDefault ? <Badge variant="secondary">默认</Badge> : null}
         </div>
         <div className="text-xs text-muted-foreground truncate">{model.id}</div>
       </div>
 
       {/* 能力标签 */}
       <div className="flex items-center gap-1.5 ml-2">
+        {isDefault && <Check className="h-3.5 w-3.5 text-primary" />}
         {model.capabilities.vision && (
           <span
             className="text-blue-500"
@@ -170,6 +222,10 @@ const ModelItem: React.FC<ModelItemProps> = ({ model }) => {
 export const ProviderModelList: React.FC<ProviderModelListProps> = ({
   providerId,
   providerType,
+  selectedModelId = null,
+  latestModelId = null,
+  onSelectModel,
+  onLatestModelResolved,
   hasApiKey = false,
   className,
   maxItems,
@@ -262,6 +318,27 @@ export const ProviderModelList: React.FC<ProviderModelListProps> = ({
     null,
   );
   const [apiShouldPromptError, setApiShouldPromptError] = useState(false);
+  const cacheKey = `${providerId}:${providerType}`;
+
+  useEffect(() => {
+    const cached = providerModelsCache.get(cacheKey);
+    if (!cached) {
+      setApiModels(null);
+      setApiSource(null);
+      setApiError(null);
+      setApiRequestUrl(null);
+      setApiDiagnosticHint(null);
+      setApiShouldPromptError(false);
+      return;
+    }
+
+    setApiModels(cached.models);
+    setApiSource(cached.source);
+    setApiError(cached.error);
+    setApiRequestUrl(cached.requestUrl);
+    setApiDiagnosticHint(cached.diagnosticHint);
+    setApiShouldPromptError(cached.shouldPromptError);
+  }, [cacheKey]);
 
   // 从 API 获取模型列表（自动获取 API Key）
   const handleRefreshFromApi = useCallback(async () => {
@@ -287,7 +364,18 @@ export const ProviderModelList: React.FC<ProviderModelListProps> = ({
         setApiShouldPromptError(Boolean(result.should_prompt_error));
         if (result.error) {
           setApiError(result.error);
+        } else {
+          setApiError(null);
         }
+
+        providerModelsCache.set(cacheKey, {
+          models: result.models,
+          source: result.source ?? null,
+          error: result.error ?? null,
+          requestUrl: result.request_url ?? null,
+          diagnosticHint: result.diagnostic_hint ?? null,
+          shouldPromptError: Boolean(result.should_prompt_error),
+        });
       } else {
         setApiError("返回结果格式错误");
       }
@@ -296,7 +384,7 @@ export const ProviderModelList: React.FC<ProviderModelListProps> = ({
     } finally {
       setRefreshing(false);
     }
-  }, [providerId]);
+  }, [cacheKey, providerId]);
 
   // 使用 API 模型或本地模型
   const displayModelsSource = apiModels ?? models;
@@ -315,6 +403,16 @@ export const ProviderModelList: React.FC<ProviderModelListProps> = ({
   }, [displayModelsSource, maxItems]);
 
   const hasMore = maxItems && displayModelsSource.length > maxItems;
+  const resolvedLatestModelId =
+    latestModelId ?? getLatestSelectableModel(displayModelsSource)?.id ?? null;
+  const effectiveDefaultModelId = selectedModelId ?? resolvedLatestModelId;
+  const resolvedLatestModelKey = resolvedLatestModelId?.toLowerCase() ?? null;
+  const effectiveDefaultModelKey =
+    effectiveDefaultModelId?.toLowerCase() ?? null;
+
+  useEffect(() => {
+    onLatestModelResolved?.(resolvedLatestModelId);
+  }, [onLatestModelResolved, resolvedLatestModelId]);
 
   // 加载状态
   if (loading && !apiModels) {
@@ -349,10 +447,17 @@ export const ProviderModelList: React.FC<ProviderModelListProps> = ({
     return (
       <div className={cn("space-y-2", className)}>
         <div className="flex items-center justify-between mb-2">
-          <h4 className="text-sm font-medium text-foreground flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
-            支持的模型
-          </h4>
+          <div className="space-y-1">
+            <h4 className="text-sm font-medium text-foreground flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-muted-foreground" />
+              支持的模型
+            </h4>
+            {onSelectModel ? (
+              <p className="text-xs text-muted-foreground">
+                点击模型即可设为默认模型；未显式选择时，自动使用最新模型。
+              </p>
+            ) : null}
+          </div>
           {hasApiKey && (
             <TooltipProvider>
               <Tooltip>
@@ -503,7 +608,13 @@ export const ProviderModelList: React.FC<ProviderModelListProps> = ({
       {/* 模型列表 */}
       <div className="border rounded-md divide-y divide-border">
         {displayModels.map((model) => (
-          <ModelItem key={model.id} model={model} />
+          <ModelItem
+            key={model.id}
+            model={model}
+            isDefault={effectiveDefaultModelKey === model.id.toLowerCase()}
+            isLatest={resolvedLatestModelKey === model.id.toLowerCase()}
+            onSelect={onSelectModel}
+          />
         ))}
       </div>
 

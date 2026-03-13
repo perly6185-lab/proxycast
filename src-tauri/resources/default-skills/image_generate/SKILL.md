@@ -2,10 +2,13 @@
 name: image_generate
 description: 根据文本描述生成配图素材（非封面场景）。
 allowed-tools: proxycast_create_image_generation_task
-argument-hint: 输入主题、画面主体、风格、构图、数量、尺寸。
-when-to-use: 用户需要普通配图、插图或概念图时使用；封面需求优先交给 cover_generate。
-version: 1.0.1
-execution-mode: prompt
+metadata:
+  proxycast_argument_hint: 输入主题、画面主体、风格、构图、数量、尺寸。
+  proxycast_when_to_use: 用户需要普通配图、插图或概念图时使用；封面需求优先交给 cover_generate。
+  proxycast_version: 1.1.0
+  proxycast_execution_mode: prompt
+  proxycast_surface: creator
+  proxycast_category: media
 ---
 
 你是 ProxyCast 的通用配图助手。

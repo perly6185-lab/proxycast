@@ -1,19 +1,23 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MutableRefObject,
 } from "react";
 import { toast } from "sonner";
-import type { AsterExecutionStrategy } from "@/lib/api/agentRuntime";
+import type {
+  AsterExecutionStrategy,
+  QueuedTurnSnapshot,
+} from "@/lib/api/agentRuntime";
+import { normalizeQueuedTurnSnapshots } from "@/lib/api/queuedTurn";
 import {
   isAsterSessionNotFoundError,
   resolveRestorableSessionId,
 } from "@/lib/asterSessionRecovery";
 import type { AgentThreadItem, AgentThreadTurn, Message } from "../types";
 import {
-  getScopedStorageKey,
   mapSessionToTopic,
   type ClearMessagesOptions,
   type SessionModelPreference,
@@ -23,6 +27,7 @@ import {
   hydrateSessionDetailMessages,
   normalizeHistoryMessages,
 } from "./agentChatHistory";
+import { getAgentSessionScopedKeys } from "./agentSessionScopedStorage";
 import {
   loadPersisted,
   loadPersistedString,
@@ -80,29 +85,8 @@ export function useAgentSession(options: UseAgentSessionOptions) {
     filterSessionsByWorkspace,
     setExecutionStrategyState,
   } = options;
-
-  const getScopedSessionKey = useCallback(
-    () => getScopedStorageKey(workspaceId, "aster_curr_sessionId"),
-    [workspaceId],
-  );
-  const getScopedMessagesKey = useCallback(
-    () => getScopedStorageKey(workspaceId, "aster_messages"),
-    [workspaceId],
-  );
-  const getScopedPersistedSessionKey = useCallback(
-    () => getScopedStorageKey(workspaceId, "aster_last_sessionId"),
-    [workspaceId],
-  );
-  const getScopedTurnsKey = useCallback(
-    () => getScopedStorageKey(workspaceId, "aster_thread_turns"),
-    [workspaceId],
-  );
-  const getScopedItemsKey = useCallback(
-    () => getScopedStorageKey(workspaceId, "aster_thread_items"),
-    [workspaceId],
-  );
-  const getScopedCurrentTurnKey = useCallback(
-    () => getScopedStorageKey(workspaceId, "aster_curr_turnId"),
+  const scopedKeys = useMemo(
+    () => getAgentSessionScopedKeys(workspaceId),
     [workspaceId],
   );
 
@@ -153,6 +137,7 @@ export function useAgentSession(options: UseAgentSessionOptions) {
         )
       : null,
   );
+  const [queuedTurns, setQueuedTurns] = useState<QueuedTurnSnapshot[]>([]);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [topicsReady, setTopicsReady] = useState(false);
 
@@ -180,8 +165,8 @@ export function useAgentSession(options: UseAgentSessionOptions) {
       return;
     }
 
-    const scopedSessionKey = getScopedSessionKey();
-    const scopedPersistedSessionKey = getScopedPersistedSessionKey();
+    const scopedSessionKey = scopedKeys.currentSessionKey;
+    const scopedPersistedSessionKey = scopedKeys.persistedSessionKey;
 
     saveTransient(scopedSessionKey, sessionId);
     savePersisted(scopedPersistedSessionKey, sessionId);
@@ -204,40 +189,35 @@ export function useAgentSession(options: UseAgentSessionOptions) {
         savePersisted(sessionWorkspaceKey, resolvedWorkspaceId);
       }
     }
-  }, [
-    getScopedPersistedSessionKey,
-    getScopedSessionKey,
-    sessionId,
-    workspaceId,
-  ]);
+  }, [scopedKeys, sessionId, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId?.trim()) {
       return;
     }
-    saveTransient(getScopedMessagesKey(), messages);
-  }, [getScopedMessagesKey, messages, workspaceId]);
+    saveTransient(scopedKeys.messagesKey, messages);
+  }, [messages, scopedKeys, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId?.trim()) {
       return;
     }
-    saveTransient(getScopedTurnsKey(), threadTurns);
-  }, [getScopedTurnsKey, threadTurns, workspaceId]);
+    saveTransient(scopedKeys.turnsKey, threadTurns);
+  }, [scopedKeys, threadTurns, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId?.trim()) {
       return;
     }
-    saveTransient(getScopedItemsKey(), threadItems);
-  }, [getScopedItemsKey, threadItems, workspaceId]);
+    saveTransient(scopedKeys.itemsKey, threadItems);
+  }, [scopedKeys, threadItems, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId?.trim()) {
       return;
     }
-    saveTransient(getScopedCurrentTurnKey(), currentTurnId);
-  }, [currentTurnId, getScopedCurrentTurnKey, workspaceId]);
+    saveTransient(scopedKeys.currentTurnKey, currentTurnId);
+  }, [currentTurnId, scopedKeys, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId?.trim()) {
@@ -246,6 +226,7 @@ export function useAgentSession(options: UseAgentSessionOptions) {
       setThreadTurns([]);
       setThreadItems([]);
       setCurrentTurnId(null);
+      setQueuedTurns([]);
       resetPendingActions();
       resetStreamingRefs();
       restoredWorkspaceRef.current = null;
@@ -255,14 +236,20 @@ export function useAgentSession(options: UseAgentSessionOptions) {
     }
 
     const scopedSessionId =
-      loadTransient<string | null>(getScopedSessionKey(), null) ??
-      loadPersisted<string | null>(getScopedPersistedSessionKey(), null);
+      loadTransient<string | null>(scopedKeys.currentSessionKey, null) ??
+      loadPersisted<string | null>(scopedKeys.persistedSessionKey, null);
 
-    const scopedMessages = loadTransient<Message[]>(getScopedMessagesKey(), []);
-    const scopedTurns = loadTransient<AgentThreadTurn[]>(getScopedTurnsKey(), []);
-    const scopedItems = loadTransient<AgentThreadItem[]>(getScopedItemsKey(), []);
+    const scopedMessages = loadTransient<Message[]>(scopedKeys.messagesKey, []);
+    const scopedTurns = loadTransient<AgentThreadTurn[]>(
+      scopedKeys.turnsKey,
+      [],
+    );
+    const scopedItems = loadTransient<AgentThreadItem[]>(
+      scopedKeys.itemsKey,
+      [],
+    );
     const scopedCurrentTurnId = loadTransient<string | null>(
-      getScopedCurrentTurnKey(),
+      scopedKeys.currentTurnKey,
       null,
     );
 
@@ -271,20 +258,16 @@ export function useAgentSession(options: UseAgentSessionOptions) {
     setThreadTurns(scopedTurns);
     setThreadItems(scopedItems);
     setCurrentTurnId(scopedCurrentTurnId);
+    setQueuedTurns([]);
     resetPendingActions();
     resetStreamingRefs();
     restoredWorkspaceRef.current = null;
     hydratedSessionRef.current = null;
     skipAutoRestoreRef.current = false;
   }, [
-    getScopedMessagesKey,
-    getScopedItemsKey,
-    getScopedTurnsKey,
-    getScopedCurrentTurnKey,
-    getScopedPersistedSessionKey,
-    getScopedSessionKey,
     resetPendingActions,
     resetStreamingRefs,
+    scopedKeys,
     workspaceId,
   ]);
 
@@ -369,6 +352,7 @@ export function useAgentSession(options: UseAgentSessionOptions) {
         setThreadTurns([]);
         setThreadItems([]);
         setCurrentTurnId(null);
+        setQueuedTurns([]);
         setTopics((prev) => [
           {
             id: newSessionId,
@@ -391,12 +375,12 @@ export function useAgentSession(options: UseAgentSessionOptions) {
           providerTypeRef.current,
           modelRef.current,
         );
-        saveTransient(getScopedSessionKey(), newSessionId);
-        savePersisted(getScopedPersistedSessionKey(), newSessionId);
-        saveTransient(getScopedMessagesKey(), []);
-        saveTransient(getScopedTurnsKey(), []);
-        saveTransient(getScopedItemsKey(), []);
-        saveTransient(getScopedCurrentTurnKey(), null);
+        saveTransient(scopedKeys.currentSessionKey, newSessionId);
+        savePersisted(scopedKeys.persistedSessionKey, newSessionId);
+        saveTransient(scopedKeys.messagesKey, []);
+        saveTransient(scopedKeys.turnsKey, []);
+        saveTransient(scopedKeys.itemsKey, []);
+        saveTransient(scopedKeys.currentTurnKey, null);
 
         void loadTopics();
         return newSessionId;
@@ -408,12 +392,6 @@ export function useAgentSession(options: UseAgentSessionOptions) {
     },
     [
       executionStrategy,
-      getScopedMessagesKey,
-      getScopedItemsKey,
-      getScopedTurnsKey,
-      getScopedCurrentTurnKey,
-      getScopedPersistedSessionKey,
-      getScopedSessionKey,
       loadTopics,
       modelRef,
       persistSessionModelPreference,
@@ -421,6 +399,7 @@ export function useAgentSession(options: UseAgentSessionOptions) {
       resetPendingActions,
       resetStreamingRefs,
       runtime,
+      scopedKeys,
       workspaceId,
     ],
   );
@@ -434,14 +413,15 @@ export function useAgentSession(options: UseAgentSessionOptions) {
     (options: ClearMessagesOptions = {}) => {
       const { showToast = true, toastMessage = "新话题已创建" } = options;
 
-      const scopedSessionKey = getScopedSessionKey();
-      const scopedPersistedSessionKey = getScopedPersistedSessionKey();
-      const scopedMessagesKey = getScopedMessagesKey();
+      const scopedSessionKey = scopedKeys.currentSessionKey;
+      const scopedPersistedSessionKey = scopedKeys.persistedSessionKey;
+      const scopedMessagesKey = scopedKeys.messagesKey;
 
       setMessages([]);
       setThreadTurns([]);
       setThreadItems([]);
       setCurrentTurnId(null);
+      setQueuedTurns([]);
       setSessionId(null);
       resetPendingActions();
       restoredWorkspaceRef.current = null;
@@ -452,23 +432,18 @@ export function useAgentSession(options: UseAgentSessionOptions) {
       saveTransient(scopedSessionKey, null);
       savePersisted(scopedPersistedSessionKey, null);
       saveTransient(scopedMessagesKey, []);
-      saveTransient(getScopedTurnsKey(), []);
-      saveTransient(getScopedItemsKey(), []);
-      saveTransient(getScopedCurrentTurnKey(), null);
+      saveTransient(scopedKeys.turnsKey, []);
+      saveTransient(scopedKeys.itemsKey, []);
+      saveTransient(scopedKeys.currentTurnKey, null);
 
       if (showToast) {
         toast.success(toastMessage);
       }
     },
     [
-      getScopedMessagesKey,
-      getScopedItemsKey,
-      getScopedTurnsKey,
-      getScopedCurrentTurnKey,
-      getScopedPersistedSessionKey,
-      getScopedSessionKey,
       resetPendingActions,
       resetStreamingRefs,
+      scopedKeys,
     ],
   );
 
@@ -483,6 +458,36 @@ export function useAgentSession(options: UseAgentSessionOptions) {
       ),
     );
   }, []);
+
+  const applySessionDetail = useCallback(
+    (
+      topicId: string,
+      detail: Awaited<ReturnType<AgentRuntimeAdapter["getSession"]>>,
+      options?: { syncSessionId?: boolean },
+    ) => {
+      setMessages(hydrateSessionDetailMessages(detail, topicId));
+      setThreadTurns(detail.turns || []);
+      setThreadItems(detail.items || []);
+      setQueuedTurns(normalizeQueuedTurnSnapshots(detail.queued_turns));
+      setCurrentTurnId(
+        detail.turns && detail.turns.length > 0
+          ? detail.turns[detail.turns.length - 1]?.id || null
+          : null,
+      );
+
+      const selectedTopic = topics.find((topic) => topic.id === topicId);
+      setExecutionStrategyState(
+        normalizeExecutionStrategy(
+          detail.execution_strategy || selectedTopic?.executionStrategy,
+        ),
+      );
+
+      if (options?.syncSessionId) {
+        setSessionId(topicId);
+      }
+    },
+    [setExecutionStrategyState, topics],
+  );
 
   const switchTopic = useCallback(
     async (topicId: string) => {
@@ -502,21 +507,7 @@ export function useAgentSession(options: UseAgentSessionOptions) {
         const detail = await runtime.getSession(topicId);
         const topicPreference = loadSessionModelPreference(topicId);
 
-        setMessages(hydrateSessionDetailMessages(detail, topicId));
-        setThreadTurns(detail.turns || []);
-        setThreadItems(detail.items || []);
-        setCurrentTurnId(
-          detail.turns && detail.turns.length > 0
-            ? detail.turns[detail.turns.length - 1]?.id || null
-            : null,
-        );
-        const selectedTopic = topics.find((topic) => topic.id === topicId);
-        setExecutionStrategyState(
-          normalizeExecutionStrategy(
-            detail.execution_strategy || selectedTopic?.executionStrategy,
-          ),
-        );
-        setSessionId(topicId);
+        applySessionDetail(topicId, detail, { syncSessionId: true });
 
         if (topicPreference) {
           applySessionModelPreference(topicId, topicPreference);
@@ -529,9 +520,10 @@ export function useAgentSession(options: UseAgentSessionOptions) {
           setThreadTurns([]);
           setThreadItems([]);
           setCurrentTurnId(null);
+          setQueuedTurns([]);
           setSessionId(null);
-          saveTransient(getScopedSessionKey(), null);
-          savePersisted(getScopedPersistedSessionKey(), null);
+          saveTransient(scopedKeys.currentSessionKey, null);
+          savePersisted(scopedKeys.persistedSessionKey, null);
           void loadTopics();
           return;
         }
@@ -539,18 +531,18 @@ export function useAgentSession(options: UseAgentSessionOptions) {
         setThreadTurns([]);
         setThreadItems([]);
         setCurrentTurnId(null);
+        setQueuedTurns([]);
         setSessionId(null);
-        saveTransient(getScopedSessionKey(), null);
-        savePersisted(getScopedPersistedSessionKey(), null);
+        saveTransient(scopedKeys.currentSessionKey, null);
+        savePersisted(scopedKeys.persistedSessionKey, null);
         toast.error(
           `加载对话历史失败: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     },
     [
+      applySessionDetail,
       applySessionModelPreference,
-      getScopedPersistedSessionKey,
-      getScopedSessionKey,
       loadSessionModelPreference,
       loadTopics,
       messages.length,
@@ -558,10 +550,31 @@ export function useAgentSession(options: UseAgentSessionOptions) {
       persistSessionModelPreference,
       providerTypeRef,
       runtime,
-      setExecutionStrategyState,
+      scopedKeys,
       sessionIdRef,
-      topics,
     ],
+  );
+
+  const refreshSessionDetail = useCallback(
+    async (targetSessionId?: string) => {
+      const resolvedSessionId = targetSessionId || sessionIdRef.current;
+      if (!resolvedSessionId?.trim()) {
+        return false;
+      }
+
+      try {
+        const detail = await runtime.getSession(resolvedSessionId);
+        if (sessionIdRef.current !== resolvedSessionId) {
+          return false;
+        }
+        applySessionDetail(resolvedSessionId, detail);
+        return true;
+      } catch (error) {
+        console.warn("[AsterChat] 刷新会话详情失败:", error);
+        return false;
+      }
+    },
+    [applySessionDetail, runtime, sessionIdRef],
   );
 
   useEffect(() => {
@@ -577,8 +590,8 @@ export function useAgentSession(options: UseAgentSessionOptions) {
     restoredWorkspaceRef.current = resolvedWorkspaceId;
 
     const scopedCandidate =
-      loadTransient<string | null>(getScopedSessionKey(), null) ||
-      loadPersisted<string | null>(getScopedPersistedSessionKey(), null);
+      loadTransient<string | null>(scopedKeys.currentSessionKey, null) ||
+      loadPersisted<string | null>(scopedKeys.persistedSessionKey, null);
     const targetSessionId = resolveRestorableSessionId({
       candidateSessionId: scopedCandidate,
       sessions: topics.map((topic) => ({
@@ -593,14 +606,13 @@ export function useAgentSession(options: UseAgentSessionOptions) {
 
     switchTopic(targetSessionId).catch((error) => {
       console.warn("[AsterChat] 自动恢复会话失败:", error);
-      saveTransient(getScopedSessionKey(), null);
-      savePersisted(getScopedPersistedSessionKey(), null);
+      saveTransient(scopedKeys.currentSessionKey, null);
+      savePersisted(scopedKeys.persistedSessionKey, null);
     });
   }, [
-    getScopedPersistedSessionKey,
-    getScopedSessionKey,
     isInitialized,
     sessionId,
+    scopedKeys,
     switchTopic,
     topics,
     topicsReady,
@@ -623,13 +635,17 @@ export function useAgentSession(options: UseAgentSessionOptions) {
       setThreadTurns([]);
       setThreadItems([]);
       setCurrentTurnId(null);
-      saveTransient(getScopedSessionKey(), null);
-      savePersisted(getScopedPersistedSessionKey(), null);
+      setQueuedTurns([]);
+      saveTransient(scopedKeys.currentSessionKey, null);
+      savePersisted(scopedKeys.persistedSessionKey, null);
       hydratedSessionRef.current = null;
       return;
     }
 
-    if (messages.length > 0 && (threadTurns.length > 0 || threadItems.length > 0)) {
+    if (
+      messages.length > 0 &&
+      (threadTurns.length > 0 || threadItems.length > 0)
+    ) {
       hydratedSessionRef.current = sessionId;
       return;
     }
@@ -645,9 +661,8 @@ export function useAgentSession(options: UseAgentSessionOptions) {
       hydratedSessionRef.current = null;
     });
   }, [
-    getScopedPersistedSessionKey,
-    getScopedSessionKey,
     messages.length,
+    scopedKeys,
     sessionId,
     switchTopic,
     threadItems.length,
@@ -668,15 +683,16 @@ export function useAgentSession(options: UseAgentSessionOptions) {
           setThreadTurns([]);
           setThreadItems([]);
           setCurrentTurnId(null);
+          setQueuedTurns([]);
           resetPendingActions();
           resetStreamingRefs();
           hydratedSessionRef.current = null;
           restoredWorkspaceRef.current = null;
-          saveTransient(getScopedSessionKey(), null);
-          savePersisted(getScopedPersistedSessionKey(), null);
-          saveTransient(getScopedTurnsKey(), []);
-          saveTransient(getScopedItemsKey(), []);
-          saveTransient(getScopedCurrentTurnKey(), null);
+          saveTransient(scopedKeys.currentSessionKey, null);
+          savePersisted(scopedKeys.persistedSessionKey, null);
+          saveTransient(scopedKeys.turnsKey, []);
+          saveTransient(scopedKeys.itemsKey, []);
+          saveTransient(scopedKeys.currentTurnKey, null);
         }
 
         toast.success("话题已删除");
@@ -686,15 +702,11 @@ export function useAgentSession(options: UseAgentSessionOptions) {
       }
     },
     [
-      getScopedPersistedSessionKey,
-      getScopedSessionKey,
-      getScopedItemsKey,
-      getScopedTurnsKey,
-      getScopedCurrentTurnKey,
       loadTopics,
       resetPendingActions,
       resetStreamingRefs,
       runtime,
+      scopedKeys,
       sessionIdRef,
     ],
   );
@@ -719,7 +731,10 @@ export function useAgentSession(options: UseAgentSessionOptions) {
   );
 
   const updateTopicExecutionStrategy = useCallback(
-    (targetSessionId: string, nextExecutionStrategy: AsterExecutionStrategy) => {
+    (
+      targetSessionId: string,
+      nextExecutionStrategy: AsterExecutionStrategy,
+    ) => {
       setTopics((prev) =>
         prev.map((topic) =>
           topic.id === targetSessionId
@@ -742,6 +757,8 @@ export function useAgentSession(options: UseAgentSessionOptions) {
     setThreadItems,
     currentTurnId,
     setCurrentTurnId,
+    queuedTurns,
+    setQueuedTurns,
     topics,
     setTopics,
     topicsReady,
@@ -751,6 +768,7 @@ export function useAgentSession(options: UseAgentSessionOptions) {
     switchTopic,
     deleteTopic,
     renameTopic,
+    refreshSessionDetail,
     clearMessages,
     deleteMessage,
     editMessage,

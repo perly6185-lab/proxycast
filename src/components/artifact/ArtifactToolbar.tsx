@@ -19,8 +19,13 @@ import {
   Monitor,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 import { artifactRegistry } from "@/lib/artifact/registry";
 import type { Artifact } from "@/lib/artifact/types";
+import {
+  formatArtifactWritePhaseLabel,
+  resolveArtifactWritePhase,
+} from "@/components/agent/chat/utils/messageArtifacts";
 
 /** 视图模式类型 */
 type ViewMode = "source" | "preview";
@@ -178,6 +183,8 @@ export interface ArtifactToolbarProps {
   onPreviewSizeChange?: (size: PreviewSize) => void;
   /** 工具栏色调 */
   tone?: "dark" | "light";
+  /** 额外的展示状态标签 */
+  displayBadgeLabel?: string;
 }
 
 /**
@@ -328,6 +335,7 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
     previewSize = "desktop",
     onPreviewSizeChange,
     tone = "dark",
+    displayBadgeLabel,
   }) => {
     const [copied, setCopied] = useState(false);
 
@@ -340,6 +348,7 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
     const language = artifact.meta.language?.toLowerCase() || "";
     const canPreview = isCode && PREVIEWABLE_LANGUAGES.includes(language);
     const supportsSharedViewMode = isDocument || canPreview;
+    const writePhase = resolveArtifactWritePhase(artifact);
 
     /**
      * 复制内容到剪贴板
@@ -487,6 +496,32 @@ export const ArtifactToolbar: React.FC<ArtifactToolbarProps> = memo(
           >
             {artifact.title}
           </span>
+          {writePhase ? (
+            <Badge
+              variant="outline"
+              className={cn(
+                "shrink-0",
+                tone === "light"
+                  ? "border-border text-muted-foreground"
+                  : "border-white/15 text-gray-300",
+              )}
+            >
+              {formatArtifactWritePhaseLabel(writePhase)}
+            </Badge>
+          ) : null}
+          {displayBadgeLabel ? (
+            <Badge
+              variant="outline"
+              className={cn(
+                "shrink-0",
+                tone === "light"
+                  ? "border-primary/20 bg-primary/5 text-primary"
+                  : "border-primary/30 bg-primary/10 text-primary-foreground",
+              )}
+            >
+              {displayBadgeLabel}
+            </Badge>
+          ) : null}
         </div>
 
         {/* 操作按钮区域 */}

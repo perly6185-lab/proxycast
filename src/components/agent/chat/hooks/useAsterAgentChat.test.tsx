@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { WriteArtifactContext } from "../types";
 
 const {
   mockInitAsterAgent,
@@ -11,6 +12,7 @@ const {
   mockUpdateAgentRuntimeSession,
   mockDeleteAsterSession,
   mockInterruptAgentRuntimeTurn,
+  mockRemoveAgentRuntimeQueuedTurn,
   mockRespondAgentRuntimeAction,
   mockParseStreamEvent,
   mockSafeListen,
@@ -26,6 +28,7 @@ const {
   mockUpdateAgentRuntimeSession: vi.fn(),
   mockDeleteAsterSession: vi.fn(),
   mockInterruptAgentRuntimeTurn: vi.fn(),
+  mockRemoveAgentRuntimeQueuedTurn: vi.fn(),
   mockRespondAgentRuntimeAction: vi.fn(),
   mockParseStreamEvent: vi.fn((payload: unknown) => payload),
   mockSafeListen: vi.fn(),
@@ -56,6 +59,7 @@ vi.mock("@/lib/api/agentRuntime", () => ({
   updateAgentRuntimeSession: mockUpdateAgentRuntimeSession,
   deleteAgentRuntimeSession: mockDeleteAsterSession,
   interruptAgentRuntimeTurn: mockInterruptAgentRuntimeTurn,
+  removeAgentRuntimeQueuedTurn: mockRemoveAgentRuntimeQueuedTurn,
   respondAgentRuntimeAction: mockRespondAgentRuntimeAction,
 }));
 
@@ -83,7 +87,16 @@ interface HookHarness {
   unmount: () => void;
 }
 
-function mountHook(workspaceId = "ws-test"): HookHarness {
+function mountHook(
+  workspaceId = "ws-test",
+  currentOptions: {
+    onWriteFile?: (
+      content: string,
+      fileName: string,
+      context?: WriteArtifactContext,
+    ) => void;
+  } = {},
+): HookHarness {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -91,7 +104,10 @@ function mountHook(workspaceId = "ws-test"): HookHarness {
   let hookValue: ReturnType<typeof useAsterAgentChat> | null = null;
 
   function TestComponent() {
-    hookValue = useAsterAgentChat({ workspaceId });
+    hookValue = useAsterAgentChat({
+      workspaceId,
+      onWriteFile: currentOptions.onWriteFile,
+    });
     return null;
   }
 
@@ -161,6 +177,7 @@ beforeEach(() => {
   mockUpdateAgentRuntimeSession.mockResolvedValue(undefined);
   mockDeleteAsterSession.mockResolvedValue(undefined);
   mockInterruptAgentRuntimeTurn.mockResolvedValue(undefined);
+  mockRemoveAgentRuntimeQueuedTurn.mockResolvedValue(true);
   mockRespondAgentRuntimeAction.mockResolvedValue(undefined);
   mockSafeListen.mockResolvedValue(() => {});
   mockParseSkillSlashCommand.mockReturnValue(null);
@@ -300,6 +317,57 @@ describe("useAsterAgentChat.confirmAction", () => {
         response: '{"answer":"选项A"}',
         user_data: { answer: "选项A" },
       });
+    } finally {
+      harness.unmount();
+    }
+  });
+});
+
+describe("useAsterAgentChat queue hydration", () => {
+  it("切换话题时应恢复后端返回的排队项", async () => {
+    mockListAsterSessions.mockResolvedValue([
+      {
+        id: "session-queue",
+        name: "带队列的话题",
+        created_at: 1,
+        updated_at: 2,
+      },
+    ]);
+    mockGetAsterSession.mockResolvedValue({
+      id: "session-queue",
+      messages: [],
+      turns: [],
+      items: [],
+      queued_turns: [
+        {
+          queuedTurnId: "queued-1",
+          messagePreview: "继续补充 PRD",
+          messageText: "继续补充 PRD，并补一版里程碑拆解",
+          createdAt: 1700000000000,
+          imageCount: 0,
+          position: 1,
+        },
+      ],
+    });
+
+    const harness = mountHook("ws-queue-hydration");
+
+    try {
+      await flushEffects();
+      await act(async () => {
+        await harness.getValue().switchTopic("session-queue");
+      });
+
+      expect(harness.getValue().queuedTurns).toEqual([
+        {
+          queued_turn_id: "queued-1",
+          message_preview: "继续补充 PRD",
+          message_text: "继续补充 PRD，并补一版里程碑拆解",
+          created_at: 1700000000000,
+          image_count: 0,
+          position: 1,
+        },
+      ]);
     } finally {
       harness.unmount();
     }
@@ -462,6 +530,185 @@ describe("useAsterAgentChat thread timeline", () => {
       expect(harness.getValue().threadItems).toHaveLength(1);
       expect(harness.getValue().threadItems[0]?.type).toBe("plan");
       expect(harness.getValue().threadItems[0]?.status).toBe("completed");
+    } finally {
+      harness.unmount();
+    }
+  });
+});
+
+describe("useAsterAgentChat runtime routing", () => {
+  it("开启搜索能力时应提交 allowed 模式，而不是强制 required", async () => {
+    const workspaceId = "ws-search-mode-allowed";
+    seedSession(workspaceId, "session-search-mode-allowed");
+    const harness = mountHook(workspaceId);
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("帮我看看今天的黄金价格", [], true, false, false, "react");
+      });
+
+      expect(mockSubmitAgentRuntimeTurn).toHaveBeenCalledTimes(1);
+      expect(mockSubmitAgentRuntimeTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: "帮我看看今天的黄金价格",
+          turn_config: expect.objectContaining({
+            web_search: true,
+            search_mode: "allowed",
+          }),
+          queue_if_busy: true,
+        }),
+      );
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("runtime_status 与 thinking_delta 应在 final_done 前持续保留", async () => {
+    const workspaceId = "ws-runtime-status-stream";
+    seedSession(workspaceId, "session-runtime-status-stream");
+    const harness = mountHook(workspaceId);
+
+    let streamHandler: ((event: { payload: unknown }) => void) | null = null;
+    mockSafeListen.mockImplementationOnce(async (_eventName, handler) => {
+      streamHandler = handler as (event: { payload: unknown }) => void;
+      return () => {
+        streamHandler = null;
+      };
+    });
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("请先分析，再决定要不要搜索", [], true, true, false, "react");
+      });
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "runtime_status",
+            status: {
+              phase: "routing",
+              title: "已决定：先深度思考",
+              detail: "先做更充分的意图理解，再决定是否调用搜索。",
+              checkpoints: ["thinking 已开启", "搜索与工具保持候选状态"],
+            },
+          },
+        });
+        streamHandler?.({
+          payload: {
+            type: "thinking_delta",
+            text: "先判断任务是直接回答还是需要联网。",
+          },
+        });
+        streamHandler?.({
+          payload: {
+            type: "text_delta",
+            text: "我会先分析你的诉求。",
+          },
+        });
+      });
+
+      let assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.runtimeStatus).toMatchObject({
+        phase: "routing",
+        title: "已决定：先深度思考",
+      });
+      expect(
+        assistantMessage?.contentParts?.some(
+          (part) =>
+            part.type === "thinking" &&
+            part.text.includes("先判断任务是直接回答还是需要联网"),
+        ),
+      ).toBe(true);
+      expect(assistantMessage?.content).toContain("我会先分析你的诉求。");
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "final_done",
+          },
+        });
+      });
+
+      assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.runtimeStatus).toBeUndefined();
+      expect(assistantMessage?.isThinking).toBe(false);
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("final_done 前未收到正文时应给出明确失败提示，而不是静默无响应", async () => {
+    const workspaceId = "ws-empty-final-response";
+    seedSession(workspaceId, "session-empty-final-response");
+    const harness = mountHook(workspaceId);
+
+    let streamHandler: ((event: { payload: unknown }) => void) | null = null;
+    mockSafeListen.mockImplementationOnce(async (_eventName, handler) => {
+      streamHandler = handler as (event: { payload: unknown }) => void;
+      return () => {
+        streamHandler = null;
+      };
+    });
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("帮我汇总今天的国际新闻", [], true, false, false, "react");
+      });
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "tool_start",
+            tool_name: "WebSearch",
+            tool_id: "tool-search-1",
+            arguments: JSON.stringify({ query: "今天的国际新闻" }),
+          },
+        });
+        streamHandler?.({
+          payload: {
+            type: "tool_end",
+            tool_id: "tool-search-1",
+            result: {
+              success: true,
+              output: "https://example.com/world-news",
+            },
+          },
+        });
+        streamHandler?.({
+          payload: {
+            type: "final_done",
+          },
+        });
+      });
+
+      const assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.content).toContain(
+        "已完成工具执行，但模型未输出最终答复，请重试。",
+      );
+      expect(mockToast.error).toHaveBeenCalledWith(
+        "已完成工具执行，但模型未输出最终答复，请重试",
+      );
     } finally {
       harness.unmount();
     }
@@ -831,7 +1078,7 @@ describe("useAsterAgentChat action_required 渲染链路", () => {
     }
   });
 
-  it("fallback ask 在真实 request_id 未就绪前不应提交，避免卡住", async () => {
+  it("fallback ask 在真实 request_id 未就绪前应先记录答案，并在真实 request_id 到达后自动提交", async () => {
     const workspaceId = "ws-ask-fallback-pending";
     seedSession(workspaceId, "session-ask-fallback-pending");
     const harness = mountHook(workspaceId);
@@ -876,10 +1123,58 @@ describe("useAsterAgentChat action_required 渲染链路", () => {
         });
       });
 
+      let assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
       expect(mockRespondAgentRuntimeAction).not.toHaveBeenCalled();
-      expect(mockToast.error).toHaveBeenCalledWith(
-        "Ask 请求 ID 尚未就绪，请稍后再试",
+      expect(mockToast.info).toHaveBeenCalledWith(
+        "已记录你的回答，等待系统请求就绪后自动提交",
       );
+      expect(assistantMessage?.actionRequests?.[0]).toMatchObject({
+        requestId: "fallback:tool-fallback-only",
+        status: "queued",
+        submittedResponse: '{"answer":"网络矩阵"}',
+        submittedUserData: { answer: "网络矩阵" },
+      });
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "action_required",
+            request_id: "req-ask-real-1",
+            action_type: "ask_user",
+            prompt: "请选择您喜欢的科技风格类型",
+            questions: [
+              {
+                question: "请选择您喜欢的科技风格类型",
+                options: ["网络矩阵", "极简未来"],
+              },
+            ],
+          },
+        });
+      });
+
+      await flushEffects();
+
+      assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(mockRespondAgentRuntimeAction).toHaveBeenCalledWith({
+        session_id: "session-ask-fallback-pending",
+        request_id: "req-ask-real-1",
+        action_type: "ask_user",
+        confirmed: true,
+        response: '{"answer":"网络矩阵"}',
+        user_data: { answer: "网络矩阵" },
+      });
+      expect(
+        assistantMessage?.actionRequests?.some(
+          (item) =>
+            item.requestId === "req-ask-real-1" && item.status === "submitted",
+        ),
+      ).toBe(true);
     } finally {
       harness.unmount();
     }
@@ -1128,6 +1423,144 @@ describe("useAsterAgentChat action_required 渲染链路", () => {
     }
   });
 
+  it("write_file 工具启动时即使没有内容也应立即创建 preparing artifact 并触发 onWriteFile", async () => {
+    const workspaceId = "ws-artifact-tool-start-preparing";
+    seedSession(workspaceId, "session-artifact-tool-start-preparing");
+    const onWriteFile = vi.fn();
+    const harness = mountHook(workspaceId, { onWriteFile });
+
+    let streamHandler: ((event: { payload: unknown }) => void) | null = null;
+    mockSafeListen.mockImplementationOnce(async (_eventName, handler) => {
+      streamHandler = handler as (event: { payload: unknown }) => void;
+      return () => {
+        streamHandler = null;
+      };
+    });
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("准备写入空文件", [], false, false, false, "react");
+      });
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "tool_start",
+            tool_id: "tool-write-prepare-1",
+            tool_name: "write_file",
+            arguments: JSON.stringify({
+              path: "notes/preparing.md",
+            }),
+          },
+        });
+      });
+
+      const assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.artifacts).toHaveLength(1);
+      expect(assistantMessage?.artifacts?.[0]).toMatchObject({
+        title: "preparing.md",
+        content: "",
+        status: "streaming",
+        meta: expect.objectContaining({
+          filePath: "notes/preparing.md",
+          writePhase: "preparing",
+          source: "tool_start",
+        }),
+      });
+      expect(onWriteFile).toHaveBeenCalledWith(
+        "",
+        "notes/preparing.md",
+        expect.objectContaining({
+          source: "tool_start",
+          status: "streaming",
+          metadata: expect.objectContaining({
+            writePhase: "preparing",
+            lastUpdateSource: "tool_start",
+          }),
+        }),
+      );
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("apply_patch 工具启动时应立即暴露目标文件，避免工作台空白等待", async () => {
+    const workspaceId = "ws-artifact-apply-patch";
+    seedSession(workspaceId, "session-artifact-apply-patch");
+    const onWriteFile = vi.fn();
+    const harness = mountHook(workspaceId, { onWriteFile });
+
+    let streamHandler: ((event: { payload: unknown }) => void) | null = null;
+    mockSafeListen.mockImplementationOnce(async (_eventName, handler) => {
+      streamHandler = handler as (event: { payload: unknown }) => void;
+      return () => {
+        streamHandler = null;
+      };
+    });
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("补丁更新文档", [], false, false, false, "react");
+      });
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "tool_start",
+            tool_id: "tool-apply-patch-1",
+            tool_name: "apply_patch",
+            arguments: JSON.stringify({
+              patch: [
+                "*** Begin Patch",
+                "*** Update File: notes/patched.md",
+                "@@",
+                "-old",
+                "+new",
+                "*** End Patch",
+              ].join("\n"),
+            }),
+          },
+        });
+      });
+
+      const assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.artifacts?.[0]).toMatchObject({
+        title: "patched.md",
+        content: "",
+        status: "streaming",
+        meta: expect.objectContaining({
+          filePath: "notes/patched.md",
+          writePhase: "preparing",
+          source: "tool_start",
+        }),
+      });
+      expect(onWriteFile).toHaveBeenCalledWith(
+        "",
+        "notes/patched.md",
+        expect.objectContaining({
+          source: "tool_start",
+          status: "streaming",
+        }),
+      );
+    } finally {
+      harness.unmount();
+    }
+  });
+
   it("artifact_snapshot 完成后应在 final_done 时将 artifact 标记为 complete", async () => {
     const workspaceId = "ws-artifact-snapshot";
     seedSession(workspaceId, "session-artifact-snapshot");
@@ -1194,6 +1627,80 @@ describe("useAsterAgentChat action_required 渲染链路", () => {
         .find((msg) => msg.role === "assistant");
 
       expect(assistantMessage?.artifacts?.[0]?.status).toBe("complete");
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("artifact_snapshot 到来时应复用同路径 artifact 而不是重复新增", async () => {
+    const workspaceId = "ws-artifact-snapshot-reuse";
+    seedSession(workspaceId, "session-artifact-snapshot-reuse");
+    const harness = mountHook(workspaceId);
+
+    let streamHandler: ((event: { payload: unknown }) => void) | null = null;
+    mockSafeListen.mockImplementationOnce(async (_eventName, handler) => {
+      streamHandler = handler as (event: { payload: unknown }) => void;
+      return () => {
+        streamHandler = null;
+      };
+    });
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("生成复用快照", [], false, false, false, "react");
+      });
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "tool_start",
+            tool_id: "tool-write-reuse-1",
+            tool_name: "write_file",
+            arguments: JSON.stringify({
+              path: "notes/reuse.md",
+            }),
+          },
+        });
+      });
+
+      const initialAssistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+      const initialArtifactId = initialAssistantMessage?.artifacts?.[0]?.id;
+
+      act(() => {
+        streamHandler?.({
+          payload: {
+            type: "artifact_snapshot",
+            artifact: {
+              artifactId: "server-artifact-id-1",
+              filePath: "notes/reuse.md",
+              content: "# Reused\n\nsnapshot body",
+              metadata: {
+                complete: false,
+              },
+            },
+          },
+        });
+      });
+
+      const assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.artifacts).toHaveLength(1);
+      expect(assistantMessage?.artifacts?.[0]?.id).toBe(initialArtifactId);
+      expect(assistantMessage?.artifacts?.[0]).toMatchObject({
+        content: "# Reused\n\nsnapshot body",
+        meta: expect.objectContaining({
+          writePhase: "streaming",
+          source: "artifact_snapshot",
+        }),
+      });
     } finally {
       harness.unmount();
     }

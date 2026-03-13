@@ -1,13 +1,10 @@
 use futures::StreamExt;
 use proxycast_agent::{
-    convert_agent_event, AsterAgentState, SessionConfigBuilder, TauriAgentEvent,
+    convert_agent_event, merge_system_prompt_with_request_tool_policy, resolve_request_tool_policy,
+    AsterAgentState, SessionConfigBuilder, TauriAgentEvent, WebSearchExecutionTracker,
 };
 use proxycast_core::database::dao::api_key_provider::ApiProviderType;
 use proxycast_core::database::init_database;
-use proxycast_lib::services::request_tool_policy_prompt_service::{
-    merge_system_prompt_with_request_tool_policy, resolve_request_tool_policy,
-    WebSearchExecutionTracker,
-};
 use proxycast_services::api_key_provider_service::ApiKeyProviderService;
 use uuid::Uuid;
 

@@ -20,6 +20,7 @@ pub mod hooks;
 pub mod lsp_bridge;
 pub mod mcp_bridge;
 pub mod prompt;
+pub mod queued_turn;
 pub mod request_tool_policy;
 pub mod session_store;
 pub mod shell_security;
@@ -27,9 +28,11 @@ pub mod subagent_scheduler;
 pub mod tool_io_offload;
 pub mod tool_permissions;
 pub mod tools;
+mod write_artifact_events;
 
 pub use ask_bridge::{create_ask_callback, extract_response as extract_ask_response};
 pub use aster_state::{AsterAgentState, ProviderConfig};
+pub use aster_state::{QueueInsertResult, QueuedTurnTask, SessionTurnQueueManager};
 pub use aster_state_support::{
     build_project_system_prompt, create_proxycast_identity, create_proxycast_tool_config,
     create_session_config_with_project, message_helpers, reload_proxycast_skills,
@@ -43,13 +46,19 @@ pub use durable_memory_fs::{
     resolve_virtual_memory_path, to_virtual_memory_path, virtual_memory_relative_path,
     DURABLE_MEMORY_ROOT_ENV, DURABLE_MEMORY_VIRTUAL_ROOT,
 };
-pub use event_converter::{convert_agent_event, convert_to_tauri_message, TauriAgentEvent};
+pub use event_converter::{
+    convert_agent_event, convert_to_tauri_message, TauriAgentEvent, TauriArtifactSnapshot,
+    TauriRuntimeStatus,
+};
 pub use lsp_bridge::create_lsp_callback;
 pub use prompt::SystemPromptBuilder;
+pub use queued_turn::QueuedTurnSnapshot;
 pub use request_tool_policy::{
     execute_web_search_preflight_if_needed, merge_system_prompt_with_request_tool_policy,
-    resolve_request_tool_policy, stream_reply_with_policy, ReplyAttemptError, RequestToolPolicy,
-    StreamReplyExecution, WebSearchExecutionTracker, REQUEST_TOOL_POLICY_MARKER,
+    merge_system_prompt_with_web_search_preflight_context, message_suggests_news_expansion,
+    resolve_request_tool_policy, resolve_request_tool_policy_with_mode, stream_reply_with_policy,
+    ReplyAttemptError, RequestToolPolicy, RequestToolPolicyMode, StreamReplyExecution,
+    WebSearchExecutionTracker, REQUEST_TOOL_POLICY_MARKER,
 };
 pub use session_store::{
     create_session_sync, get_session_sync, list_sessions_sync, SessionDetail, SessionInfo,
@@ -61,3 +70,4 @@ pub use subagent_scheduler::{
 };
 pub use tool_permissions::{DynamicPermissionCheck, PermissionBehavior};
 pub use tools::{BrowserAction, BrowserTool, BrowserToolError, BrowserToolResult};
+pub use write_artifact_events::WriteArtifactEventEmitter;

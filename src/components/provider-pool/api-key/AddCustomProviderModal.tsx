@@ -34,43 +34,15 @@ import {
   type AddCustomProviderRequest,
   type SystemProviderCatalogItem,
 } from "@/lib/api/apiKeyProvider";
+import {
+  isSupportedProviderType,
+  PROVIDER_TYPE_FIELDS,
+  PROVIDER_TYPE_OPTIONS,
+} from "./ProviderConfigForm.utils";
 
 // ============================================================================
 // 常量
 // ============================================================================
-
-/** 支持的 Provider 类型列表 */
-const PROVIDER_TYPES: { value: ProviderType; label: string }[] = [
-  { value: "openai", label: "OpenAI 兼容" },
-  { value: "openai-response", label: "OpenAI Responses API" },
-  { value: "anthropic", label: "Anthropic" },
-  { value: "anthropic-compatible", label: "Anthropic 兼容" },
-  { value: "gemini", label: "Gemini" },
-  { value: "azure-openai", label: "Azure OpenAI" },
-  { value: "vertexai", label: "VertexAI" },
-  { value: "aws-bedrock", label: "AWS Bedrock" },
-  { value: "ollama", label: "Ollama" },
-  { value: "fal", label: "Fal" },
-  { value: "new-api", label: "New API" },
-  { value: "gateway", label: "Vercel AI Gateway" },
-];
-
-/** Provider 类型对应的额外字段 */
-const PROVIDER_TYPE_EXTRA_FIELDS: Record<ProviderType, string[]> = {
-  openai: [],
-  "openai-response": [],
-  codex: [],
-  anthropic: [],
-  "anthropic-compatible": [], // Anthropic 兼容格式，无需额外字段
-  gemini: [],
-  "azure-openai": ["apiVersion"],
-  vertexai: ["project", "location"],
-  "aws-bedrock": ["region"],
-  ollama: [],
-  fal: [],
-  "new-api": [],
-  gateway: [],
-};
 
 /** 已知厂商配置 */
 interface KnownProvider {
@@ -189,24 +161,7 @@ const FALLBACK_KNOWN_PROVIDERS: KnownProvider[] = [
 
 /** 将 Catalog 返回的 provider type 收敛到前端 ProviderType */
 function normalizeCatalogProviderType(providerType: string): ProviderType {
-  switch (providerType) {
-    case "openai":
-    case "openai-response":
-    case "codex":
-    case "anthropic":
-    case "anthropic-compatible":
-    case "gemini":
-    case "azure-openai":
-    case "vertexai":
-    case "aws-bedrock":
-    case "ollama":
-    case "fal":
-    case "new-api":
-    case "gateway":
-      return providerType;
-    default:
-      return "openai";
-  }
+  return isSupportedProviderType(providerType) ? providerType : "openai";
 }
 
 function buildKnownProvidersFromCatalog(
@@ -524,7 +479,7 @@ export const AddCustomProviderModal: React.FC<AddCustomProviderModalProps> = ({
 
   // 获取当前类型需要的额外字段
   const extraFields = useMemo(
-    () => PROVIDER_TYPE_EXTRA_FIELDS[formState.type] || [],
+    () => PROVIDER_TYPE_FIELDS[formState.type] || [],
     [formState.type],
   );
 
@@ -740,7 +695,7 @@ export const AddCustomProviderModal: React.FC<AddCustomProviderModalProps> = ({
               <SelectValue placeholder="选择类型" />
             </SelectTrigger>
             <SelectContent>
-              {PROVIDER_TYPES.map((type) => (
+              {PROVIDER_TYPE_OPTIONS.map((type) => (
                 <SelectItem key={type.value} value={type.value}>
                   {type.label}
                 </SelectItem>

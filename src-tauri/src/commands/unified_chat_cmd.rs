@@ -22,16 +22,17 @@ use crate::database::DbConnection;
 use crate::services::memory_profile_prompt_service::{
     merge_system_prompt_with_memory_profile, merge_system_prompt_with_memory_sources,
 };
-use crate::services::request_tool_policy_prompt_service::{
-    execute_web_search_preflight_if_needed, merge_system_prompt_with_request_tool_policy,
-    resolve_request_tool_policy, RequestToolPolicy, WebSearchExecutionTracker,
-};
 use crate::services::web_search_prompt_service::merge_system_prompt_with_web_search;
 use crate::services::web_search_runtime_service::apply_web_search_runtime_env;
 use aster::agents::extension::ExtensionConfig;
 use aster::conversation::message::Message;
 use futures::StreamExt;
-use proxycast_agent::event_converter::convert_agent_event;
+use proxycast_agent::{
+    convert_agent_event, execute_web_search_preflight_if_needed,
+    merge_system_prompt_with_request_tool_policy,
+    merge_system_prompt_with_web_search_preflight_context, resolve_request_tool_policy_with_mode,
+    RequestToolPolicy, RequestToolPolicyMode, WebSearchExecutionTracker, WriteArtifactEventEmitter,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
@@ -75,6 +76,9 @@ pub struct SendMessageRequest {
     /// 请求级联网搜索开关
     #[serde(default, alias = "webSearch")]
     pub web_search: Option<bool>,
+    /// 联网搜索模式（disabled / allowed / required）
+    #[serde(default, alias = "searchMode")]
+    pub search_mode: Option<RequestToolPolicyMode>,
 }
 
 /// 图片输入
@@ -384,16 +388,21 @@ pub async fn chat_send_message(
         &config,
     );
 
-    let mode_default_web_search = matches!(session.mode, ChatMode::General);
-    let request_tool_policy =
-        resolve_request_tool_policy(request.web_search, mode_default_web_search);
+    let mode_default_web_search = false;
+    let request_tool_policy = resolve_request_tool_policy_with_mode(
+        request.web_search,
+        request.search_mode,
+        mode_default_web_search,
+    );
     tracing::info!(
-        "[UnifiedChat][WebSearchGuard] session={}, mode={:?}, request_web_search={:?}, mode_default_web_search={}, effective_web_search={}",
+        "[UnifiedChat][WebSearchGuard] session={}, mode={:?}, request_web_search={:?}, request_search_mode={:?}, mode_default_web_search={}, effective_web_search={}, search_mode={}",
         request.session_id,
         session.mode,
         request.web_search,
+        request.search_mode,
         mode_default_web_search,
-        request_tool_policy.effective_web_search
+        request_tool_policy.effective_web_search,
+        request_tool_policy.search_mode.as_str()
     );
 
     let result = send_message_with_aster(
@@ -471,7 +480,7 @@ async fn send_message_with_aster(
     if let Some(prompt) = effective_system_prompt {
         session_config_builder = session_config_builder.system_prompt(prompt);
     }
-    let session_config = session_config_builder
+    let mut session_config = session_config_builder
         .include_context_trace(include_context_trace)
         .build();
 
@@ -481,7 +490,7 @@ async fn send_message_with_aster(
     let agent = guard.as_ref().ok_or("Agent 未初始化")?;
 
     let mut removed_extension: Option<ExtensionConfig> = None;
-    if request_tool_policy.effective_web_search {
+    if request_tool_policy.requires_web_search() {
         let extension_configs = agent.get_extension_configs().await;
         if let Some(extension) = extension_configs
             .into_iter()
@@ -527,6 +536,18 @@ async fn send_message_with_aster(
     .await;
     match preflight {
         Ok(preflight_execution) => {
+            session_config.system_prompt = merge_system_prompt_with_web_search_preflight_context(
+                session_config.system_prompt.take(),
+                preflight_execution.system_prompt_appendix.clone(),
+            );
+            if let Some(summary) = preflight_execution.coverage_summary.as_deref() {
+                tracing::info!(
+                    "[UnifiedChat][WebSearchPrefetch] session={}, expanded_news_search={}, summary={}",
+                    session_id,
+                    preflight_execution.expanded_news_search,
+                    summary
+                );
+            }
             for event in preflight_execution.events {
                 if let Err(error) = app.emit(event_name, &event) {
                     tracing::error!("[UnifiedChat] 发送预调用事件失败: {}", error);
@@ -562,6 +583,8 @@ async fn send_message_with_aster(
     let mut first_chunk_time: Option<std::time::Instant> = None;
     let mut chunk_count = 0;
     let mut stream_error: Option<String> = None;
+    let mut text_output = String::new();
+    let mut write_artifact_emitter = WriteArtifactEventEmitter::new(session_id);
 
     match stream_result {
         Ok(mut stream) => {
@@ -577,8 +600,20 @@ async fn send_message_with_aster(
                         chunk_count += 1;
 
                         let tauri_events = convert_agent_event(agent_event);
-                        for tauri_event in tauri_events {
+                        for mut tauri_event in tauri_events {
+                            let extra_events =
+                                write_artifact_emitter.process_event(&mut tauri_event);
+                            for extra_event in &extra_events {
+                                if let Err(e) = app.emit(event_name, extra_event) {
+                                    tracing::error!("[UnifiedChat] 发送补充事件失败: {}", e);
+                                }
+                            }
                             match &tauri_event {
+                                TauriAgentEvent::TextDelta { text } => {
+                                    if !text.is_empty() {
+                                        text_output.push_str(text);
+                                    }
+                                }
                                 TauriAgentEvent::ToolStart {
                                     tool_name, tool_id, ..
                                 } => web_search_tracker.record_tool_start(
@@ -622,6 +657,18 @@ async fn send_message_with_aster(
                     let _ = app.emit(event_name, &error_event);
                     stream_error = Some(validation_error);
                 }
+            }
+
+            if stream_error.is_none() && text_output.trim().is_empty() {
+                let message = format!(
+                    "已完成当前回合的工具执行，但模型未输出最终答复。\n尝试记录: {}",
+                    web_search_tracker.format_attempts()
+                );
+                let error_event = TauriAgentEvent::Error {
+                    message: message.clone(),
+                };
+                let _ = app.emit(event_name, &error_event);
+                stream_error = Some(message);
             }
 
             if stream_error.is_none() {
@@ -708,7 +755,7 @@ pub async fn chat_configure_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::request_tool_policy_prompt_service::resolve_request_tool_policy;
+    use proxycast_agent::resolve_request_tool_policy;
 
     #[test]
     fn test_send_message_request_deserialize_web_search_camel_case() {

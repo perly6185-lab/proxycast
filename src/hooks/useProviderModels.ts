@@ -240,6 +240,13 @@ export function useProviderModels(
       allModelIds = [...selectedProvider.customModels];
     }
 
+    const findModelIndexById = (modelId: string): number => {
+      const targetId = modelId.toLowerCase();
+      return allModels.findIndex(
+        (model) => model.id.toLowerCase() === targetId,
+      );
+    };
+
     // 2. 对于别名 Provider，添加别名配置中的模型
     if (isAliasProvider(selectedProvider.key) && aliasConfig) {
       const aliasModels = convertAliasModelsToMetadata(
@@ -250,27 +257,35 @@ export function useProviderModels(
       );
       // 过滤掉已存在的模型（避免重复）
       const newAliasModels = aliasModels.filter(
-        (m) => !allModelIds.includes(m.id),
+        (m) =>
+          !allModelIds.some(
+            (existingModelId) =>
+              existingModelId.toLowerCase() === m.id.toLowerCase(),
+          ),
       );
       allModels = [...allModels, ...newAliasModels];
       allModelIds = [...allModelIds, ...newAliasModels.map((m) => m.id)];
     }
 
     // 3. 从模型注册表获取模型
-    let registryFilteredModels = registryModels.filter(
+    const registryFilteredModels = registryModels.filter(
       (m) => m.provider_id === selectedProvider.registryId,
     );
 
-    // 过滤掉已存在的模型（避免重复）
-    const newRegistryModels = registryFilteredModels.filter(
-      (m) => !allModelIds.includes(m.id),
-    );
+    // 排序注册表模型，并用其覆盖同 ID 的别名/自定义占位元数据
+    const sortedRegistryModels = sortModels(registryFilteredModels);
 
-    // 排序注册表模型
-    const sortedRegistryModels = sortModels(newRegistryModels);
+    for (const registryModel of sortedRegistryModels) {
+      const existingIndex = findModelIndexById(registryModel.id);
 
-    allModels = [...allModels, ...sortedRegistryModels];
-    allModelIds = [...allModelIds, ...sortedRegistryModels.map((m) => m.id)];
+      if (existingIndex >= 0) {
+        allModels[existingIndex] = registryModel;
+        continue;
+      }
+
+      allModels.push(registryModel);
+      allModelIds.push(registryModel.id);
+    }
 
     // 判断是否有本地模型（不包括自定义模型）
     const hasLocalModels =

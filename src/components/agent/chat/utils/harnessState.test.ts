@@ -78,4 +78,98 @@ describe("deriveHarnessSessionState", () => {
     expect(state.outputSignals[0]?.artifactPath).toBe("workspace/plan.md");
     expect(state.latestContextTrace).toHaveLength(1);
   });
+
+  it("应从消息 artifacts 提取当前文件写入状态", () => {
+    const messages = [
+      createMessage({
+        artifacts: [
+          {
+            id: "artifact-live-1",
+            type: "document",
+            title: "live.md",
+            content: "# 实时草稿\n\n正在写入第二段",
+            status: "streaming",
+            meta: {
+              filePath: "workspace/live.md",
+              writePhase: "streaming",
+              previewText: "# 实时草稿\n\n正在写入第二段",
+              latestChunk: "正在写入第二段",
+              lastUpdateSource: "artifact_snapshot",
+            },
+            position: { start: 0, end: 12 },
+            createdAt: Date.now() - 1000,
+            updatedAt: Date.now(),
+          },
+        ],
+      }),
+    ];
+
+    const state = deriveHarnessSessionState(messages, []);
+
+    expect(state.activeFileWrites).toHaveLength(1);
+    expect(state.activeFileWrites[0]).toMatchObject({
+      path: "workspace/live.md",
+      displayName: "live.md",
+      phase: "streaming",
+      source: "artifact_snapshot",
+    });
+    expect(state.activeFileWrites[0]?.preview).toContain("实时草稿");
+  });
+
+  it("应为搜索工具调用生成工作台可消费的搜索输出信号", () => {
+    const messages = [
+      createMessage({
+        toolCalls: [
+          {
+            id: "tool-search-1",
+            name: "WebSearch",
+            arguments: JSON.stringify({ query: "3月13日国际新闻" }),
+            status: "completed",
+            result: {
+              success: true,
+              output: [
+                "Xinhua world news summary at 0030 GMT, March 13",
+                "https://example.com/xinhua",
+                "全球要闻摘要，覆盖国际局势与市场动态。",
+              ].join("\n"),
+            },
+            startTime: new Date("2026-03-13T12:00:00.000Z"),
+            endTime: new Date("2026-03-13T12:00:03.000Z"),
+          },
+        ],
+      }),
+    ];
+
+    const state = deriveHarnessSessionState(messages, []);
+
+    expect(state.outputSignals).toHaveLength(1);
+    expect(state.outputSignals[0]).toMatchObject({
+      title: "联网检索摘要",
+      summary: "3月13日国际新闻",
+    });
+    expect(state.outputSignals[0]?.preview).toContain("Xinhua world news summary");
+    expect(state.outputSignals[0]?.content).toContain("https://example.com/xinhua");
+  });
+
+  it("应保留最近 8 条输出信号以承载多组 WebSearch 扩搜", () => {
+    const toolCalls = Array.from({ length: 9 }, (_, index) => ({
+      id: `tool-search-${index + 1}`,
+      name: "WebSearch",
+      arguments: JSON.stringify({ query: `query-${index + 1}` }),
+      status: "completed" as const,
+      result: {
+        success: true,
+        output: `结果 ${index + 1}\nhttps://example.com/${index + 1}`,
+      },
+      startTime: new Date(`2026-03-13T12:00:0${Math.min(index, 8)}.000Z`),
+      endTime: new Date(`2026-03-13T12:00:1${Math.min(index, 8)}.000Z`),
+    }));
+    const messages = [createMessage({ toolCalls })];
+
+    const state = deriveHarnessSessionState(messages, []);
+
+    expect(state.outputSignals).toHaveLength(8);
+    expect(state.outputSignals[0]?.summary).toBe("query-9");
+    expect(state.outputSignals[7]?.summary).toBe("query-2");
+  });
 });

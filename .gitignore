@@ -3,6 +3,7 @@ node_modules/
 
 # Build
 dist/
+.cargo/
 src-tauri/.cargo/
 *.exe
 *.pdb

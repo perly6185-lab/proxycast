@@ -2,6 +2,7 @@ import React from "react";
 import type { ChatInputAdapter } from "@/components/input-kit/adapters/types";
 import type { Character } from "@/lib/api/memory";
 import type { Skill } from "@/lib/api/skills";
+import type { QueuedTurnSnapshot } from "@/lib/api/agentRuntime";
 import type { MessageImage } from "../../../types";
 import { CharacterMention } from "./CharacterMention";
 import { InputbarCore } from "./InputbarCore";
@@ -43,6 +44,8 @@ interface InputbarComposerSectionProps {
     strategy: "react" | "code_orchestrated" | "auto",
   ) => void;
   topExtra?: React.ReactNode;
+  queuedTurns: QueuedTurnSnapshot[];
+  onRemoveQueuedTurn?: (queuedTurnId: string) => void | Promise<boolean>;
 }
 
 export const InputbarComposerSection: React.FC<
@@ -74,6 +77,8 @@ export const InputbarComposerSection: React.FC<
   onManageProviders,
   setExecutionStrategy,
   topExtra,
+  queuedTurns,
+  onRemoveQueuedTurn,
 }) => {
   if (renderThemeWorkbenchGeneratingPanel) {
     return (
@@ -141,6 +146,8 @@ export const InputbarComposerSection: React.FC<
         visualVariant={isThemeWorkbenchVariant ? "floating" : "default"}
         topExtra={topExtra}
         activeTheme={activeTheme}
+        queuedTurns={queuedTurns}
+        onRemoveQueuedTurn={onRemoveQueuedTurn}
         leftExtra={
           <InputbarModelExtra
             isFullscreen={isFullscreen}

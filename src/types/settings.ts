@@ -8,6 +8,7 @@
  * 设置分组 Key
  */
 export enum SettingsGroupKey {
+  Overview = "overview",
   Account = "account",
   General = "general",
   Agent = "agent",
@@ -18,6 +19,7 @@ export enum SettingsGroupKey {
  * 设置标签页
  */
 export enum SettingsTabs {
+  Home = "home",
   // 账号
   Profile = "profile",
   Stats = "stats",
@@ -74,6 +76,7 @@ export interface SettingsTabInfo {
  * 分组到标签页的映射
  */
 export const SETTINGS_GROUPS: Record<SettingsGroupKey, SettingsTabs[]> = {
+  [SettingsGroupKey.Overview]: [SettingsTabs.Home],
   [SettingsGroupKey.Account]: [SettingsTabs.Profile, SettingsTabs.Stats],
   [SettingsGroupKey.General]: [
     SettingsTabs.Appearance,

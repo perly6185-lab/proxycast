@@ -1,5 +1,6 @@
 import React, { useCallback, useRef, useState } from "react";
 import {
+  ActionButtonGroup,
   Container,
   InputBarContainer,
   StyledTextarea,
@@ -7,6 +8,7 @@ import {
   LeftSection,
   RightSection,
   SendButton,
+  SecondaryActionButton,
   DragHandle,
   ImagePreviewContainer,
   ImagePreviewItem,
@@ -24,6 +26,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { MessageImage } from "../../../types";
+import type { QueuedTurnSnapshot } from "@/lib/api/agentRuntime";
+import { QueuedTurnsPanel } from "./QueuedTurnsPanel";
 
 const INTERACTIVE_TARGET_SELECTOR =
   "button, a, input, textarea, select, option, [role='button'], [contenteditable=''], [contenteditable='true'], [contenteditable='plaintext-only']";
@@ -72,6 +76,8 @@ interface InputbarCoreProps {
   /** 视觉风格 */
   visualVariant?: "default" | "floating";
   activeTheme?: string;
+  queuedTurns?: QueuedTurnSnapshot[];
+  onRemoveQueuedTurn?: (queuedTurnId: string) => void | Promise<boolean>;
 }
 
 export const InputbarCore: React.FC<InputbarCoreProps> = ({
@@ -100,6 +106,8 @@ export const InputbarCore: React.FC<InputbarCoreProps> = ({
   showDragHandle = true,
   visualVariant = "default",
   activeTheme,
+  queuedTurns = [],
+  onRemoveQueuedTurn,
 }) => {
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const inputBarContainerRef = useRef<HTMLDivElement | null>(null);
@@ -108,7 +116,8 @@ export const InputbarCore: React.FC<InputbarCoreProps> = ({
     isFloatingVariant &&
     toolMode === "attach-only" &&
     !isComposerExpanded &&
-    pendingImages.length === 0;
+    pendingImages.length === 0 &&
+    queuedTurns.length === 0;
   const shouldUseCompactFloatingComposer =
     shouldCollapseFloatingTools && !topExtra;
   const containerClassName = [
@@ -188,6 +197,7 @@ export const InputbarCore: React.FC<InputbarCoreProps> = ({
       maxAutoHeight={isFloatingVariant ? 160 : 300}
       textareaRef={externalTextareaRef}
       onEscape={() => onToolClick("fullscreen")}
+      allowSendWhileLoading
       placeholder={
         placeholder ||
         (isFullscreen
@@ -241,6 +251,10 @@ export const InputbarCore: React.FC<InputbarCoreProps> = ({
               )}
 
               {topExtra}
+              <QueuedTurnsPanel
+                queuedTurns={queuedTurns}
+                onRemoveQueuedTurn={onRemoveQueuedTurn}
+              />
 
               <StyledTextarea
                 ref={textareaRef}
@@ -280,17 +294,27 @@ export const InputbarCore: React.FC<InputbarCoreProps> = ({
                       </Tooltip>
                     </TooltipProvider>
                   ) : null}
-                  <SendButton
-                    onClick={onPrimaryAction}
-                    disabled={isPrimaryDisabled}
-                    $isStop={isLoading}
-                  >
+                  <ActionButtonGroup>
                     {isLoading ? (
-                      <Square size={16} fill="currentColor" />
-                    ) : (
-                      <ArrowUp size={20} strokeWidth={3} />
-                    )}
-                  </SendButton>
+                      <SecondaryActionButton
+                        type="button"
+                        onClick={onStop}
+                        disabled={!onStop}
+                      >
+                        <Square size={14} fill="currentColor" />
+                        <span>停止</span>
+                      </SecondaryActionButton>
+                    ) : null}
+                    <SendButton
+                      type="button"
+                      onClick={onPrimaryAction}
+                      disabled={isPrimaryDisabled}
+                      $hasLabel={isLoading}
+                    >
+                      <ArrowUp size={isLoading ? 16 : 20} strokeWidth={3} />
+                      {isLoading ? <span>排队</span> : null}
+                    </SendButton>
+                  </ActionButtonGroup>
                 </RightSection>
               </BottomBar>
             </InputBarContainer>

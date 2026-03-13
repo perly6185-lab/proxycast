@@ -2,10 +2,14 @@ use crate::agent::aster_state::AsterAgentState;
 use crate::database::dao::skills::SkillDao;
 use crate::database::DbConnection;
 use crate::models::app_type::AppType;
-use crate::models::skill_model::{Skill, SkillRepo, SkillState};
+use crate::models::skill_model::{
+    Skill, SkillCatalogSource, SkillPackageInspection, SkillRepo, SkillState,
+};
 use chrono::Utc;
 use proxycast_core::app_paths;
 use proxycast_services::skill_service::SkillService;
+use serde::Serialize;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tauri::State;
@@ -58,6 +62,13 @@ fn get_skills_dir(app_type: &AppType) -> Result<PathBuf, String> {
     }
 }
 
+fn get_skill_lookup_roots(app_type: &AppType) -> Result<Vec<PathBuf>, String> {
+    match app_type {
+        AppType::ProxyCast => app_paths::resolve_proxycast_skill_roots(),
+        _ => Ok(vec![get_skills_dir(app_type)?]),
+    }
+}
+
 fn validate_skill_directory(directory: &str) -> Result<(), String> {
     if directory.trim().is_empty() {
         return Err("Skill directory is required".to_string());
@@ -82,11 +93,14 @@ fn validate_skill_directory(directory: &str) -> Result<(), String> {
     }
 }
 
-fn read_local_skill_content(skills_dir: &Path, directory: &str) -> Result<String, String> {
+fn try_resolve_local_skill_dir(
+    skills_dir: &Path,
+    directory: &str,
+) -> Result<Option<PathBuf>, String> {
     validate_skill_directory(directory)?;
 
     if !skills_dir.exists() {
-        return Err("Skills directory not found".to_string());
+        return Ok(None);
     }
 
     let canonical_skills_dir = skills_dir
@@ -95,7 +109,7 @@ fn read_local_skill_content(skills_dir: &Path, directory: &str) -> Result<String
 
     let skill_dir = skills_dir.join(directory);
     if !skill_dir.exists() {
-        return Err(format!("Skill not found: {directory}"));
+        return Ok(None);
     }
 
     let canonical_skill_dir = skill_dir
@@ -108,10 +122,132 @@ fn read_local_skill_content(skills_dir: &Path, directory: &str) -> Result<String
 
     let skill_md_path = canonical_skill_dir.join("SKILL.md");
     if !skill_md_path.is_file() {
-        return Err(format!("SKILL.md not found for skill: {directory}"));
+        return Ok(None);
     }
 
-    std::fs::read_to_string(&skill_md_path).map_err(|e| format!("Failed to read SKILL.md: {e}"))
+    Ok(Some(canonical_skill_dir))
+}
+
+fn resolve_local_skill_dir(skill_roots: &[PathBuf], directory: &str) -> Result<PathBuf, String> {
+    validate_skill_directory(directory)?;
+
+    for root in skill_roots {
+        if let Some(skill_dir) = try_resolve_local_skill_dir(root, directory)? {
+            return Ok(skill_dir);
+        }
+    }
+
+    Err(format!("Skill not found: {directory}"))
+}
+
+fn inspect_local_skill(
+    skill_roots: &[PathBuf],
+    directory: &str,
+) -> Result<SkillPackageInspection, String> {
+    let skill_dir = resolve_local_skill_dir(skill_roots, directory)?;
+    SkillService::inspect_skill_dir(&skill_dir).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillScaffoldTarget {
+    Project,
+    User,
+}
+
+impl SkillScaffoldTarget {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "project" => Ok(Self::Project),
+            "user" => Ok(Self::User),
+            _ => Err(format!("Unsupported scaffold target: {value}")),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SkillScaffoldFrontmatter<'a> {
+    name: &'a str,
+    description: &'a str,
+}
+
+fn resolve_skill_scaffold_root(
+    app_type: &AppType,
+    target: SkillScaffoldTarget,
+) -> Result<PathBuf, String> {
+    match target {
+        SkillScaffoldTarget::User => get_skills_dir(app_type),
+        SkillScaffoldTarget::Project => match app_type {
+            AppType::ProxyCast => app_paths::resolve_project_skills_dir()
+                .ok_or_else(|| "Failed to resolve project skills directory".to_string()),
+            _ => Err("Project skill scaffold is only supported for proxycast".to_string()),
+        },
+    }
+}
+
+fn build_skill_scaffold_content(name: &str, description: &str) -> Result<String, String> {
+    let frontmatter = serde_yaml::to_string(&SkillScaffoldFrontmatter { name, description })
+        .map_err(|e| format!("Failed to build skill frontmatter: {e}"))?;
+    let frontmatter = frontmatter.strip_prefix("---\n").unwrap_or(&frontmatter);
+
+    Ok(format!(
+        "---\n{frontmatter}---\n\n# {name}\n\n## 何时使用\n- 描述该 Skill 的适用场景。\n\n## 输入\n- 说明用户需要提供的上下文、约束和素材。\n\n## 执行要求\n1. 先明确目标、边界和输出格式。\n2. 如需引用资料，请将文件放到 `references/` 目录。\n3. 如需脚本或素材，请分别放到 `scripts/` 与 `assets/` 目录。\n\n## 输出\n- 说明最终交付物及验收标准。\n"
+    ))
+}
+
+fn create_skill_scaffold_in_root(
+    skills_root: &Path,
+    directory: &str,
+    name: &str,
+    description: &str,
+) -> Result<SkillPackageInspection, String> {
+    validate_skill_directory(directory)?;
+
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Skill name is required".to_string());
+    }
+
+    let description = description.trim();
+    if description.is_empty() {
+        return Err("Skill description is required".to_string());
+    }
+
+    fs::create_dir_all(skills_root).map_err(|e| {
+        format!(
+            "Failed to create skills root {}: {e}",
+            skills_root.display()
+        )
+    })?;
+
+    let skill_dir = skills_root.join(directory);
+    if skill_dir.exists() {
+        return Err(format!("Skill directory already exists: {directory}"));
+    }
+
+    fs::create_dir_all(&skill_dir).map_err(|e| {
+        format!(
+            "Failed to create skill directory {}: {e}",
+            skill_dir.display()
+        )
+    })?;
+
+    let skill_md_content = build_skill_scaffold_content(name, description)?;
+    let skill_md_path = skill_dir.join("SKILL.md");
+    if let Err(error) = fs::write(&skill_md_path, skill_md_content) {
+        let _ = fs::remove_dir_all(&skill_dir);
+        return Err(format!(
+            "Failed to write scaffold file {}: {error}",
+            skill_md_path.display()
+        ));
+    }
+
+    match SkillService::inspect_skill_dir(&skill_dir) {
+        Ok(inspection) => Ok(inspection),
+        Err(error) => {
+            let _ = fs::remove_dir_all(&skill_dir);
+            Err(format!("Created scaffold failed inspection: {error}"))
+        }
+    }
 }
 
 /// 获取已安装的 ProxyCast Skills 目录列表
@@ -128,22 +264,70 @@ pub async fn get_installed_proxycast_skills() -> Result<Vec<String>, String> {
     Ok(scan_installed_skills(&skills_dir))
 }
 
-/// 获取本地已安装 Skill 的 SKILL.md 内容
+/// 获取本地已安装 Skill 的标准检查结果
 ///
-/// 仅支持读取本地 Skills 目录下的文件，包含目录合法性与路径穿越防护。
+/// 仅支持读取本地 Skills 目录下的文件，包含目录合法性、路径穿越防护、
+/// Agent Skills 标准检查和 ProxyCast 扩展引用校验。
 ///
 /// # Arguments
 /// - `app`: 应用类型（proxycast/claude/codex/gemini）
 /// - `directory`: Skill 目录名
 ///
 /// # Returns
-/// - `Ok(String)`: SKILL.md 的文本内容
+/// - `Ok(SkillPackageInspection)`: Skill 检查结果与原始内容
 /// - `Err(String)`: 错误信息
 #[tauri::command]
-pub fn get_local_skill_content(app: String, directory: String) -> Result<String, String> {
+pub fn inspect_local_skill_for_app(
+    app: String,
+    directory: String,
+) -> Result<SkillPackageInspection, String> {
     let app_type: AppType = app.parse().map_err(|e: String| e)?;
-    let skills_dir = get_skills_dir(&app_type)?;
-    read_local_skill_content(&skills_dir, &directory)
+    let skill_roots = get_skill_lookup_roots(&app_type)?;
+    inspect_local_skill(&skill_roots, &directory)
+}
+
+/// 创建标准 Skill 脚手架
+///
+/// 在项目级或用户级 Skills root 下创建一个最小 Agent Skills 标准包，
+/// 并返回创建后的 inspection 结果，供 UI 立即预览。
+#[tauri::command]
+pub fn create_skill_scaffold_for_app(
+    app: String,
+    target: String,
+    directory: String,
+    name: String,
+    description: String,
+) -> Result<SkillPackageInspection, String> {
+    let app_type: AppType = app.parse().map_err(|e: String| e)?;
+    let target = SkillScaffoldTarget::parse(&target)?;
+    let skills_root = resolve_skill_scaffold_root(&app_type, target)?;
+    let inspection = create_skill_scaffold_in_root(&skills_root, &directory, &name, &description)?;
+
+    if matches!(app_type, AppType::ProxyCast) {
+        AsterAgentState::reload_proxycast_skills();
+    }
+
+    Ok(inspection)
+}
+
+/// 获取远程 Skill 包的标准检查结果
+///
+/// 直接从远程仓库读取目标 Skill 目录，返回标准检查结果与原始 SKILL.md，
+/// 用于安装前预检和 workflow/reference 可见性。
+#[tauri::command]
+pub async fn inspect_remote_skill(
+    skill_service: State<'_, SkillServiceState>,
+    owner: String,
+    name: String,
+    branch: String,
+    directory: String,
+) -> Result<SkillPackageInspection, String> {
+    validate_skill_directory(&directory)?;
+    skill_service
+        .0
+        .inspect_remote_skill(&owner, &name, &branch, &directory)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 pub struct SkillServiceState(pub Arc<SkillService>);
@@ -211,7 +395,7 @@ pub async fn get_skills_for_app(
         let existing_states = SkillDao::get_skills(&conn).map_err(|e| e.to_string())?;
 
         for skill in &skills {
-            if skill.installed {
+            if skill.installed && skill.catalog_source != SkillCatalogSource::Project {
                 let key = get_skill_key(&app_type, &skill.directory);
                 if !existing_states.contains_key(&key) {
                     let state = SkillState {
@@ -421,7 +605,7 @@ mod tests {
     // **Feature: skills-platform-mvp, Property 2: Installed Skills Discovery**
     // **Validates: Requirements 2.1, 2.2, 2.3**
     //
-    // *For any* valid ~/.proxycast/skills/ directory containing subdirectories
+    // *For any* valid skills 目录 containing subdirectories
     // with SKILL.md files, calling `scan_installed_skills()` SHALL return a list
     // containing exactly those subdirectory names.
     proptest! {
@@ -512,42 +696,61 @@ mod tests {
     }
 
     #[test]
-    fn test_read_local_skill_content_success() {
+    fn test_inspect_local_skill_success() {
         let temp_dir = TempDir::new().unwrap();
         let skills_dir = temp_dir.path().join("skills");
         let skill_dir = skills_dir.join("demo-skill");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "# Demo Skill\ncontent").unwrap();
+        let references_dir = skill_dir.join("references");
+        std::fs::create_dir_all(&references_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: Demo Skill
+description: Inspect me
+metadata:
+  proxycast_workflow_ref: references/workflow.yaml
+---
 
-        let content = read_local_skill_content(&skills_dir, "demo-skill").unwrap();
-        assert!(content.contains("# Demo Skill"));
-        assert!(content.contains("content"));
+# Demo Skill
+content"#,
+        )
+        .unwrap();
+        std::fs::write(
+            references_dir.join("workflow.yaml"),
+            "- id: draft\n  title: 起草\n",
+        )
+        .unwrap();
+
+        let inspection = inspect_local_skill(&[skills_dir.clone()], "demo-skill").unwrap();
+        assert!(inspection.content.contains("# Demo Skill"));
+        assert!(inspection.resource_summary.has_references);
+        assert!(inspection.standard_compliance.validation_errors.is_empty());
     }
 
     #[test]
-    fn test_read_local_skill_content_rejects_traversal() {
+    fn test_inspect_local_skill_rejects_traversal() {
         let temp_dir = TempDir::new().unwrap();
         let skills_dir = temp_dir.path().join("skills");
         std::fs::create_dir_all(&skills_dir).unwrap();
 
-        let err = read_local_skill_content(&skills_dir, "../outside").unwrap_err();
+        let err = inspect_local_skill(&[skills_dir.clone()], "../outside").unwrap_err();
         assert!(err.contains("Invalid skill directory"));
     }
 
     #[test]
-    fn test_read_local_skill_content_missing_skill_md() {
+    fn test_inspect_local_skill_missing_skill_md() {
         let temp_dir = TempDir::new().unwrap();
         let skills_dir = temp_dir.path().join("skills");
         let skill_dir = skills_dir.join("no-skill-md");
         std::fs::create_dir_all(&skill_dir).unwrap();
 
-        let err = read_local_skill_content(&skills_dir, "no-skill-md").unwrap_err();
-        assert!(err.contains("SKILL.md not found"));
+        let err = inspect_local_skill(&[skills_dir.clone()], "no-skill-md").unwrap_err();
+        assert!(err.contains("Skill not found"));
     }
 
     #[cfg(unix)]
     #[test]
-    fn test_read_local_skill_content_rejects_symlink_escape() {
+    fn test_inspect_local_skill_rejects_symlink_escape() {
         use std::os::unix::fs::symlink;
 
         let temp_dir = TempDir::new().unwrap();
@@ -561,7 +764,79 @@ mod tests {
         let symlink_dir = skills_dir.join("escape-skill");
         symlink(&outside_dir, &symlink_dir).unwrap();
 
-        let err = read_local_skill_content(&skills_dir, "escape-skill").unwrap_err();
+        let err = inspect_local_skill(&[skills_dir.clone()], "escape-skill").unwrap_err();
         assert!(err.contains("Invalid skill directory path"));
+    }
+
+    #[test]
+    fn test_inspect_local_skill_prefers_project_root_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_skills_dir = temp_dir
+            .path()
+            .join("project")
+            .join(".agents")
+            .join("skills");
+        let user_skills_dir = temp_dir.path().join("user-skills");
+        let project_skill_dir = project_skills_dir.join("demo-skill");
+        let user_skill_dir = user_skills_dir.join("demo-skill");
+
+        std::fs::create_dir_all(&project_skill_dir).unwrap();
+        std::fs::create_dir_all(&user_skill_dir).unwrap();
+        std::fs::write(
+            project_skill_dir.join("SKILL.md"),
+            "---\nname: Project Skill\ndescription: project\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            user_skill_dir.join("SKILL.md"),
+            "---\nname: User Skill\ndescription: user\n---\n",
+        )
+        .unwrap();
+
+        let inspection = inspect_local_skill(
+            &[project_skills_dir.clone(), user_skills_dir.clone()],
+            "demo-skill",
+        )
+        .unwrap();
+
+        assert!(inspection.content.contains("Project Skill"));
+        assert!(!inspection.content.contains("User Skill"));
+    }
+
+    #[test]
+    fn test_create_skill_scaffold_in_root_creates_standard_package() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+
+        let inspection = create_skill_scaffold_in_root(
+            &skills_dir,
+            "draft-skill",
+            "Draft Skill",
+            "Create a new draft",
+        )
+        .unwrap();
+
+        let skill_md = skills_dir.join("draft-skill").join("SKILL.md");
+        assert!(skill_md.is_file());
+        assert!(inspection.standard_compliance.is_standard);
+        assert!(inspection.content.contains("name: Draft Skill"));
+        assert!(inspection.content.contains("# Draft Skill"));
+    }
+
+    #[test]
+    fn test_create_skill_scaffold_in_root_rejects_existing_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        std::fs::create_dir_all(skills_dir.join("draft-skill")).unwrap();
+
+        let err = create_skill_scaffold_in_root(
+            &skills_dir,
+            "draft-skill",
+            "Draft Skill",
+            "Create a new draft",
+        )
+        .unwrap_err();
+
+        assert!(err.contains("already exists"));
     }
 }

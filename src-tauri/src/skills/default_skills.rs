@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use proxycast_core::app_paths;
+use proxycast_core::models::parse_skill_manifest_from_content;
 use proxycast_core::models::{
     BROADCAST_GENERATE_SKILL_DIRECTORY, COVER_GENERATE_SKILL_DIRECTORY,
     IMAGE_GENERATE_SKILL_DIRECTORY, LIBRARY_SKILL_DIRECTORY, MODAL_RESOURCE_SEARCH_SKILL_DIRECTORY,
@@ -41,27 +42,79 @@ const TYPESETTING_SKILL_CONTENT: &str =
 const SOCIAL_POST_WITH_COVER_SKILL_CONTENT: &str =
     include_str!("../../resources/default-skills/social_post_with_cover/SKILL.md");
 
-fn default_skills() -> [(&'static str, &'static str); 10] {
+const SOCIAL_POST_WITH_COVER_WORKFLOW_CONTENT: &str =
+    include_str!("../../resources/default-skills/social_post_with_cover/references/workflow.json");
+
+#[derive(Clone, Copy)]
+struct BundledSkillFile {
+    relative_path: &'static str,
+    content: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct BundledSkillDefinition {
+    directory: &'static str,
+    skill_content: &'static str,
+    extra_files: &'static [BundledSkillFile],
+}
+
+const SOCIAL_POST_WITH_COVER_EXTRA_FILES: &[BundledSkillFile] = &[BundledSkillFile {
+    relative_path: "references/workflow.json",
+    content: SOCIAL_POST_WITH_COVER_WORKFLOW_CONTENT,
+}];
+
+fn default_skills() -> [BundledSkillDefinition; 10] {
     [
-        (VIDEO_GENERATE_SKILL_DIRECTORY, VIDEO_GENERATE_SKILL_CONTENT),
-        (
-            BROADCAST_GENERATE_SKILL_DIRECTORY,
-            BROADCAST_GENERATE_SKILL_CONTENT,
-        ),
-        (COVER_GENERATE_SKILL_DIRECTORY, COVER_GENERATE_SKILL_CONTENT),
-        (
-            MODAL_RESOURCE_SEARCH_SKILL_DIRECTORY,
-            MODAL_RESOURCE_SEARCH_SKILL_CONTENT,
-        ),
-        (IMAGE_GENERATE_SKILL_DIRECTORY, IMAGE_GENERATE_SKILL_CONTENT),
-        (LIBRARY_SKILL_DIRECTORY, LIBRARY_SKILL_CONTENT),
-        (URL_PARSE_SKILL_DIRECTORY, URL_PARSE_SKILL_CONTENT),
-        (RESEARCH_SKILL_DIRECTORY, RESEARCH_SKILL_CONTENT),
-        (TYPESETTING_SKILL_DIRECTORY, TYPESETTING_SKILL_CONTENT),
-        (
-            SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY,
-            SOCIAL_POST_WITH_COVER_SKILL_CONTENT,
-        ),
+        BundledSkillDefinition {
+            directory: VIDEO_GENERATE_SKILL_DIRECTORY,
+            skill_content: VIDEO_GENERATE_SKILL_CONTENT,
+            extra_files: &[],
+        },
+        BundledSkillDefinition {
+            directory: BROADCAST_GENERATE_SKILL_DIRECTORY,
+            skill_content: BROADCAST_GENERATE_SKILL_CONTENT,
+            extra_files: &[],
+        },
+        BundledSkillDefinition {
+            directory: COVER_GENERATE_SKILL_DIRECTORY,
+            skill_content: COVER_GENERATE_SKILL_CONTENT,
+            extra_files: &[],
+        },
+        BundledSkillDefinition {
+            directory: MODAL_RESOURCE_SEARCH_SKILL_DIRECTORY,
+            skill_content: MODAL_RESOURCE_SEARCH_SKILL_CONTENT,
+            extra_files: &[],
+        },
+        BundledSkillDefinition {
+            directory: IMAGE_GENERATE_SKILL_DIRECTORY,
+            skill_content: IMAGE_GENERATE_SKILL_CONTENT,
+            extra_files: &[],
+        },
+        BundledSkillDefinition {
+            directory: LIBRARY_SKILL_DIRECTORY,
+            skill_content: LIBRARY_SKILL_CONTENT,
+            extra_files: &[],
+        },
+        BundledSkillDefinition {
+            directory: URL_PARSE_SKILL_DIRECTORY,
+            skill_content: URL_PARSE_SKILL_CONTENT,
+            extra_files: &[],
+        },
+        BundledSkillDefinition {
+            directory: RESEARCH_SKILL_DIRECTORY,
+            skill_content: RESEARCH_SKILL_CONTENT,
+            extra_files: &[],
+        },
+        BundledSkillDefinition {
+            directory: TYPESETTING_SKILL_DIRECTORY,
+            skill_content: TYPESETTING_SKILL_CONTENT,
+            extra_files: &[],
+        },
+        BundledSkillDefinition {
+            directory: SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY,
+            skill_content: SOCIAL_POST_WITH_COVER_SKILL_CONTENT,
+            extra_files: SOCIAL_POST_WITH_COVER_EXTRA_FILES,
+        },
     ]
 }
 
@@ -72,18 +125,19 @@ fn skills_root_from_base(base_dir: &Path) -> PathBuf {
 
 /// 从 SKILL.md 内容中提取版本号，返回 (major, minor, patch)
 fn parse_skill_version(content: &str) -> Option<(u32, u32, u32)> {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("version:") {
-            let version_str = trimmed.split_once(':')?.1.trim();
-            let parts: Vec<&str> = version_str.split('.').collect();
-            if parts.len() == 3 {
-                let major = parts[0].trim().parse::<u32>().ok()?;
-                let minor = parts[1].trim().parse::<u32>().ok()?;
-                let patch = parts[2].trim().parse::<u32>().ok()?;
-                return Some((major, minor, patch));
-            }
-        }
+    let manifest = parse_skill_manifest_from_content(content).ok()?;
+    let version_str = manifest
+        .metadata
+        .metadata
+        .get("proxycast_version")
+        .cloned()
+        .or_else(|| manifest.raw_string("version"))?;
+    let parts: Vec<&str> = version_str.split('.').collect();
+    if parts.len() == 3 {
+        let major = parts[0].trim().parse::<u32>().ok()?;
+        let minor = parts[1].trim().parse::<u32>().ok()?;
+        let patch = parts[2].trim().parse::<u32>().ok()?;
+        return Some((major, minor, patch));
     }
     None
 }
@@ -93,7 +147,9 @@ fn ensure_default_local_skills_in_dir(skills_root: &Path) -> Result<Vec<String>,
         .map_err(|e| format!("创建技能目录失败 {}: {e}", skills_root.display()))?;
 
     let mut installed = Vec::new();
-    for (skill_name, skill_content) in default_skills() {
+    for bundled_skill in default_skills() {
+        let skill_name = bundled_skill.directory;
+        let skill_content = bundled_skill.skill_content;
         let skill_dir = skills_root.join(skill_name);
         let skill_md_path = skill_dir.join("SKILL.md");
         if skill_md_path.exists() {
@@ -107,9 +163,13 @@ fn ensure_default_local_skills_in_dir(skills_root: &Path) -> Result<Vec<String>,
                     fs::write(&skill_md_path, skill_content).map_err(|e| {
                         format!("升级默认技能失败 {}: {e}", skill_md_path.display())
                     })?;
+                    sync_bundled_skill_files(&skill_dir, bundled_skill.extra_files)?;
                     installed.push(skill_name.to_string());
                 }
-                _ => continue, // 版本相同或无法比较，跳过
+                _ => {
+                    sync_bundled_skill_files(&skill_dir, bundled_skill.extra_files)?;
+                    continue;
+                } // 版本相同或无法比较，跳过
             }
             continue;
         }
@@ -118,9 +178,26 @@ fn ensure_default_local_skills_in_dir(skills_root: &Path) -> Result<Vec<String>,
             .map_err(|e| format!("创建默认技能目录失败 {}: {e}", skill_dir.display()))?;
         fs::write(&skill_md_path, skill_content)
             .map_err(|e| format!("写入默认技能失败 {}: {e}", skill_md_path.display()))?;
+        sync_bundled_skill_files(&skill_dir, bundled_skill.extra_files)?;
         installed.push(skill_name.to_string());
     }
     Ok(installed)
+}
+
+fn sync_bundled_skill_files(
+    skill_dir: &Path,
+    extra_files: &[BundledSkillFile],
+) -> Result<(), String> {
+    for extra_file in extra_files {
+        let target_path = skill_dir.join(extra_file.relative_path);
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("创建技能资源目录失败 {}: {e}", parent.display()))?;
+        }
+        fs::write(&target_path, extra_file.content)
+            .map_err(|e| format!("写入技能资源失败 {}: {e}", target_path.display()))?;
+    }
+    Ok(())
 }
 
 pub fn ensure_default_local_skills() -> Result<Vec<String>, String> {
@@ -186,8 +263,8 @@ mod tests {
         let current_content = fs::read_to_string(&skill_md_path).expect("read skill");
         assert_ne!(current_content, old_content, "旧版本内容应被替换");
         assert!(
-            current_content.contains("steps-json"),
-            "升级后应包含 steps-json 字段"
+            current_content.contains("proxycast_workflow_ref"),
+            "升级后应包含 workflow 引用字段"
         );
     }
 
@@ -210,6 +287,8 @@ mod tests {
             .contains("allowed-tools: social_generate_cover_image, search_query"));
         assert!(SOCIAL_POST_WITH_COVER_SKILL_CONTENT.contains("**配图说明**"));
         assert!(SOCIAL_POST_WITH_COVER_SKILL_CONTENT.contains("状态：{成功/失败}"));
+        assert!(SOCIAL_POST_WITH_COVER_SKILL_CONTENT.contains("proxycast_workflow_ref"));
+        assert!(SOCIAL_POST_WITH_COVER_WORKFLOW_CONTENT.contains("\"id\": \"research\""));
     }
 
     #[test]
@@ -223,5 +302,20 @@ mod tests {
         assert!(URL_PARSE_SKILL_CONTENT.contains("name: url_parse"));
         assert!(RESEARCH_SKILL_CONTENT.contains("name: research"));
         assert!(TYPESETTING_SKILL_CONTENT.contains("name: typesetting"));
+    }
+
+    #[test]
+    fn should_sync_extra_files_for_social_post_skill() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let skills_root = skills_root_from_base(temp.path());
+        ensure_default_local_skills_in_dir(&skills_root).expect("install");
+
+        let workflow_path = skills_root
+            .join(SOCIAL_POST_WITH_COVER_SKILL_DIRECTORY)
+            .join("references")
+            .join("workflow.json");
+        assert!(workflow_path.exists());
+        let workflow_content = fs::read_to_string(workflow_path).expect("read workflow");
+        assert!(workflow_content.contains("\"cover\""));
     }
 }

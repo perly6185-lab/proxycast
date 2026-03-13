@@ -46,6 +46,7 @@ mod tests {
     use proxycast_core::database::dao::api_key_provider::ApiProviderType;
     use proxycast_core::database::init_database;
     use rusqlite::OptionalExtension;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn resolve_real_codex_provider_id(
         db: &proxycast_core::database::DbConnection,
@@ -115,14 +116,14 @@ data: [DONE]\n";
         let with_explicit = ApiKeyProviderService::pick_test_model(
             Some("explicit-model".to_string()),
             &["custom-model".to_string()],
-            &["fallback-model".to_string()],
+            &["fallback-model".to_string(), "fallback-mini".to_string()],
         );
         assert_eq!(with_explicit.as_deref(), Some("explicit-model"));
 
         let with_custom = ApiKeyProviderService::pick_test_model(
             None,
             &["custom-model".to_string()],
-            &["fallback-model".to_string()],
+            &["fallback-model".to_string(), "fallback-mini".to_string()],
         );
         assert_eq!(with_custom.as_deref(), Some("custom-model"));
 
@@ -130,8 +131,237 @@ data: [DONE]\n";
             ApiKeyProviderService::pick_test_model(None, &[], &["fallback-model".to_string()]);
         assert_eq!(with_local_fallback.as_deref(), Some("fallback-model"));
 
+        let with_preferred_fallback = ApiKeyProviderService::pick_test_model(
+            None,
+            &[],
+            &[
+                "gpt-5.2-pro".to_string(),
+                "gpt-5-nano".to_string(),
+                "gpt-4.1-mini".to_string(),
+            ],
+        );
+        assert_eq!(with_preferred_fallback.as_deref(), Some("gpt-5-nano"));
+
         let none = ApiKeyProviderService::pick_test_model(None, &[], &[]);
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn test_parse_openai_responses_content_prefers_output_text() {
+        let body = serde_json::json!({
+            "id": "resp_test",
+            "output_text": "hello from responses",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "fallback text"}]
+            }]
+        })
+        .to_string();
+
+        let content = ApiKeyProviderService::parse_openai_responses_content(&body)
+            .expect("应解析 output_text");
+        assert_eq!(content, "hello from responses");
+    }
+
+    #[test]
+    fn test_parse_openai_responses_content_reads_output_blocks() {
+        let body = serde_json::json!({
+            "id": "resp_test",
+            "output": [{
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": "hello"},
+                    {"type": "output_text", "text": " world"}
+                ]
+            }]
+        })
+        .to_string();
+
+        let content = ApiKeyProviderService::parse_openai_responses_content(&body)
+            .expect("应解析 output.content");
+        assert_eq!(content, "hello world");
+    }
+
+    async fn spawn_single_response_server(
+        response_body: serde_json::Value,
+    ) -> (String, tokio::task::JoinHandle<(String, String)>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("绑定测试服务失败");
+        let addr = listener.local_addr().expect("读取测试地址失败");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("接受连接失败");
+            let mut buffer = Vec::new();
+            let mut header_end = None;
+
+            loop {
+                let mut chunk = [0u8; 1024];
+                let read = stream.read(&mut chunk).await.expect("读取请求失败");
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                    header_end = Some(pos + 4);
+                    break;
+                }
+            }
+
+            let header_end = header_end.expect("请求头未结束");
+            let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+            let content_length = header_text
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    if name.eq_ignore_ascii_case("content-length") {
+                        value.trim().parse::<usize>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+
+            while buffer.len() < header_end + content_length {
+                let mut chunk = vec![0u8; content_length.max(1024)];
+                let read = stream.read(&mut chunk).await.expect("补全请求体失败");
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+
+            let request_line = header_text.lines().next().expect("缺少请求行").to_string();
+            let request_path = request_line
+                .split_whitespace()
+                .nth(1)
+                .expect("缺少请求路径")
+                .to_string();
+            let request_body =
+                String::from_utf8_lossy(&buffer[header_end..header_end + content_length])
+                    .to_string();
+            let response_text = response_body.to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                response_text.len(),
+                response_text
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("写回响应失败");
+
+            (request_path, request_body)
+        });
+
+        (format!("http://{}", addr), server)
+    }
+
+    #[tokio::test]
+    #[ignore = "当前沙箱禁止本地 TCP 监听，需在本机放行后运行"]
+    async fn test_openai_response_chat_uses_responses_endpoint_and_fallback_model() {
+        let db = init_database().expect("初始化数据库失败");
+        let service = ApiKeyProviderService::new();
+        let response_body = serde_json::json!({
+            "id": "resp_test",
+            "output_text": "OK"
+        });
+        let (base_url, server) = spawn_single_response_server(response_body).await;
+
+        let provider = service
+            .add_custom_provider(
+                &db,
+                "OpenAI Responses Test".to_string(),
+                ApiProviderType::OpenaiResponse,
+                base_url,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("创建 Provider 失败");
+        service
+            .add_api_key(&db, &provider.id, "sk-test-key", Some("test".to_string()))
+            .expect("添加 API Key 失败");
+
+        let result = service
+            .test_chat_with_fallback_models(
+                &db,
+                &provider.id,
+                None,
+                "hello".to_string(),
+                vec!["gpt-4.1-mini".to_string()],
+            )
+            .await
+            .expect("对话测试调用失败");
+
+        assert!(result.success, "结果应成功: {:?}", result.error);
+        assert_eq!(result.content.as_deref(), Some("OK"));
+
+        let (request_path, request_body) = server.await.expect("等待测试服务失败");
+        assert_eq!(request_path, "/v1/responses");
+        let request_json: serde_json::Value =
+            serde_json::from_str(&request_body).expect("请求体应为 JSON");
+        assert_eq!(request_json["model"].as_str(), Some("gpt-4.1-mini"));
+        assert_eq!(request_json["stream"].as_bool(), Some(false));
+        assert_eq!(
+            request_json["input"][0]["content"][0]["text"].as_str(),
+            Some("hello")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "当前沙箱禁止本地 TCP 监听，需在本机放行后运行"]
+    async fn test_openai_response_connection_prefers_responses_endpoint() {
+        let db = init_database().expect("初始化数据库失败");
+        let service = ApiKeyProviderService::new();
+        let response_body = serde_json::json!({
+            "id": "resp_test",
+            "output_text": "OK"
+        });
+        let (base_url, server) = spawn_single_response_server(response_body).await;
+
+        let provider = service
+            .add_custom_provider(
+                &db,
+                "OpenAI Responses Test".to_string(),
+                ApiProviderType::OpenaiResponse,
+                base_url,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("创建 Provider 失败");
+        service
+            .add_api_key(&db, &provider.id, "sk-test-key", Some("test".to_string()))
+            .expect("添加 API Key 失败");
+
+        let result = service
+            .test_connection_with_fallback_models(
+                &db,
+                &provider.id,
+                None,
+                vec!["gpt-4.1-mini".to_string()],
+            )
+            .await
+            .expect("连接测试调用失败");
+
+        assert!(result.success, "连接测试应成功: {:?}", result.error);
+        assert_eq!(
+            result.models.as_deref(),
+            Some(&["gpt-4.1-mini".to_string()][..])
+        );
+
+        let (request_path, request_body) = server.await.expect("等待测试服务失败");
+        assert_eq!(request_path, "/v1/responses");
+        let request_json: serde_json::Value =
+            serde_json::from_str(&request_body).expect("请求体应为 JSON");
+        assert_eq!(request_json["model"].as_str(), Some("gpt-4.1-mini"));
+        assert_eq!(
+            request_json["input"][0]["content"][0]["text"].as_str(),
+            Some("hi")
+        );
     }
 
     #[tokio::test]
@@ -299,6 +529,18 @@ impl ApiKeyProviderService {
         model_name: Option<String>,
         prompt: String,
     ) -> Result<ChatTestResult, String> {
+        self.test_chat_with_fallback_models(db, provider_id, model_name, prompt, Vec::new())
+            .await
+    }
+
+    pub async fn test_chat_with_fallback_models(
+        &self,
+        db: &DbConnection,
+        provider_id: &str,
+        model_name: Option<String>,
+        prompt: String,
+        fallback_models: Vec<String>,
+    ) -> Result<ChatTestResult, String> {
         use std::time::Instant;
 
         let provider_with_keys = self
@@ -311,9 +553,9 @@ impl ApiKeyProviderService {
             .get_next_api_key(db, provider_id)?
             .ok_or_else(|| "没有可用的 API Key".to_string())?;
 
-        let test_model = model_name.or_else(|| provider.custom_models.first().cloned());
         let test_model =
-            test_model.ok_or_else(|| "缺少模型名称：请在自定义模型中填写一个模型名".to_string())?;
+            Self::pick_test_model(model_name, &provider.custom_models, &fallback_models)
+                .ok_or_else(|| "缺少模型名称：请在自定义模型中填写一个模型名".to_string())?;
 
         let start = Instant::now();
 
@@ -328,6 +570,11 @@ impl ApiKeyProviderService {
                     &prompt,
                 )
                 .await
+            }
+            // OpenAI Responses API 走 /v1/responses
+            provider_type if Self::uses_openai_responses_protocol(provider_type) => {
+                self.test_openai_responses_once(&api_key, &provider.api_host, &test_model, &prompt)
+                    .await
             }
             // Anthropic / AnthropicCompatible 统一走 /v1/messages
             provider_type if Self::uses_anthropic_protocol(provider_type) => {
@@ -365,6 +612,27 @@ impl ApiKeyProviderService {
         provider_type.is_anthropic_protocol()
     }
 
+    #[inline]
+    fn uses_openai_responses_protocol(provider_type: ApiProviderType) -> bool {
+        matches!(provider_type, ApiProviderType::OpenaiResponse)
+    }
+
+    fn pick_preferred_fallback_model(fallback_models: &[String]) -> Option<String> {
+        const PREFERRED_MARKERS: &[&str] =
+            &["nano", "mini", "flash-lite", "flash", "haiku", "lite"];
+
+        for marker in PREFERRED_MARKERS {
+            if let Some(model) = fallback_models
+                .iter()
+                .find(|model| model.to_ascii_lowercase().contains(marker))
+            {
+                return Some(model.clone());
+            }
+        }
+
+        fallback_models.first().cloned()
+    }
+
     fn pick_test_model(
         model_name: Option<String>,
         custom_models: &[String],
@@ -372,7 +640,7 @@ impl ApiKeyProviderService {
     ) -> Option<String> {
         model_name
             .or_else(|| custom_models.first().cloned())
-            .or_else(|| fallback_models.first().cloned())
+            .or_else(|| Self::pick_preferred_fallback_model(fallback_models))
     }
 
     async fn test_openai_chat_once(
@@ -442,7 +710,7 @@ impl ApiKeyProviderService {
             let body2 = resp2.text().await.unwrap_or_default();
 
             if !status2.is_success() {
-                return Err(format!("API 返回错误: {status2} - {body2}"));
+                return Err(Self::format_http_api_error(status2, &body2));
             }
 
             let content = Self::parse_chat_completions_sse_content(&body2);
@@ -456,7 +724,7 @@ impl ApiKeyProviderService {
                 .await;
         }
 
-        Err(format!("API 返回错误: {status} - {body}"))
+        Err(Self::format_http_api_error(status, &body))
     }
 
     async fn test_anthropic_chat_once(
@@ -486,7 +754,7 @@ impl ApiKeyProviderService {
         let body = resp.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            return Err(format!("API 返回错误: {status} - {body}"));
+            return Err(Self::format_http_api_error(status, &body));
         }
 
         let parsed: serde_json::Value =
@@ -530,7 +798,11 @@ impl ApiKeyProviderService {
         out
     }
 
-    fn build_codex_responses_request(model: &str, prompt: &str) -> serde_json::Value {
+    fn build_openai_responses_request(
+        model: &str,
+        prompt: &str,
+        stream: bool,
+    ) -> serde_json::Value {
         serde_json::json!({
             "model": model,
             "input": [
@@ -544,9 +816,120 @@ impl ApiKeyProviderService {
                     ]
                 }
             ],
-            "stream": true,
+            "stream": stream,
             "max_output_tokens": 64
         })
+    }
+
+    fn parse_openai_responses_content(body: &str) -> Result<String, String> {
+        let parsed: serde_json::Value =
+            serde_json::from_str(body).map_err(|e| format!("解析响应失败: {e} - {body}"))?;
+
+        if let Some(output_text) = parsed["output_text"].as_str() {
+            return Ok(output_text.to_string());
+        }
+
+        let mut content = String::new();
+        if let Some(output) = parsed["output"].as_array() {
+            for output_item in output {
+                if output_item["type"].as_str() != Some("message") {
+                    continue;
+                }
+
+                if let Some(content_items) = output_item["content"].as_array() {
+                    for item in content_items {
+                        let item_type = item["type"].as_str().unwrap_or_default();
+                        if matches!(item_type, "output_text" | "text") {
+                            if let Some(text) = item["text"].as_str() {
+                                content.push_str(text);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(content)
+    }
+
+    fn extract_json_error_message(body: &str) -> Option<String> {
+        let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+        let error = parsed.get("error")?;
+
+        if let Some(message) = error.get("message").and_then(|value| value.as_str()) {
+            return Some(message.to_string());
+        }
+
+        error.as_str().map(|value| value.to_string())
+    }
+
+    fn format_http_api_error(status: reqwest::StatusCode, body: &str) -> String {
+        match Self::extract_json_error_message(body) {
+            Some(message) if body.contains("insufficient_quota") => {
+                format!("API 返回错误: {status} - OpenAI 账户配额不足或未开通计费：{message}")
+            }
+            Some(message) => format!("API 返回错误: {status} - {message}"),
+            None => format!("API 返回错误: {status} - {body}"),
+        }
+    }
+
+    fn build_codex_responses_request(model: &str, prompt: &str) -> serde_json::Value {
+        Self::build_openai_responses_request(model, prompt, true)
+    }
+
+    async fn test_openai_responses_once(
+        &self,
+        api_key: &str,
+        api_host: &str,
+        model: &str,
+        prompt: &str,
+    ) -> Result<(String, String), String> {
+        use proxycast_providers::providers::codex::CodexProvider;
+
+        let url = CodexProvider::build_responses_url(api_host);
+        let request_body = Self::build_openai_responses_request(model, prompt, false);
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Content-Type", "application/json")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| format!("API 调用失败: {e}"))?;
+
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+
+        if status.is_success() {
+            let content = Self::parse_openai_responses_content(&body)?;
+            return Ok((content, body));
+        }
+
+        if status.as_u16() == 400 && body.contains("Stream must be set to true") {
+            let streaming_request = Self::build_openai_responses_request(model, prompt, true);
+            let resp2 = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .json(&streaming_request)
+                .send()
+                .await
+                .map_err(|e| format!("API 调用失败: {e}"))?;
+
+            let status2 = resp2.status();
+            let body2 = resp2.text().await.unwrap_or_default();
+            if !status2.is_success() {
+                return Err(Self::format_http_api_error(status2, &body2));
+            }
+
+            let content = Self::parse_codex_responses_sse_content(&body2);
+            return Ok((content, body2));
+        }
+
+        Err(Self::format_http_api_error(status, &body))
     }
 
     /// 测试 Codex /responses 端点（用于不支持 messages 参数的上游）
@@ -557,15 +940,9 @@ impl ApiKeyProviderService {
         model: &str,
         prompt: &str,
     ) -> Result<(String, String), String> {
-        // 构建 /responses 端点 URL
-        let base = api_host.trim_end_matches('/');
-        let url = if base.ends_with("/v1") {
-            format!("{base}/responses")
-        } else if base.ends_with("/openai") {
-            format!("{base}/v1/responses")
-        } else {
-            format!("{base}/v1/responses")
-        };
+        use proxycast_providers::providers::codex::CodexProvider;
+
+        let url = CodexProvider::build_responses_url(api_host);
 
         // Codex Responses 格式请求体（input 必须是列表）
         let request_body = Self::build_codex_responses_request(model, prompt);
@@ -584,7 +961,7 @@ impl ApiKeyProviderService {
         let body = resp.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            return Err(format!("API 返回错误: {status} - {body}"));
+            return Err(Self::format_http_api_error(status, &body));
         }
 
         // 解析 Codex SSE 响应
@@ -1788,6 +2165,22 @@ impl ApiKeyProviderService {
                 self.test_codex_responses_endpoint(&api_key, &provider.api_host, &test_model, "hi")
                     .await
                     .map(|_| vec![test_model])
+            }
+            provider_type if Self::uses_openai_responses_protocol(provider_type) => {
+                let test_model = Self::pick_test_model(
+                    model_name.clone(),
+                    &provider.custom_models,
+                    &fallback_models,
+                );
+
+                if let Some(test_model) = test_model {
+                    self.test_openai_responses_once(&api_key, &provider.api_host, &test_model, "hi")
+                        .await
+                        .map(|_| vec![test_model])
+                } else {
+                    self.test_openai_models_endpoint(&api_key, &provider.api_host)
+                        .await
+                }
             }
             _ => {
                 // OpenAI 兼容类型，优先使用 /models 端点

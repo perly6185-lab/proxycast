@@ -7,7 +7,7 @@ use crate::agent::aster_state::{AsterAgentState, SessionConfigBuilder};
 use crate::database::DbConnection;
 use aster::conversation::message::Message;
 use futures::StreamExt;
-use proxycast_agent::{convert_agent_event, TauriAgentEvent};
+use proxycast_agent::{convert_agent_event, TauriAgentEvent, WriteArtifactEventEmitter};
 use tauri::{AppHandle, Emitter};
 
 pub use proxycast_agent::session_store::{SessionDetail, SessionInfo};
@@ -56,6 +56,7 @@ impl AsterAgentWrapper {
         let stream_result = agent
             .reply(user_message, session_config, Some(cancel_token.clone()))
             .await;
+        let mut write_artifact_emitter = WriteArtifactEventEmitter::new(session_id.clone());
 
         match stream_result {
             Ok(mut stream) => {
@@ -63,7 +64,17 @@ impl AsterAgentWrapper {
                     match event_result {
                         Ok(agent_event) => {
                             let tauri_events = convert_agent_event(agent_event);
-                            for tauri_event in tauri_events {
+                            for mut tauri_event in tauri_events {
+                                let extra_events =
+                                    write_artifact_emitter.process_event(&mut tauri_event);
+                                for extra_event in &extra_events {
+                                    if let Err(error) = app.emit(&event_name, extra_event) {
+                                        tracing::error!(
+                                            "[AsterAgentWrapper] 发送补充事件失败: {}",
+                                            error
+                                        );
+                                    }
+                                }
                                 if let Err(error) = app.emit(&event_name, &tauri_event) {
                                     tracing::error!("[AsterAgentWrapper] 发送事件失败: {}", error);
                                 }

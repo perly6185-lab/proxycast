@@ -6,8 +6,9 @@
 
 use crate::agent::aster_state::{ProviderConfig, SessionConfigBuilder};
 use crate::agent::{
-    AsterAgentState, AsterAgentWrapper, HeartbeatServiceAdapter, ProxyCastScheduler, SessionDetail,
-    SessionInfo, SubAgentRole, TauriAgentEvent,
+    AsterAgentState, AsterAgentWrapper, HeartbeatServiceAdapter, ProxyCastScheduler,
+    QueueInsertResult, QueuedTurnSnapshot, QueuedTurnTask, SessionDetail, SessionInfo,
+    SubAgentRole, TauriAgentEvent,
 };
 use crate::commands::api_key_provider_cmd::ApiKeyProviderServiceState;
 use crate::commands::webview_cmd::{
@@ -15,6 +16,9 @@ use crate::commands::webview_cmd::{
 };
 use crate::config::{GlobalConfigManager, GlobalConfigManagerState};
 use crate::database::dao::agent::AgentDao;
+use crate::database::dao::agent_runtime_queue::{
+    AgentRuntimeQueuedTurnDao, NewAgentRuntimeQueuedTurnRecord,
+};
 use crate::database::DbConnection;
 use crate::mcp::{McpManagerState, McpServerConfig};
 use crate::services::agent_timeline_service::{
@@ -53,12 +57,13 @@ use futures::StreamExt;
 #[cfg(test)]
 use proxycast_agent::request_tool_policy::REQUEST_TOOL_POLICY_MARKER;
 use proxycast_agent::request_tool_policy::{
-    merge_system_prompt_with_request_tool_policy, resolve_request_tool_policy,
-    stream_reply_with_policy, ReplyAttemptError, RequestToolPolicy,
+    merge_system_prompt_with_request_tool_policy, resolve_request_tool_policy_with_mode,
+    stream_reply_with_policy, ReplyAttemptError, RequestToolPolicy, RequestToolPolicyMode,
 };
 use proxycast_agent::{
-    durable_memory_permission_pattern, is_virtual_memory_path, resolve_virtual_memory_path,
-    virtual_memory_relative_path, DURABLE_MEMORY_VIRTUAL_ROOT,
+    durable_memory_permission_pattern, is_virtual_memory_path, message_suggests_news_expansion,
+    resolve_virtual_memory_path, virtual_memory_relative_path, TauriRuntimeStatus,
+    DURABLE_MEMORY_VIRTUAL_ROOT,
 };
 use proxycast_services::api_key_provider_service::ApiKeyProviderService;
 use proxycast_services::mcp_service::McpService;
@@ -72,6 +77,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 const DEFAULT_BASH_TIMEOUT_SECS: u64 = 300;
 const MAX_BASH_TIMEOUT_SECS: u64 = 1800;
@@ -193,7 +199,7 @@ pub struct AsterAgentStatus {
 }
 
 /// Provider 配置请求
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigureProviderRequest {
     #[serde(default)]
     pub provider_id: Option<String>,
@@ -346,7 +352,7 @@ pub async fn aster_agent_reset(
 }
 
 /// 发送消息请求参数
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsterChatRequest {
     pub message: String,
     #[serde(alias = "sessionId")]
@@ -368,6 +374,9 @@ pub struct AsterChatRequest {
     /// 是否强制开启联网搜索工具策略
     #[serde(default, alias = "webSearch")]
     pub web_search: Option<bool>,
+    /// 联网搜索模式（disabled / allowed / required）
+    #[serde(default, alias = "searchMode")]
+    pub search_mode: Option<RequestToolPolicyMode>,
     /// 执行策略（react / code_orchestrated / auto）
     #[serde(default, alias = "executionStrategy")]
     pub execution_strategy: Option<AsterExecutionStrategy>,
@@ -380,9 +389,15 @@ pub struct AsterChatRequest {
     /// 请求级元数据（可选，用于 harness / 主题工作台状态对齐）
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+    /// 会话忙时是否进入后端队列
+    #[serde(default, alias = "queueIfBusy")]
+    pub queue_if_busy: Option<bool>,
+    /// 队列项 ID（由前端或后端生成）
+    #[serde(default, alias = "queuedTurnId")]
+    pub queued_turn_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTurnConfigSnapshot {
     #[serde(default, alias = "providerConfig")]
     pub provider_config: Option<ConfigureProviderRequest>,
@@ -390,6 +405,8 @@ pub struct AgentTurnConfigSnapshot {
     pub execution_strategy: Option<AsterExecutionStrategy>,
     #[serde(default, alias = "webSearch")]
     pub web_search: Option<bool>,
+    #[serde(default, alias = "searchMode")]
+    pub search_mode: Option<RequestToolPolicyMode>,
     #[serde(default, alias = "autoContinue")]
     pub auto_continue: Option<AutoContinuePayload>,
     #[serde(default, alias = "systemPrompt")]
@@ -398,7 +415,7 @@ pub struct AgentTurnConfigSnapshot {
     pub metadata: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRuntimeSubmitTurnRequest {
     pub message: String,
     #[serde(alias = "sessionId")]
@@ -414,6 +431,10 @@ pub struct AgentRuntimeSubmitTurnRequest {
     #[serde(default, alias = "turnId")]
     #[allow(dead_code)]
     pub turn_id: Option<String>,
+    #[serde(default, alias = "queueIfBusy")]
+    pub queue_if_busy: Option<bool>,
+    #[serde(default, alias = "queuedTurnId")]
+    pub queued_turn_id: Option<String>,
 }
 
 impl From<AgentRuntimeSubmitTurnRequest> for AsterChatRequest {
@@ -430,6 +451,7 @@ impl From<AgentRuntimeSubmitTurnRequest> for AsterChatRequest {
             project_id: None,
             workspace_id: request.workspace_id,
             web_search: turn_config.as_ref().and_then(|config| config.web_search),
+            search_mode: turn_config.as_ref().and_then(|config| config.search_mode),
             execution_strategy: turn_config
                 .as_ref()
                 .and_then(|config| config.execution_strategy),
@@ -440,6 +462,8 @@ impl From<AgentRuntimeSubmitTurnRequest> for AsterChatRequest {
                 .as_ref()
                 .and_then(|config| config.system_prompt.clone()),
             metadata: turn_config.and_then(|config| config.metadata),
+            queue_if_busy: request.queue_if_busy,
+            queued_turn_id: request.queued_turn_id,
         }
     }
 }
@@ -451,6 +475,46 @@ pub struct AgentRuntimeInterruptTurnRequest {
     #[serde(default, alias = "turnId")]
     #[allow(dead_code)]
     pub turn_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentRuntimeRemoveQueuedTurnRequest {
+    #[serde(alias = "sessionId")]
+    pub session_id: String,
+    #[serde(alias = "queuedTurnId")]
+    pub queued_turn_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRuntimeSessionDetail {
+    pub id: String,
+    pub name: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub thread_id: String,
+    pub messages: Vec<proxycast_agent::event_converter::TauriMessage>,
+    pub execution_strategy: Option<String>,
+    pub turns: Vec<proxycast_core::database::dao::agent_timeline::AgentThreadTurn>,
+    pub items: Vec<proxycast_core::database::dao::agent_timeline::AgentThreadItem>,
+    #[serde(default)]
+    pub queued_turns: Vec<QueuedTurnSnapshot>,
+}
+
+impl AgentRuntimeSessionDetail {
+    fn from_session_detail(detail: SessionDetail, queued_turns: Vec<QueuedTurnSnapshot>) -> Self {
+        Self {
+            id: detail.id,
+            name: detail.name,
+            created_at: detail.created_at,
+            updated_at: detail.updated_at,
+            thread_id: detail.thread_id,
+            messages: detail.messages,
+            execution_strategy: detail.execution_strategy,
+            turns: detail.turns,
+            items: detail.items,
+            queued_turns,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -639,6 +703,13 @@ impl ChatRunObservation {
                     }
                 }
             }
+            TauriAgentEvent::ArtifactSnapshot { artifact } => {
+                if let Some(path) =
+                    normalize_metadata_path(artifact.file_path.as_str(), workspace_root)
+                {
+                    self.record_artifact_path(path, request_metadata);
+                }
+            }
             _ => {}
         }
     }
@@ -800,6 +871,16 @@ fn extract_harness_string(
         .map(str::to_string)
 }
 
+fn extract_harness_bool(
+    request_metadata: Option<&serde_json::Value>,
+    keys: &[&str],
+) -> Option<bool> {
+    let harness = extract_harness_object(request_metadata)?;
+    keys.iter()
+        .filter_map(|key| harness.get(*key))
+        .find_map(serde_json::Value::as_bool)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeChatMode {
     Agent,
@@ -824,6 +905,282 @@ fn resolve_runtime_chat_mode(request_metadata: Option<&serde_json::Value>) -> Ru
 
 fn default_web_search_enabled_for_chat_mode(_chat_mode: RuntimeChatMode) -> bool {
     false
+}
+
+fn execution_strategy_label(strategy: AsterExecutionStrategy) -> &'static str {
+    match strategy {
+        AsterExecutionStrategy::React => "对话执行优先",
+        AsterExecutionStrategy::CodeOrchestrated => "代码编排执行",
+        AsterExecutionStrategy::Auto => "自动路由执行",
+    }
+}
+
+fn model_supports_reasoning(model_name: Option<&str>) -> bool {
+    let Some(model_name) = model_name.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let normalized = model_name.to_ascii_lowercase();
+    normalized.contains("thinking")
+        || normalized.contains("reason")
+        || normalized.contains("r1")
+        || normalized.contains("o1")
+        || normalized.contains("o3")
+        || normalized.contains("o4")
+        || normalized.contains("gpt-5")
+        || normalized.contains("2.5")
+}
+
+fn message_suggests_live_search(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    [
+        "搜索",
+        "搜一下",
+        "查一下",
+        "查一查",
+        "检索",
+        "上网查",
+        "联网查",
+        "最新",
+        "今天",
+        "刚刚",
+        "实时",
+        "新闻",
+        "股价",
+        "汇率",
+        "天气",
+        "政策",
+        "法规",
+        "版本",
+        "价格",
+        "热搜",
+        "上线",
+        "发布",
+        "search",
+        "look up",
+        "google",
+        "browse",
+        "now",
+        "today",
+        "latest",
+        "recent",
+        "price",
+        "version",
+        "news",
+        "weather",
+    ]
+    .iter()
+    .any(|keyword| normalized.contains(keyword))
+}
+
+fn message_suggests_planning(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    [
+        "计划",
+        "规划",
+        "roadmap",
+        "拆解",
+        "分步骤",
+        "执行方案",
+        "实施方案",
+        "阶段",
+        "里程碑",
+        "todo",
+    ]
+    .iter()
+    .any(|keyword| normalized.contains(keyword))
+}
+
+fn message_suggests_task(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    [
+        "后台",
+        "稍后",
+        "异步",
+        "排队",
+        "持续生成",
+        "长时间",
+        "继续跑",
+        "持续跑",
+    ]
+    .iter()
+    .any(|keyword| normalized.contains(keyword))
+}
+
+fn message_suggests_subagent(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    [
+        "并行",
+        "多代理",
+        "分工",
+        "分别分析",
+        "从多个角度",
+        "parallel",
+        "subagent",
+        "delegate",
+    ]
+    .iter()
+    .any(|keyword| normalized.contains(keyword))
+}
+
+fn build_turn_runtime_statuses(
+    request: &AsterChatRequest,
+    effective_strategy: AsterExecutionStrategy,
+    request_tool_policy: &RequestToolPolicy,
+    model_name: Option<&str>,
+) -> (TauriRuntimeStatus, TauriRuntimeStatus) {
+    let thinking_enabled = extract_harness_bool(
+        request.metadata.as_ref(),
+        &["thinking_enabled", "thinkingEnabled"],
+    )
+    .unwrap_or(false);
+    let task_enabled = extract_harness_bool(
+        request.metadata.as_ref(),
+        &["task_mode_enabled", "taskModeEnabled"],
+    )
+    .unwrap_or(false);
+    let subagent_enabled = extract_harness_bool(
+        request.metadata.as_ref(),
+        &["subagent_mode_enabled", "subagentModeEnabled"],
+    )
+    .unwrap_or(false);
+    let reasoning_supported = model_supports_reasoning(model_name);
+    let news_expansion_needed = request_tool_policy.allows_web_search()
+        && message_suggests_news_expansion(&request.message);
+
+    let initial_checkpoints = vec![
+        execution_strategy_label(effective_strategy).to_string(),
+        if request_tool_policy.requires_web_search() {
+            "本回合必须先联网核实".to_string()
+        } else if news_expansion_needed {
+            "已识别新闻综述类输入，将先并发 WebSearch 扩搜".to_string()
+        } else if request_tool_policy.allows_web_search() {
+            "联网搜索仅作为候选能力待命".to_string()
+        } else {
+            "默认直接回答优先".to_string()
+        },
+        if thinking_enabled && reasoning_supported {
+            "模型支持深度思考，先进入推理判定".to_string()
+        } else if thinking_enabled {
+            "当前模型不支持显式 thinking，改走轻量意图理解".to_string()
+        } else {
+            "先做轻量意图理解".to_string()
+        },
+        if task_enabled {
+            "后台任务能力已待命".to_string()
+        } else {
+            "默认不升级后台任务".to_string()
+        },
+        if subagent_enabled {
+            "多代理能力已待命".to_string()
+        } else {
+            "默认由单 Agent 先判断".to_string()
+        },
+    ];
+
+    let decided = if request_tool_policy.requires_web_search() {
+        (
+            "已决定：先联网检索".to_string(),
+            "当前回合已被明确指定为先搜索后答复，会先完成联网核实再继续生成。".to_string(),
+            vec![
+                "用户明确要求联网搜索".to_string(),
+                "搜索结果返回后再形成最终答复".to_string(),
+            ],
+        )
+    } else if news_expansion_needed {
+        (
+            "已决定：先联网扩搜".to_string(),
+            "当前输入属于新闻/最新动态综述类请求，会先并发执行多组 WebSearch，再基于结果做主题聚类与交叉验证。"
+                .to_string(),
+            vec![
+                "统一使用 WebSearch 执行多组扩搜".to_string(),
+                "完成来源整合后再组织最终答复".to_string(),
+            ],
+        )
+    } else if subagent_enabled && message_suggests_subagent(&request.message) {
+        (
+            "已决定：优先拆分为多代理".to_string(),
+            "用户输入更适合并行分工处理，先按多代理路径组织执行。".to_string(),
+            vec![
+                "检测到并行/多角度需求".to_string(),
+                "主线程先承担协调职责".to_string(),
+            ],
+        )
+    } else if task_enabled && message_suggests_task(&request.message) {
+        (
+            "已决定：升级为后台任务".to_string(),
+            "用户输入更接近耗时或异步推进场景，优先走后台任务链路。".to_string(),
+            vec![
+                "检测到排队/持续执行诉求".to_string(),
+                "先建立任务，再回传过程与产出".to_string(),
+            ],
+        )
+    } else if thinking_enabled && reasoning_supported {
+        (
+            "已决定：先深度思考".to_string(),
+            "当前模型支持 reasoning，先做更充分的意图理解与方案判断，再决定是否调用搜索或工具。"
+                .to_string(),
+            vec![
+                "thinking 已开启".to_string(),
+                "搜索与工具保持候选状态，不默认触发".to_string(),
+            ],
+        )
+    } else if thinking_enabled {
+        (
+            "已决定：轻量理解后回答".to_string(),
+            "当前模型不支持显式 reasoning，先做轻量意图理解，再决定是否需要搜索或其他能力。"
+                .to_string(),
+            vec![
+                "thinking 已开启".to_string(),
+                "当前模型回退为轻量推理".to_string(),
+            ],
+        )
+    } else if request_tool_policy.allows_web_search()
+        && message_suggests_live_search(&request.message)
+    {
+        (
+            "已决定：先联网核实".to_string(),
+            "问题包含明显时效性或实时性特征，先搜索核实再回答更稳妥。".to_string(),
+            vec![
+                "已检测到最新/实时信息需求".to_string(),
+                "搜索完成后继续组织答复".to_string(),
+            ],
+        )
+    } else if message_suggests_planning(&request.message) {
+        (
+            "已决定：先规划再输出".to_string(),
+            "当前请求更像计划或方案拆解，会先整理执行路径和关键步骤。".to_string(),
+            vec![
+                "检测到计划/拆解需求".to_string(),
+                "优先输出结构化行动路径".to_string(),
+            ],
+        )
+    } else {
+        (
+            "已决定：直接回答优先".to_string(),
+            "当前请求无需默认升级为搜索或任务，先直接给出结果，必要时再调用工具。".to_string(),
+            vec![
+                "默认保持单回合直接回答".to_string(),
+                "只有证据不足或时效性要求出现时才升级".to_string(),
+            ],
+        )
+    };
+
+    (
+        TauriRuntimeStatus {
+            phase: "preparing".to_string(),
+            title: "正在理解意图".to_string(),
+            detail:
+                "正在判断当前回合应该直接回答、深度思考、规划、联网核实，还是升级为任务/多代理。"
+                    .to_string(),
+            checkpoints: initial_checkpoints,
+        },
+        TauriRuntimeStatus {
+            phase: "routing".to_string(),
+            title: decided.0,
+            detail: decided.1,
+            checkpoints: decided.2,
+        },
+    )
 }
 
 fn extend_map_with_harness_fields(
@@ -892,6 +1249,10 @@ fn build_chat_run_metadata_base(
     metadata.insert(
         "web_search_enabled".to_string(),
         serde_json::json!(request_tool_policy.effective_web_search),
+    );
+    metadata.insert(
+        "web_search_mode".to_string(),
+        serde_json::json!(request_tool_policy.search_mode.as_str()),
     );
     metadata.insert(
         "auto_continue_enabled".to_string(),
@@ -4514,23 +4875,22 @@ async fn apply_workspace_sandbox_permissions(
 
 /// 图片输入
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageInput {
     pub data: String,
     pub media_type: String,
 }
 
-/// 发送消息并获取流式响应
-#[tauri::command]
-pub async fn aster_agent_chat_stream(
-    app: AppHandle,
-    state: State<'_, AsterAgentState>,
-    db: State<'_, DbConnection>,
-    api_key_provider_service: State<'_, ApiKeyProviderServiceState>,
-    logs: State<'_, LogState>,
-    config_manager: State<'_, GlobalConfigManagerState>,
-    mcp_manager: State<'_, McpManagerState>,
-    heartbeat_state: State<'_, HeartbeatServiceState>,
+/// 执行单个 turn 的流式响应
+async fn execute_aster_chat_request(
+    app: &AppHandle,
+    state: &AsterAgentState,
+    db: &DbConnection,
+    api_key_provider_service: &ApiKeyProviderServiceState,
+    logs: &LogState,
+    config_manager: &GlobalConfigManagerState,
+    mcp_manager: &McpManagerState,
+    heartbeat_state: &HeartbeatServiceState,
     request: AsterChatRequest,
 ) -> Result<(), String> {
     tracing::info!(
@@ -4544,7 +4904,7 @@ pub async fn aster_agent_chat_stream(
     tracing::warn!("[AsterAgent] Agent 初始化状态: {}", is_init);
     if !is_init {
         tracing::warn!("[AsterAgent] Agent 未初始化，开始初始化...");
-        state.init_agent_with_db(&db).await?;
+        state.init_agent_with_db(db).await?;
         tracing::warn!("[AsterAgent] Agent 初始化完成");
     } else {
         tracing::warn!("[AsterAgent] Agent 已初始化，检查 session_store...");
@@ -4556,7 +4916,7 @@ pub async fn aster_agent_chat_stream(
             tracing::warn!("[AsterAgent] session_store 存在: {}", has_store);
         }
     }
-    ensure_social_image_tool_registered(state.inner(), config_manager.inner()).await?;
+    ensure_social_image_tool_registered(state, config_manager).await?;
 
     // 直接使用前端传递的 session_id
     // ProxyCastSessionStore 会在 add_message 时自动创建不存在的 session
@@ -4572,7 +4932,7 @@ pub async fn aster_agent_chat_stream(
         return Err(message);
     }
 
-    let manager = WorkspaceManager::new(db.inner().clone());
+    let manager = WorkspaceManager::new(db.clone());
     let workspace = match manager.get(&workspace_id) {
         Ok(Some(workspace)) => workspace,
         Ok(None) => {
@@ -4665,7 +5025,7 @@ pub async fn aster_agent_chat_stream(
     }
 
     // 启动并注入 MCP extensions 到 Aster Agent
-    let (_start_ok, start_fail) = ensure_proxycast_mcp_servers_running(&db, &mcp_manager).await;
+    let (_start_ok, start_fail) = ensure_proxycast_mcp_servers_running(db, mcp_manager).await;
     if start_fail > 0 {
         tracing::warn!(
             "[AsterAgent] 部分 MCP server 自动启动失败 ({} 失败)，后续可用工具可能不完整",
@@ -4673,7 +5033,7 @@ pub async fn aster_agent_chat_stream(
         );
     }
 
-    let (_mcp_ok, mcp_fail) = inject_mcp_extensions(&state, &mcp_manager).await;
+    let (_mcp_ok, mcp_fail) = inject_mcp_extensions(state, mcp_manager).await;
     if mcp_fail > 0 {
         tracing::warn!(
             "[AsterAgent] 部分 MCP extension 注入失败 ({} 失败)，Agent 可能无法使用某些 MCP 工具",
@@ -4684,16 +5044,23 @@ pub async fn aster_agent_chat_stream(
     let runtime_chat_mode = resolve_runtime_chat_mode(request.metadata.as_ref());
     let mode_default_web_search = default_web_search_enabled_for_chat_mode(runtime_chat_mode);
 
-    // 构建请求级工具策略：默认不强制联网搜索，仅在用户显式开启开关时把搜索升级为必需步骤。
-    let request_tool_policy =
-        resolve_request_tool_policy(request.web_search, mode_default_web_search);
+    // 构建请求级工具策略：
+    // - web_search=true 默认只表示“允许搜索”
+    // - 仅显式 search_mode=required 时才强制预搜索
+    let request_tool_policy = resolve_request_tool_policy_with_mode(
+        request.web_search,
+        request.search_mode,
+        mode_default_web_search,
+    );
     tracing::info!(
-        "[AsterAgent][WebSearchGuard] session={}, chat_mode={:?}, request_web_search={:?}, mode_default_web_search={}, effective_web_search={}",
+        "[AsterAgent][WebSearchGuard] session={}, chat_mode={:?}, request_web_search={:?}, request_search_mode={:?}, mode_default_web_search={}, effective_web_search={}, search_mode={}",
         session_id,
         runtime_chat_mode,
         request.web_search,
+        request.search_mode,
         mode_default_web_search,
-        request_tool_policy.effective_web_search
+        request_tool_policy.effective_web_search,
+        request_tool_policy.search_mode.as_str()
     );
 
     // 构建 system_prompt：优先使用项目上下文，其次使用 session 的 system_prompt
@@ -4709,7 +5076,7 @@ pub async fn aster_agent_chat_stream(
 
         // 1. 如果提供了 project_id，构建项目上下文
         let project_prompt = if let Some(ref project_id) = request.project_id {
-            match AsterAgentState::build_project_system_prompt(&db, project_id) {
+            match AsterAgentState::build_project_system_prompt(db, project_id) {
                 Ok(prompt) => {
                     tracing::info!(
                         "[AsterAgent] 已加载项目上下文: project_id={}, prompt_len={}",
@@ -4832,7 +5199,7 @@ pub async fn aster_agent_chat_stream(
         };
         // 如果前端提供了 api_key，直接使用；否则从凭证池选择凭证
         if provider_config.api_key.is_some() {
-            state.configure_provider(config, session_id, &db).await?;
+            state.configure_provider(config, session_id, db).await?;
         } else {
             // 没有 api_key，使用凭证池（优先 provider_id，其次 provider_name）
             let provider_selector = provider_config
@@ -4841,7 +5208,7 @@ pub async fn aster_agent_chat_stream(
                 .unwrap_or(&provider_config.provider_name);
             state
                 .configure_provider_from_pool(
-                    &db,
+                    db,
                     provider_selector,
                     &provider_config.model_name,
                     session_id,
@@ -4856,12 +5223,12 @@ pub async fn aster_agent_chat_stream(
     }
 
     let sandbox_outcome = apply_workspace_sandbox_permissions(
-        &state,
-        config_manager.inner(),
-        db.inner(),
-        api_key_provider_service.inner(),
-        heartbeat_state.inner(),
-        &app,
+        state,
+        config_manager,
+        db,
+        api_key_provider_service,
+        heartbeat_state,
+        app,
         &workspace_root,
         requested_strategy,
     )
@@ -4903,7 +5270,7 @@ pub async fn aster_agent_chat_stream(
         }
     }
 
-    let tracker = ExecutionTracker::new(db.inner().clone());
+    let tracker = ExecutionTracker::new(db.clone());
     let cancel_token = state.create_cancel_token(session_id).await;
     let auto_continue_metadata = auto_continue_config.clone();
     let request_metadata = request.metadata.clone();
@@ -4919,7 +5286,7 @@ pub async fn aster_agent_chat_stream(
     let run_observation_for_finalize = run_observation.clone();
     let run_start_metadata_for_finalize = run_start_metadata.clone();
     let timeline_recorder = Arc::new(Mutex::new(AgentTimelineRecorder::create(
-        db.inner().clone(),
+        db.clone(),
         session_id.to_string(),
         request.message.clone(),
     )?));
@@ -4929,7 +5296,32 @@ pub async fn aster_agent_chat_stream(
             Ok(guard) => guard,
             Err(error) => error.into_inner(),
         };
-        recorder.emit_start(&app, &request.event_name)?;
+        recorder.emit_start(app, &request.event_name)?;
+    }
+
+    let (initial_runtime_status, decided_runtime_status) = build_turn_runtime_statuses(
+        &request,
+        effective_strategy,
+        &request_tool_policy,
+        request
+            .provider_config
+            .as_ref()
+            .map(|config| config.model_name.as_str()),
+    );
+    for status in [initial_runtime_status, decided_runtime_status] {
+        let event = TauriAgentEvent::RuntimeStatus { status };
+        if let Err(error) = app.emit(&request.event_name, &event) {
+            tracing::warn!("[AsterAgent] 发送 runtime_status 失败: {}", error);
+        }
+        let mut recorder = match timeline_recorder.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        if let Err(error) =
+            recorder.record_legacy_event(app, &request.event_name, &event, workspace_root.as_str())
+        {
+            tracing::warn!("[AsterAgent] 记录 runtime_status 失败: {}", error);
+        }
     }
 
     // 获取 Agent Arc 并保持 guard 在整个流处理期间存活
@@ -4963,7 +5355,7 @@ pub async fn aster_agent_chat_stream(
 
                 let primary_result = stream_reply_once(
                     agent,
-                    &app,
+                    app,
                     &request.event_name,
                     &request.message,
                     Some(Path::new(&workspace_root)),
@@ -5137,7 +5529,7 @@ pub async fn aster_agent_chat_stream(
                     Ok(guard) => guard,
                     Err(error) => error.into_inner(),
                 };
-                if let Err(error) = recorder.complete_turn_success(&app, &request.event_name) {
+                if let Err(error) = recorder.complete_turn_success(app, &request.event_name) {
                     tracing::warn!("[AsterAgent] 完成 turn 时间线失败（已降级继续）: {}", error);
                 }
             }
@@ -5152,7 +5544,7 @@ pub async fn aster_agent_chat_stream(
                     Ok(guard) => guard,
                     Err(error) => error.into_inner(),
                 };
-                if let Err(timeline_error) = recorder.fail_turn(&app, &request.event_name, &e) {
+                if let Err(timeline_error) = recorder.fail_turn(app, &request.event_name, &e) {
                     tracing::warn!(
                         "[AsterAgent] 记录失败 turn 时间线失败（已降级继续）: {}",
                         timeline_error
@@ -5172,6 +5564,420 @@ pub async fn aster_agent_chat_stream(
     state.remove_cancel_token(session_id).await;
 
     Ok(())
+}
+
+/// 发送消息并获取流式响应
+#[tauri::command]
+pub async fn aster_agent_chat_stream(
+    app: AppHandle,
+    state: State<'_, AsterAgentState>,
+    db: State<'_, DbConnection>,
+    api_key_provider_service: State<'_, ApiKeyProviderServiceState>,
+    logs: State<'_, LogState>,
+    config_manager: State<'_, GlobalConfigManagerState>,
+    mcp_manager: State<'_, McpManagerState>,
+    heartbeat_state: State<'_, HeartbeatServiceState>,
+    request: AsterChatRequest,
+) -> Result<(), String> {
+    execute_aster_chat_request(
+        &app,
+        state.inner(),
+        db.inner(),
+        api_key_provider_service.inner(),
+        logs.inner(),
+        config_manager.inner(),
+        mcp_manager.inner(),
+        heartbeat_state.inner(),
+        request,
+    )
+    .await
+}
+
+struct AgentRuntimeExecutionContext {
+    app: AppHandle,
+    state: AsterAgentState,
+    db: DbConnection,
+    api_key_provider_service: ApiKeyProviderServiceState,
+    logs: LogState,
+    config_manager: GlobalConfigManagerState,
+    mcp_manager: McpManagerState,
+    heartbeat_state: HeartbeatServiceState,
+}
+
+impl AgentRuntimeExecutionContext {
+    fn from_states(
+        app: AppHandle,
+        state: &AsterAgentState,
+        db: &DbConnection,
+        api_key_provider_service: &ApiKeyProviderServiceState,
+        logs: &LogState,
+        config_manager: &GlobalConfigManagerState,
+        mcp_manager: &McpManagerState,
+        heartbeat_state: &HeartbeatServiceState,
+    ) -> Self {
+        Self {
+            app,
+            state: state.clone(),
+            db: db.clone(),
+            api_key_provider_service: ApiKeyProviderServiceState(
+                api_key_provider_service.0.clone(),
+            ),
+            logs: logs.clone(),
+            config_manager: GlobalConfigManagerState(config_manager.0.clone()),
+            mcp_manager: mcp_manager.clone(),
+            heartbeat_state: heartbeat_state.clone(),
+        }
+    }
+}
+
+impl Clone for AgentRuntimeExecutionContext {
+    fn clone(&self) -> Self {
+        Self {
+            app: self.app.clone(),
+            state: self.state.clone(),
+            db: self.db.clone(),
+            api_key_provider_service: ApiKeyProviderServiceState(
+                self.api_key_provider_service.0.clone(),
+            ),
+            logs: self.logs.clone(),
+            config_manager: GlobalConfigManagerState(self.config_manager.0.clone()),
+            mcp_manager: self.mcp_manager.clone(),
+            heartbeat_state: self.heartbeat_state.clone(),
+        }
+    }
+}
+
+fn build_queued_turn_preview(message: &str) -> String {
+    let compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return "空白输入".to_string();
+    }
+
+    let preview = compact.chars().take(80).collect::<String>();
+    if compact.chars().count() > 80 {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
+fn build_queued_turn_task(
+    mut request: AsterChatRequest,
+) -> Result<QueuedTurnTask<serde_json::Value>, String> {
+    let queued_turn_id = request
+        .queued_turn_id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    request.queued_turn_id = Some(queued_turn_id.clone());
+
+    let image_count = request
+        .images
+        .as_ref()
+        .map(|images| images.len())
+        .unwrap_or(0);
+    let payload =
+        serde_json::to_value(&request).map_err(|e| format!("序列化排队 turn 失败: {e}"))?;
+
+    Ok(QueuedTurnTask {
+        queued_turn_id,
+        session_id: request.session_id.clone(),
+        event_name: request.event_name.clone(),
+        message_preview: build_queued_turn_preview(&request.message),
+        message_text: request.message.clone(),
+        created_at: chrono::Utc::now().timestamp_millis(),
+        image_count,
+        payload,
+    })
+}
+
+fn deserialize_queued_turn_request(payload: serde_json::Value) -> Result<AsterChatRequest, String> {
+    serde_json::from_value(payload).map_err(|e| format!("反序列化排队 turn 失败: {e}"))
+}
+
+fn persist_runtime_queued_turn(
+    db: &DbConnection,
+    task: &QueuedTurnTask<serde_json::Value>,
+) -> Result<(), String> {
+    let payload_json = serde_json::to_string(&task.payload)
+        .map_err(|e| format!("序列化排队 turn 持久化 payload 失败: {e}"))?;
+    let conn = crate::database::lock_db(db)?;
+    AgentRuntimeQueuedTurnDao::insert(
+        &conn,
+        &NewAgentRuntimeQueuedTurnRecord {
+            queued_turn_id: task.queued_turn_id.clone(),
+            session_id: task.session_id.clone(),
+            event_name: task.event_name.clone(),
+            message_preview: task.message_preview.clone(),
+            message_text: task.message_text.clone(),
+            payload_json,
+            image_count: task.image_count,
+            created_at: task.created_at,
+        },
+    )
+    .map_err(|e| format!("持久化排队 turn 失败: {e}"))?;
+    Ok(())
+}
+
+fn remove_persisted_runtime_queued_turn(
+    db: &DbConnection,
+    queued_turn_id: &str,
+) -> Result<bool, String> {
+    let conn = crate::database::lock_db(db)?;
+    AgentRuntimeQueuedTurnDao::remove(&conn, queued_turn_id)
+        .map_err(|e| format!("删除持久化排队 turn 失败: {e}"))
+}
+
+fn list_persisted_runtime_queue_session_ids(db: &DbConnection) -> Result<Vec<String>, String> {
+    let conn = crate::database::lock_db(db)?;
+    AgentRuntimeQueuedTurnDao::list_distinct_session_ids(&conn)
+        .map_err(|e| format!("读取排队会话列表失败: {e}"))
+}
+
+fn load_persisted_runtime_queue_tasks(
+    db: &DbConnection,
+    session_id: &str,
+) -> Result<Vec<QueuedTurnTask<serde_json::Value>>, String> {
+    let conn = crate::database::lock_db(db)?;
+    let records = AgentRuntimeQueuedTurnDao::list_by_session(&conn, session_id)
+        .map_err(|e| format!("读取持久化排队 turn 失败: {e}"))?;
+
+    let mut tasks = Vec::with_capacity(records.len());
+    let mut invalid_ids = Vec::new();
+    for record in records {
+        match serde_json::from_str::<serde_json::Value>(&record.payload_json) {
+            Ok(payload) => tasks.push(QueuedTurnTask {
+                queued_turn_id: record.queued_turn_id,
+                session_id: record.session_id,
+                event_name: record.event_name,
+                message_preview: record.message_preview,
+                message_text: record.message_text,
+                created_at: record.created_at,
+                image_count: record.image_count,
+                payload,
+            }),
+            Err(error) => {
+                tracing::warn!(
+                    "[AsterAgent][Queue] 跳过损坏的持久化排队 turn: session_id={}, queued_turn_id={}, error={}",
+                    session_id,
+                    record.queued_turn_id,
+                    error
+                );
+                invalid_ids.push(record.queued_turn_id);
+            }
+        }
+    }
+
+    for queued_turn_id in invalid_ids {
+        if let Err(error) = AgentRuntimeQueuedTurnDao::remove(&conn, &queued_turn_id) {
+            tracing::warn!(
+                "[AsterAgent][Queue] 删除损坏的持久化排队 turn 失败: queued_turn_id={}, error={}",
+                queued_turn_id,
+                error
+            );
+        }
+    }
+
+    Ok(tasks)
+}
+
+fn ensure_runtime_queue_loaded(
+    state: &AsterAgentState,
+    db: &DbConnection,
+    session_id: &str,
+) -> Result<(), String> {
+    if state.turn_queue().has_session_state(session_id) {
+        return Ok(());
+    }
+
+    let tasks = load_persisted_runtime_queue_tasks(db, session_id)?;
+    if tasks.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!(
+        "[AsterAgent][Queue] 从持久化存储恢复会话排队: session_id={}, count={}",
+        session_id,
+        tasks.len()
+    );
+    state.turn_queue().restore_pending(session_id, tasks);
+    Ok(())
+}
+
+fn emit_runtime_queue_event(app: &AppHandle, event_name: &str, event: &TauriAgentEvent) {
+    if let Err(error) = app.emit(event_name, event) {
+        tracing::warn!(
+            "[AsterAgent][Queue] 发送队列事件失败: event_name={}, error={}",
+            event_name,
+            error
+        );
+    }
+}
+
+fn schedule_next_runtime_turn(context: AgentRuntimeExecutionContext, session_id: String) {
+    let queue = context.state.turn_queue();
+
+    loop {
+        let Some(next_task) = queue.finish_and_take_next(&session_id) else {
+            return;
+        };
+
+        if let Err(error) =
+            remove_persisted_runtime_queued_turn(&context.db, &next_task.queued_turn_id)
+        {
+            tracing::warn!(
+                "[AsterAgent][Queue] 删除已启动的持久化排队 turn 失败: queued_turn_id={}, error={}",
+                next_task.queued_turn_id,
+                error
+            );
+        }
+
+        emit_runtime_queue_event(
+            &context.app,
+            &next_task.event_name,
+            &TauriAgentEvent::QueueStarted {
+                session_id: session_id.clone(),
+                queued_turn_id: next_task.queued_turn_id.clone(),
+            },
+        );
+
+        let next_request = match deserialize_queued_turn_request(next_task.payload) {
+            Ok(request) => request,
+            Err(error) => {
+                emit_runtime_queue_event(
+                    &context.app,
+                    &next_task.event_name,
+                    &TauriAgentEvent::Error { message: error },
+                );
+                continue;
+            }
+        };
+
+        tokio::spawn(async move {
+            if let Err(error) =
+                execute_runtime_turn_and_continue_queue(context.clone(), next_request).await
+            {
+                tracing::warn!("[AsterAgent][Queue] 队列任务执行失败: {}", error);
+            }
+        });
+        return;
+    }
+}
+
+async fn execute_runtime_turn_and_continue_queue(
+    context: AgentRuntimeExecutionContext,
+    request: AsterChatRequest,
+) -> Result<(), String> {
+    let session_id = request.session_id.clone();
+    let result = execute_aster_chat_request(
+        &context.app,
+        &context.state,
+        &context.db,
+        &context.api_key_provider_service,
+        &context.logs,
+        &context.config_manager,
+        &context.mcp_manager,
+        &context.heartbeat_state,
+        request,
+    )
+    .await;
+
+    schedule_next_runtime_turn(context, session_id);
+    result
+}
+
+fn resume_runtime_queue_if_needed(
+    context: AgentRuntimeExecutionContext,
+    session_id: String,
+) -> Result<bool, String> {
+    ensure_runtime_queue_loaded(&context.state, &context.db, &session_id)?;
+
+    if context.state.turn_queue().has_active(&session_id) {
+        return Ok(false);
+    }
+
+    if context.state.turn_queue().snapshot(&session_id).is_empty() {
+        return Ok(false);
+    }
+
+    schedule_next_runtime_turn(context, session_id);
+    Ok(true)
+}
+
+fn clear_pending_runtime_queue(
+    app: &AppHandle,
+    state: &AsterAgentState,
+    db: &DbConnection,
+    session_id: &str,
+) -> Vec<QueuedTurnTask<serde_json::Value>> {
+    let cleared = state.turn_queue().clear_pending(session_id);
+    if cleared.is_empty() {
+        return cleared;
+    }
+
+    let queued_turn_ids = cleared
+        .iter()
+        .map(|task| task.queued_turn_id.clone())
+        .collect::<Vec<_>>();
+    for queued_turn_id in &queued_turn_ids {
+        if let Err(error) = remove_persisted_runtime_queued_turn(db, queued_turn_id) {
+            tracing::warn!(
+                "[AsterAgent][Queue] 删除已清空的持久化排队 turn 失败: queued_turn_id={}, error={}",
+                queued_turn_id,
+                error
+            );
+        }
+    }
+    for task in &cleared {
+        emit_runtime_queue_event(
+            app,
+            &task.event_name,
+            &TauriAgentEvent::QueueCleared {
+                session_id: session_id.to_string(),
+                queued_turn_ids: queued_turn_ids.clone(),
+            },
+        );
+    }
+
+    cleared
+}
+
+pub fn resume_persisted_runtime_queues_on_startup(
+    app: AppHandle,
+    state: &AsterAgentState,
+    db: &DbConnection,
+    api_key_provider_service: &ApiKeyProviderServiceState,
+    logs: &LogState,
+    config_manager: &GlobalConfigManagerState,
+    mcp_manager: &McpManagerState,
+    heartbeat_state: &HeartbeatServiceState,
+) -> Result<usize, String> {
+    let session_ids = list_persisted_runtime_queue_session_ids(db)?;
+    if session_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut resumed = 0usize;
+    for session_id in session_ids {
+        let context = AgentRuntimeExecutionContext::from_states(
+            app.clone(),
+            state,
+            db,
+            api_key_provider_service,
+            logs,
+            config_manager,
+            mcp_manager,
+            heartbeat_state,
+        );
+        if resume_runtime_queue_if_needed(context, session_id.clone())? {
+            resumed += 1;
+            tracing::info!(
+                "[AsterAgent][Queue] 启动阶段已恢复会话排队执行: session_id={}",
+                session_id
+            );
+        }
+    }
+
+    Ok(resumed)
 }
 
 /// 停止当前会话
@@ -5197,27 +6003,68 @@ pub async fn agent_runtime_submit_turn(
     heartbeat_state: State<'_, HeartbeatServiceState>,
     request: AgentRuntimeSubmitTurnRequest,
 ) -> Result<(), String> {
-    aster_agent_chat_stream(
+    let runtime_request: AsterChatRequest = request.into();
+    let queue_if_busy = runtime_request.queue_if_busy.unwrap_or(false);
+    let queued_task = build_queued_turn_task(runtime_request)?;
+    let session_id = queued_task.session_id.clone();
+    ensure_runtime_queue_loaded(state.inner(), db.inner(), &session_id)?;
+    let context = AgentRuntimeExecutionContext::from_states(
         app,
-        state,
-        db,
-        api_key_provider_service,
-        logs,
-        config_manager,
-        mcp_manager,
-        heartbeat_state,
-        request.into(),
-    )
-    .await
+        state.inner(),
+        db.inner(),
+        api_key_provider_service.inner(),
+        logs.inner(),
+        config_manager.inner(),
+        mcp_manager.inner(),
+        heartbeat_state.inner(),
+    );
+
+    let _ = resume_runtime_queue_if_needed(context.clone(), session_id.clone())?;
+
+    if !queue_if_busy && state.inner().turn_queue().has_active(&session_id) {
+        return Err("当前会话仍在生成，无法立即开始执行".to_string());
+    }
+
+    match state
+        .inner()
+        .turn_queue()
+        .start_or_enqueue(queued_task.clone())
+    {
+        QueueInsertResult::StartNow(task) => {
+            let request = deserialize_queued_turn_request(task.payload)?;
+            execute_runtime_turn_and_continue_queue(context, request).await
+        }
+        QueueInsertResult::Enqueued {
+            event_name,
+            snapshot,
+        } => {
+            persist_runtime_queued_turn(db.inner(), &queued_task)?;
+            emit_runtime_queue_event(
+                &context.app,
+                &event_name,
+                &TauriAgentEvent::QueueAdded {
+                    session_id,
+                    queued_turn: snapshot,
+                },
+            );
+            Ok(())
+        }
+    }
 }
 
 /// 统一运行时：中断当前 turn。
 #[tauri::command]
 pub async fn agent_runtime_interrupt_turn(
+    app: AppHandle,
     state: State<'_, AsterAgentState>,
+    db: State<'_, DbConnection>,
     request: AgentRuntimeInterruptTurnRequest,
 ) -> Result<bool, String> {
-    aster_agent_stop(state, request.session_id).await
+    let session_id = request.session_id;
+    ensure_runtime_queue_loaded(state.inner(), db.inner(), &session_id)?;
+    let cancelled = state.cancel_session(&session_id).await;
+    let cleared = clear_pending_runtime_queue(&app, state.inner(), db.inner(), &session_id);
+    Ok(cancelled || !cleared.is_empty())
 }
 
 /// 创建新会话
@@ -5329,10 +6176,77 @@ pub async fn aster_session_get(
 /// 统一运行时：获取会话详情。
 #[tauri::command]
 pub async fn agent_runtime_get_session(
+    app: AppHandle,
+    state: State<'_, AsterAgentState>,
     db: State<'_, DbConnection>,
+    api_key_provider_service: State<'_, ApiKeyProviderServiceState>,
+    logs: State<'_, LogState>,
+    config_manager: State<'_, GlobalConfigManagerState>,
+    mcp_manager: State<'_, McpManagerState>,
+    heartbeat_state: State<'_, HeartbeatServiceState>,
     session_id: String,
-) -> Result<SessionDetail, String> {
-    aster_session_get(db, session_id).await
+) -> Result<AgentRuntimeSessionDetail, String> {
+    ensure_runtime_queue_loaded(state.inner(), db.inner(), &session_id)?;
+    let detail = AsterAgentWrapper::get_session_sync(db.inner(), &session_id)?;
+    let queued_turns = state.inner().turn_queue().snapshot(&session_id);
+    if !queued_turns.is_empty() && !state.inner().turn_queue().has_active(&session_id) {
+        let context = AgentRuntimeExecutionContext::from_states(
+            app,
+            state.inner(),
+            db.inner(),
+            api_key_provider_service.inner(),
+            logs.inner(),
+            config_manager.inner(),
+            mcp_manager.inner(),
+            heartbeat_state.inner(),
+        );
+        if let Err(error) = resume_runtime_queue_if_needed(context, session_id.clone()) {
+            tracing::warn!(
+                "[AsterAgent][Queue] 获取会话后恢复排队执行失败: session_id={}, error={}",
+                session_id,
+                error
+            );
+        }
+    }
+    Ok(AgentRuntimeSessionDetail::from_session_detail(
+        detail,
+        queued_turns,
+    ))
+}
+
+/// 统一运行时：移除单个排队 turn。
+#[tauri::command]
+pub async fn agent_runtime_remove_queued_turn(
+    app: AppHandle,
+    state: State<'_, AsterAgentState>,
+    db: State<'_, DbConnection>,
+    request: AgentRuntimeRemoveQueuedTurnRequest,
+) -> Result<bool, String> {
+    let session_id = request.session_id.trim().to_string();
+    let queued_turn_id = request.queued_turn_id.trim().to_string();
+    if session_id.is_empty() || queued_turn_id.is_empty() {
+        return Ok(false);
+    }
+
+    ensure_runtime_queue_loaded(state.inner(), db.inner(), &session_id)?;
+    let removed = state
+        .inner()
+        .turn_queue()
+        .remove_queued(&session_id, &queued_turn_id);
+    if let Some(task) = removed {
+        remove_persisted_runtime_queued_turn(db.inner(), &queued_turn_id)?;
+        emit_runtime_queue_event(
+            &app,
+            &task.event_name,
+            &TauriAgentEvent::QueueRemoved {
+                session_id,
+                queued_turn_id,
+            },
+        );
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 /// 重命名会话
@@ -5389,10 +6303,15 @@ pub async fn aster_session_delete(
 /// 统一运行时：删除会话。
 #[tauri::command]
 pub async fn agent_runtime_delete_session(
+    app: AppHandle,
+    state: State<'_, AsterAgentState>,
     db: State<'_, DbConnection>,
     session_id: String,
 ) -> Result<(), String> {
-    aster_session_delete(db, session_id).await
+    let trimmed_session_id = session_id.trim().to_string();
+    let _ = state.cancel_session(&trimmed_session_id).await;
+    let _ = clear_pending_runtime_queue(&app, state.inner(), db.inner(), &trimmed_session_id);
+    aster_session_delete(db, trimmed_session_id).await
 }
 
 /// 确认权限请求
@@ -5579,6 +6498,7 @@ pub async fn aster_agent_submit_elicitation_response(
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use proxycast_agent::request_tool_policy::resolve_request_tool_policy;
     use regex::Regex;
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
@@ -5667,6 +6587,19 @@ mod tests {
         assert_eq!(request.workspace_id, "workspace-test");
         assert_eq!(request.execution_strategy, None);
         assert_eq!(request.auto_continue, None);
+    }
+
+    #[test]
+    fn test_message_suggests_live_search_accepts_explicit_search_verbs() {
+        assert!(message_suggests_live_search(
+            "请帮我搜一下哥德尔不完备定理的历史背景"
+        ));
+        assert!(message_suggests_live_search(
+            "please look up kyoto travel tips"
+        ));
+        assert!(!message_suggests_live_search(
+            "帮我解释一下什么是向量数据库"
+        ));
     }
 
     #[test]
@@ -5950,6 +6883,7 @@ mod tests {
                 project_id: Some("project-1".to_string()),
                 workspace_id: "workspace-1".to_string(),
                 web_search: Some(false),
+                search_mode: None,
                 execution_strategy: Some(AsterExecutionStrategy::React),
                 auto_continue: None,
                 system_prompt: None,
@@ -5959,10 +6893,13 @@ mod tests {
                         "gate_key": "write_mode"
                     }
                 })),
+                queue_if_busy: None,
+                queued_turn_id: None,
             },
             "workspace-1",
             AsterExecutionStrategy::React,
             &RequestToolPolicy {
+                search_mode: RequestToolPolicyMode::Disabled,
                 effective_web_search: false,
                 required_tools: vec![],
                 allowed_tools: vec![],

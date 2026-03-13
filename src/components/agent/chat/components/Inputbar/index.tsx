@@ -2,6 +2,7 @@ import React from "react";
 import type { MessageImage } from "../../types";
 import type { Character } from "@/lib/api/memory";
 import type { Skill } from "@/lib/api/skills";
+import type { QueuedTurnSnapshot } from "@/lib/api/agentRuntime";
 import type { TaskFile } from "../TaskFiles";
 import { InputbarComposerSection } from "./components/InputbarComposerSection";
 import { InputbarOverlayShell } from "./components/InputbarOverlayShell";
@@ -71,6 +72,8 @@ interface InputbarProps {
   onA2UISubmit?: (formData: A2UIFormData) => void;
   /** A2UI 表单已提交提示 */
   a2uiSubmissionNotice?: A2UISubmissionNoticeData | null;
+  queuedTurns?: QueuedTurnSnapshot[];
+  onRemoveQueuedTurn?: (queuedTurnId: string) => void | Promise<boolean>;
 }
 
 export const Inputbar: React.FC<InputbarProps> = ({
@@ -109,6 +112,8 @@ export const Inputbar: React.FC<InputbarProps> = ({
   pendingA2UIForm,
   onA2UISubmit,
   a2uiSubmissionNotice,
+  queuedTurns = [],
+  onRemoveQueuedTurn,
 }) => {
   const {
     textareaRef,
@@ -216,6 +221,8 @@ export const Inputbar: React.FC<InputbarProps> = ({
         onManageProviders={onManageProviders}
         setExecutionStrategy={setExecutionStrategy}
         topExtra={topExtra}
+        queuedTurns={queuedTurns}
+        onRemoveQueuedTurn={onRemoveQueuedTurn}
       />
     </InputbarSurface>
   );

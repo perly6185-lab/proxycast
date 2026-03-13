@@ -247,6 +247,8 @@ mod tests {
             display_name: name.to_string(),
             description: String::new(),
             markdown_content: String::new(),
+            license: None,
+            metadata: std::collections::HashMap::new(),
             allowed_tools: None,
             argument_hint: None,
             when_to_use: None,
@@ -258,7 +260,13 @@ mod tests {
             provider: None,
             disable_model_invocation: false,
             execution_mode: "prompt".to_string(),
+            workflow_ref: None,
             workflow_steps: Vec::new(),
+            standard_compliance: proxycast_core::models::SkillStandardCompliance {
+                is_standard: true,
+                validation_errors: Vec::new(),
+                deprecated_fields: Vec::new(),
+            },
         }
     }
 

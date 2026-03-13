@@ -11,18 +11,14 @@ import { toast } from "sonner";
 import type {
   AsterExecutionStrategy,
   AutoContinueRequestPayload,
+  QueuedTurnSnapshot,
 } from "@/lib/api/agentRuntime";
 import {
   parseStreamEvent,
   type AgentThreadItem,
   type AgentThreadTurn,
-  type StreamEvent,
 } from "@/lib/api/agentStream";
-import type {
-  ActionRequired,
-  Message,
-  MessageImage,
-} from "../types";
+import type { ActionRequired, Message, MessageImage } from "../types";
 import { activityLogger } from "@/components/content-creator/utils/activityLogger";
 import {
   parseSkillSlashCommand,
@@ -31,13 +27,9 @@ import {
 import {
   isWorkspacePathErrorMessage,
   mapProviderName,
-  WORKSPACE_PATH_AUTO_CREATED_WARNING_CODE,
 } from "./agentChatCoreUtils";
-import { appendTextToParts } from "./agentChatHistory";
 import { playToolcallSound, playTypewriterSound } from "./agentChatStorage";
-import {
-  updateMessageArtifactsStatus,
-} from "../utils/messageArtifacts";
+import { updateMessageArtifactsStatus } from "../utils/messageArtifacts";
 import type {
   SendMessageOptions,
   WorkspacePathMissingState,
@@ -53,13 +45,39 @@ import {
   buildInitialAgentRuntimeStatus,
   buildWaitingAgentRuntimeStatus,
 } from "../utils/agentRuntimeStatus";
-import {
-  handleActionRequiredEvent,
-  handleArtifactSnapshotEvent,
-  handleContextTraceEvent,
-  handleToolEndEvent,
-  handleToolStartEvent,
-} from "./agentStreamEventProcessor";
+import { handleTurnStreamEvent } from "./agentStreamRuntimeHandler";
+
+function buildQueuedMessagePreview(content: string): string {
+  const compact = content.split(/\s+/).filter(Boolean).join(" ");
+  if (!compact) {
+    return "空白输入";
+  }
+
+  const preview = Array.from(compact).slice(0, 80).join("");
+  return compact.length > preview.length ? `${preview}...` : preview;
+}
+
+function appendThinkingToParts(
+  parts: NonNullable<Message["contentParts"]>,
+  textDelta: string,
+): NonNullable<Message["contentParts"]> {
+  const nextParts = [...parts];
+  const lastPart = nextParts[nextParts.length - 1];
+
+  if (lastPart?.type === "thinking") {
+    nextParts[nextParts.length - 1] = {
+      type: "thinking",
+      text: lastPart.text + textDelta,
+    };
+    return nextParts;
+  }
+
+  nextParts.push({
+    type: "thinking",
+    text: textDelta,
+  });
+  return nextParts;
+}
 
 interface UseAgentStreamOptions {
   runtime: AgentRuntimeAdapter;
@@ -85,6 +103,8 @@ interface UseAgentStreamOptions {
   setThreadItems: Dispatch<SetStateAction<AgentThreadItem[]>>;
   setThreadTurns: Dispatch<SetStateAction<AgentThreadTurn[]>>;
   setCurrentTurnId: Dispatch<SetStateAction<string | null>>;
+  queuedTurns: QueuedTurnSnapshot[];
+  setQueuedTurns: Dispatch<SetStateAction<QueuedTurnSnapshot[]>>;
   setPendingActions: Dispatch<SetStateAction<ActionRequired[]>>;
 }
 
@@ -107,20 +127,77 @@ export function useAgentStream(options: UseAgentStreamOptions) {
     setThreadItems,
     setThreadTurns,
     setCurrentTurnId,
+    queuedTurns,
+    setQueuedTurns,
     setPendingActions,
   } = options;
 
   const [isSending, setIsSending] = useState(false);
-  const unlistenRef = useRef<(() => void) | null>(null);
+  const listenerMapRef = useRef(new Map<string, () => void>());
+  const activeStreamRef = useRef<{
+    assistantMsgId: string;
+    eventName: string;
+    sessionId: string;
+  } | null>(null);
 
   useEffect(() => {
+    const listenerMap = listenerMapRef.current;
     return () => {
-      if (unlistenRef.current) {
-        unlistenRef.current();
-        unlistenRef.current = null;
+      for (const unlisten of listenerMap.values()) {
+        unlisten();
       }
+      listenerMap.clear();
     };
   }, []);
+
+  const setActiveStream = useCallback(
+    (
+      nextActive: {
+        assistantMsgId: string;
+        eventName: string;
+        sessionId: string;
+      } | null,
+    ) => {
+      activeStreamRef.current = nextActive;
+      currentAssistantMsgIdRef.current = nextActive?.assistantMsgId ?? null;
+      currentStreamingSessionIdRef.current = nextActive?.sessionId ?? null;
+      setIsSending(Boolean(nextActive));
+    },
+    [currentAssistantMsgIdRef, currentStreamingSessionIdRef],
+  );
+
+  const clearActiveStreamIfMatch = useCallback(
+    (eventName: string) => {
+      if (activeStreamRef.current?.eventName !== eventName) {
+        return false;
+      }
+      setActiveStream(null);
+      return true;
+    },
+    [setActiveStream],
+  );
+
+  const buildQueuedRuntimeStatus = useCallback(
+    (
+      currentExecutionStrategy: AsterExecutionStrategy,
+      content: string,
+      webSearch?: boolean,
+    ) => ({
+      phase: "routing" as const,
+      title: "已加入排队列表",
+      detail: `当前会话仍在执行中，本条消息会在前一条完成后自动开始。待处理内容：${buildQueuedMessagePreview(content)}`,
+      checkpoints: [
+        "已创建待执行回合",
+        webSearch ? "联网搜索能力待命" : "直接回答优先",
+        currentExecutionStrategy === "code_orchestrated"
+          ? "代码编排待命"
+          : currentExecutionStrategy === "react"
+            ? "对话执行待命"
+            : "自动路由待命",
+      ],
+    }),
+    [],
+  );
 
   const buildRuntimeStatusSummary = useCallback(
     (status?: Message["runtimeStatus"]): string => {
@@ -157,8 +234,11 @@ export function useAgentStream(options: UseAgentStreamOptions) {
       const observer = options?.observer;
       const requestMetadata = options?.requestMetadata;
       const messagePurpose = options?.purpose;
+      const expectingQueue =
+        Boolean(activeStreamRef.current) || queuedTurns.length > 0;
 
       const assistantMsgId = crypto.randomUUID();
+      const userMsgId = skipUserMessage ? null : crypto.randomUUID();
       const assistantMsg: Message = {
         id: assistantMsgId,
         role: "assistant",
@@ -166,12 +246,18 @@ export function useAgentStream(options: UseAgentStreamOptions) {
         timestamp: new Date(),
         isThinking: true,
         contentParts: [],
-        runtimeStatus: buildInitialAgentRuntimeStatus({
-          executionStrategy: effectiveExecutionStrategy,
-          webSearch,
-          thinking: _thinking,
-          skipUserMessage,
-        }),
+        runtimeStatus: expectingQueue
+          ? buildQueuedRuntimeStatus(
+              effectiveExecutionStrategy,
+              content,
+              webSearch,
+            )
+          : buildInitialAgentRuntimeStatus({
+              executionStrategy: effectiveExecutionStrategy,
+              webSearch,
+              thinking: _thinking,
+              skipUserMessage,
+            }),
         purpose: messagePurpose,
       };
 
@@ -179,7 +265,7 @@ export function useAgentStream(options: UseAgentStreamOptions) {
         setMessages((prev) => [...prev, assistantMsg]);
       } else {
         const userMsg: Message = {
-          id: crypto.randomUUID(),
+          id: userMsgId as string,
           role: "user",
           content,
           images: images.length > 0 ? images : undefined,
@@ -188,12 +274,20 @@ export function useAgentStream(options: UseAgentStreamOptions) {
         };
         setMessages((prev) => [...prev, userMsg, assistantMsg]);
       }
-      setIsSending(true);
-      currentAssistantMsgIdRef.current = assistantMsgId;
 
-      if (!skipUserMessage) {
+      if (!expectingQueue) {
+        setIsSending(true);
+      }
+
+      if (!skipUserMessage && !expectingQueue) {
         const parsedSkillCommand = parseSkillSlashCommand(content);
         if (parsedSkillCommand) {
+          const skillEventName = `skill-exec-${assistantMsgId}`;
+          setActiveStream({
+            assistantMsgId,
+            eventName: skillEventName,
+            sessionId: sessionIdRef.current || "",
+          });
           const skillHandled = await tryExecuteSlashSkillCommand({
             command: parsedSkillCommand,
             rawContent: content,
@@ -204,16 +298,43 @@ export function useAgentStream(options: UseAgentStreamOptions) {
             setMessages,
             setIsSending,
             setCurrentAssistantMsgId: (id) => {
-              currentAssistantMsgIdRef.current = id;
+              if (!id) {
+                clearActiveStreamIfMatch(skillEventName);
+                return;
+              }
+              setActiveStream({
+                assistantMsgId: id,
+                eventName: skillEventName,
+                sessionId:
+                  activeStreamRef.current?.sessionId ||
+                  sessionIdRef.current ||
+                  "",
+              });
             },
             setStreamUnlisten: (unlistenFn) => {
-              unlistenRef.current = unlistenFn;
+              const previous = listenerMapRef.current.get(skillEventName);
+              if (previous) {
+                previous();
+                listenerMapRef.current.delete(skillEventName);
+              }
+              if (unlistenFn) {
+                listenerMapRef.current.set(skillEventName, unlistenFn);
+              }
             },
             setActiveSessionIdForStop: (sessionIdForStop) => {
-              currentStreamingSessionIdRef.current = sessionIdForStop;
+              if (!sessionIdForStop) {
+                clearActiveStreamIfMatch(skillEventName);
+                return;
+              }
+              setActiveStream({
+                assistantMsgId:
+                  activeStreamRef.current?.assistantMsgId || assistantMsgId,
+                eventName: skillEventName,
+                sessionId: sessionIdForStop,
+              });
             },
             isExecutionCancelled: () =>
-              currentAssistantMsgIdRef.current !== assistantMsgId,
+              activeStreamRef.current?.assistantMsgId !== assistantMsgId,
             playTypewriterSound,
             playToolcallSound,
             onWriteFile,
@@ -222,14 +343,20 @@ export function useAgentStream(options: UseAgentStreamOptions) {
           if (skillHandled) {
             return;
           }
+
+          clearActiveStreamIfMatch(skillEventName);
         }
       }
 
-      let accumulatedContent = "";
       let unlisten: (() => void) | null = null;
-      let requestLogId: string | null = null;
-      let requestStartedAt = 0;
-      let requestFinished = false;
+      const requestState = {
+        accumulatedContent: "",
+        requestLogId: null as string | null,
+        requestStartedAt: 0,
+        requestFinished: false,
+        queuedTurnId: null as string | null,
+      };
+      let streamActivated = false;
       const optimisticStartedAt = assistantMsg.timestamp.toISOString();
       const optimisticTurnId = `local-turn:${assistantMsgId}`;
       const optimisticItemId = `local-item:${assistantMsgId}:turn-summary`;
@@ -240,91 +367,165 @@ export function useAgentStream(options: UseAgentStreamOptions) {
       const toolNameByToolId = new Map<string, string>();
       const actionLoggedKeys = new Set<string>();
 
+      const upsertQueuedTurn = (nextQueuedTurn: QueuedTurnSnapshot) => {
+        setQueuedTurns((prev) =>
+          [
+            ...prev.filter(
+              (item) => item.queued_turn_id !== nextQueuedTurn.queued_turn_id,
+            ),
+            nextQueuedTurn,
+          ].sort((left, right) => {
+            if (left.position !== right.position) {
+              return left.position - right.position;
+            }
+            return left.created_at - right.created_at;
+          }),
+        );
+      };
+
+      const removeQueuedTurnState = (queuedTurnIds: string[]) => {
+        if (queuedTurnIds.length === 0) {
+          return;
+        }
+        setQueuedTurns((prev) => {
+          const idSet = new Set(queuedTurnIds);
+          return prev
+            .filter((item) => !idSet.has(item.queued_turn_id))
+            .map((item, index) => ({
+              ...item,
+              position: index + 1,
+            }));
+        });
+      };
+
+      const removeQueuedDraftMessages = () => {
+        setMessages((prev) =>
+          prev.filter(
+            (msg) =>
+              msg.id !== assistantMsgId &&
+              (userMsgId ? msg.id !== userMsgId : true),
+          ),
+        );
+      };
+
       const clearOptimisticItem = () => {
+        if (expectingQueue) {
+          return;
+        }
         setThreadItems((prev) => removeThreadItemState(prev, optimisticItemId));
       };
 
       const clearOptimisticTurn = () => {
+        if (expectingQueue) {
+          return;
+        }
         setThreadTurns((prev) => removeThreadTurnState(prev, optimisticTurnId));
-        setCurrentTurnId((prev) =>
-          prev === optimisticTurnId ? null : prev,
-        );
+        setCurrentTurnId((prev) => (prev === optimisticTurnId ? null : prev));
       };
 
-      setThreadTurns((prev) =>
-        upsertThreadTurnState(prev, {
-          id: optimisticTurnId,
-          thread_id: optimisticThreadId,
-          prompt_text: content,
-          status: "running",
-          started_at: optimisticStartedAt,
-          created_at: optimisticStartedAt,
-          updated_at: optimisticStartedAt,
-        }),
-      );
-      setThreadItems((prev) =>
-        upsertThreadItemState(prev, {
-          id: optimisticItemId,
-          thread_id: optimisticThreadId,
-          turn_id: optimisticTurnId,
-          sequence: 0,
-          status: "in_progress",
-          started_at: optimisticStartedAt,
-          updated_at: optimisticStartedAt,
-          type: "turn_summary",
-          text: buildRuntimeStatusSummary(assistantMsg.runtimeStatus),
-        }),
-      );
-      setCurrentTurnId(optimisticTurnId);
+      const disposeListener = () => {
+        const registered = listenerMapRef.current.get(eventName);
+        if (registered) {
+          registered();
+          listenerMapRef.current.delete(eventName);
+        } else if (unlisten) {
+          unlisten();
+        }
+        unlisten = null;
+      };
+
+      if (!expectingQueue) {
+        setThreadTurns((prev) =>
+          upsertThreadTurnState(prev, {
+            id: optimisticTurnId,
+            thread_id: optimisticThreadId,
+            prompt_text: content,
+            status: "running",
+            started_at: optimisticStartedAt,
+            created_at: optimisticStartedAt,
+            updated_at: optimisticStartedAt,
+          }),
+        );
+        setThreadItems((prev) =>
+          upsertThreadItemState(prev, {
+            id: optimisticItemId,
+            thread_id: optimisticThreadId,
+            turn_id: optimisticTurnId,
+            sequence: 0,
+            status: "in_progress",
+            started_at: optimisticStartedAt,
+            updated_at: optimisticStartedAt,
+            type: "turn_summary",
+            text: buildRuntimeStatusSummary(assistantMsg.runtimeStatus),
+          }),
+        );
+        setCurrentTurnId(optimisticTurnId);
+      }
+
+      const eventName = `aster_stream_${assistantMsgId}`;
 
       try {
         const activeSessionId = await ensureSession();
         if (!activeSessionId) throw new Error("无法创建会话");
-        currentStreamingSessionIdRef.current = activeSessionId;
         const resolvedWorkspaceId = getRequiredWorkspaceId();
         const waitingRuntimeStatus = buildWaitingAgentRuntimeStatus({
           executionStrategy: effectiveExecutionStrategy,
           webSearch,
           thinking: _thinking,
         });
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantMsgId
-              ? {
-                  ...msg,
-                  runtimeStatus: waitingRuntimeStatus,
-                }
-              : msg,
-          ),
-        );
-        setThreadTurns((prev) =>
-          upsertThreadTurnState(prev, {
-            id: optimisticTurnId,
-            thread_id: activeSessionId,
-            prompt_text: content,
-            status: "running",
-            started_at: optimisticStartedAt,
-            created_at: optimisticStartedAt,
-            updated_at: new Date().toISOString(),
-          }),
-        );
-        setThreadItems((prev) =>
-          upsertThreadItemState(prev, {
-            id: optimisticItemId,
-            thread_id: activeSessionId,
-            turn_id: optimisticTurnId,
-            sequence: 0,
-            status: "in_progress",
-            started_at: optimisticStartedAt,
-            updated_at: new Date().toISOString(),
-            type: "turn_summary",
-            text: buildRuntimeStatusSummary(waitingRuntimeStatus),
-          }),
-        );
 
-        const eventName = `aster_stream_${assistantMsgId}`;
-        requestStartedAt = Date.now();
-        requestLogId = activityLogger.log({
+        const activateStream = () => {
+          if (streamActivated) {
+            return;
+          }
+          streamActivated = true;
+          setActiveStream({
+            assistantMsgId,
+            eventName,
+            sessionId: activeSessionId,
+          });
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMsgId
+                ? {
+                    ...msg,
+                    runtimeStatus: waitingRuntimeStatus,
+                  }
+                : msg,
+            ),
+          );
+        };
+
+        if (!expectingQueue) {
+          activateStream();
+          setThreadTurns((prev) =>
+            upsertThreadTurnState(prev, {
+              id: optimisticTurnId,
+              thread_id: activeSessionId,
+              prompt_text: content,
+              status: "running",
+              started_at: optimisticStartedAt,
+              created_at: optimisticStartedAt,
+              updated_at: new Date().toISOString(),
+            }),
+          );
+          setThreadItems((prev) =>
+            upsertThreadItemState(prev, {
+              id: optimisticItemId,
+              thread_id: activeSessionId,
+              turn_id: optimisticTurnId,
+              sequence: 0,
+              status: "in_progress",
+              started_at: optimisticStartedAt,
+              updated_at: new Date().toISOString(),
+              type: "turn_summary",
+              text: buildRuntimeStatusSummary(waitingRuntimeStatus),
+            }),
+          );
+        }
+
+        requestState.requestStartedAt = Date.now();
+        requestState.requestLogId = activityLogger.log({
           eventType: "chat_request_start",
           status: "pending",
           title: skipUserMessage ? "系统引导请求" : "发送请求",
@@ -340,247 +541,60 @@ export function useAgentStream(options: UseAgentStreamOptions) {
             skipUserMessage,
             autoContinueEnabled: autoContinue?.enabled ?? false,
             autoContinue: autoContinue?.enabled ? autoContinue : undefined,
+            queuedSubmission: expectingQueue,
           },
         });
 
         unlisten = await runtime.listenToTurnEvents(
           eventName,
-          (event: { payload: StreamEvent | unknown }) => {
+          (event: { payload: unknown }) => {
             const data = parseStreamEvent(event.payload);
-            if (!data) return;
-
-            switch (data.type) {
-              case "thread_started":
-                break;
-
-              case "turn_started":
-                setCurrentTurnId(data.turn.id);
-                setThreadTurns((prev) =>
-                  upsertThreadTurnState(
-                    removeThreadTurnState(prev, optimisticTurnId),
-                    data.turn,
-                  ),
-                );
-                clearOptimisticItem();
-                break;
-
-              case "item_started":
-              case "item_updated":
-              case "item_completed":
-                setThreadItems((prev) =>
-                  upsertThreadItemState(
-                    removeThreadItemState(prev, optimisticItemId),
-                    data.item,
-                  ),
-                );
-                break;
-
-              case "turn_completed":
-              case "turn_failed":
-                clearOptimisticItem();
-                setThreadTurns((prev) =>
-                  upsertThreadTurnState(
-                    removeThreadTurnState(prev, optimisticTurnId),
-                    data.turn,
-                  ),
-                );
-                setCurrentTurnId(data.turn.id);
-                break;
-
-              case "text_delta":
-                clearOptimisticItem();
-                accumulatedContent += data.text;
-                observer?.onTextDelta?.(data.text, accumulatedContent);
-                playTypewriterSound();
-                setMessages((prev) =>
-                  prev.map((msg) =>
-                    msg.id === assistantMsgId
-                      ? {
-                          ...msg,
-                          content: accumulatedContent,
-                          thinkingContent: undefined,
-                          runtimeStatus: undefined,
-                          contentParts: appendTextToParts(
-                            msg.contentParts || [],
-                            data.text,
-                          ),
-                        }
-                      : msg,
-                  ),
-                );
-                break;
-
-              case "tool_start": {
-                clearOptimisticItem();
-                playToolcallSound();
-                handleToolStartEvent({
-                  data,
-                  setPendingActions,
-                  onWriteFile,
-                  toolLogIdByToolId,
-                  toolStartedAtByToolId,
-                  toolNameByToolId,
-                  assistantMsgId,
-                  activeSessionId,
-                  resolvedWorkspaceId,
-                  setMessages,
-                });
-                break;
-              }
-
-              case "tool_end": {
-                clearOptimisticItem();
-                handleToolEndEvent({
-                  data,
-                  onWriteFile,
-                  toolLogIdByToolId,
-                  toolStartedAtByToolId,
-                  toolNameByToolId,
-                  assistantMsgId,
-                  activeSessionId,
-                  resolvedWorkspaceId,
-                  setMessages,
-                });
-                break;
-              }
-
-              case "artifact_snapshot": {
-                clearOptimisticItem();
-                handleArtifactSnapshotEvent({
-                  data,
-                  onWriteFile,
-                  assistantMsgId,
-                  activeSessionId,
-                  resolvedWorkspaceId,
-                  setMessages,
-                });
-                break;
-              }
-
-              case "action_required": {
-                clearOptimisticItem();
-                handleActionRequiredEvent({
-                  data,
-                  actionLoggedKeys,
-                  effectiveExecutionStrategy,
-                  runtime,
-                  setPendingActions,
-                  assistantMsgId,
-                  activeSessionId,
-                  resolvedWorkspaceId,
-                  setMessages,
-                });
-                break;
-              }
-
-              case "context_trace":
-                clearOptimisticItem();
-                handleContextTraceEvent({
-                  data,
-                  assistantMsgId,
-                  activeSessionId,
-                  resolvedWorkspaceId,
-                  setMessages,
-                });
-                break;
-
-              case "final_done": {
-                clearOptimisticItem();
-                clearOptimisticTurn();
-                if (requestLogId && !requestFinished) {
-                  requestFinished = true;
-                  activityLogger.updateLog(requestLogId, {
-                    eventType: "chat_request_complete",
-                    status: "success",
-                    duration: Date.now() - requestStartedAt,
-                    description: `请求完成，工具调用 ${toolLogIdByToolId.size} 次`,
-                  });
-                }
-                const finalContent = accumulatedContent || "(无响应)";
-                observer?.onComplete?.(finalContent);
-                setMessages((prev) =>
-                  prev.map((msg) =>
-                    msg.id === assistantMsgId
-                      ? {
-                          ...updateMessageArtifactsStatus(msg, "complete"),
-                          isThinking: false,
-                          content: finalContent,
-                          runtimeStatus: undefined,
-                        }
-                      : msg,
-                  ),
-                );
-                setIsSending(false);
-                unlistenRef.current = null;
-                currentAssistantMsgIdRef.current = null;
-                currentStreamingSessionIdRef.current = null;
-                if (unlisten) {
-                  unlisten();
-                  unlisten = null;
-                }
-                break;
-              }
-
-              case "error":
-                clearOptimisticItem();
-                clearOptimisticTurn();
-                if (requestLogId && !requestFinished) {
-                  requestFinished = true;
-                  activityLogger.updateLog(requestLogId, {
-                    eventType: "chat_request_error",
-                    status: "error",
-                    duration: Date.now() - requestStartedAt,
-                    error: data.message,
-                  });
-                }
-                observer?.onError?.(data.message);
-                if (
-                  data.message.includes("429") ||
-                  data.message.toLowerCase().includes("rate limit")
-                ) {
-                  toast.warning("请求过于频繁，请稍后重试");
-                } else {
-                  toast.error(`响应错误: ${data.message}`);
-                }
-                setMessages((prev) =>
-                  prev.map((msg) =>
-                    msg.id === assistantMsgId
-                      ? {
-                          ...updateMessageArtifactsStatus(msg, "error"),
-                          isThinking: false,
-                          content: accumulatedContent || `错误: ${data.message}`,
-                          runtimeStatus: undefined,
-                        }
-                      : msg,
-                  ),
-                );
-                setIsSending(false);
-                currentStreamingSessionIdRef.current = null;
-                if (unlisten) {
-                  unlisten();
-                  unlisten = null;
-                }
-                break;
-
-              case "warning": {
-                if (data.code === WORKSPACE_PATH_AUTO_CREATED_WARNING_CODE) {
-                  break;
-                }
-                const warningKey = `${activeSessionId}:${data.code || data.message}`;
-                if (!warnedKeysRef.current.has(warningKey)) {
-                  warnedKeysRef.current.add(warningKey);
-                  toast.warning(data.message);
-                }
-                break;
-              }
-
-              default:
-                break;
+            if (!data) {
+              return;
             }
+
+            handleTurnStreamEvent({
+              data,
+              requestState,
+              callbacks: {
+                activateStream,
+                isStreamActivated: () => streamActivated,
+                clearOptimisticItem,
+                clearOptimisticTurn,
+                disposeListener,
+                removeQueuedDraftMessages,
+                clearActiveStreamIfMatch,
+                upsertQueuedTurn,
+                removeQueuedTurnState,
+                playToolcallSound,
+                playTypewriterSound,
+                appendThinkingToParts,
+              },
+              observer,
+              eventName,
+              optimisticTurnId,
+              optimisticItemId,
+              assistantMsgId,
+              activeSessionId,
+              resolvedWorkspaceId,
+              effectiveExecutionStrategy,
+              runtime,
+              warnedKeysRef,
+              actionLoggedKeys,
+              toolLogIdByToolId,
+              toolStartedAtByToolId,
+              toolNameByToolId,
+              onWriteFile,
+              setMessages,
+              setPendingActions,
+              setThreadItems,
+              setThreadTurns,
+              setCurrentTurnId,
+            });
           },
         );
 
-        unlistenRef.current = unlisten;
+        listenerMapRef.current.set(eventName, unlisten);
 
         const imagesToSend =
           images.length > 0
@@ -605,17 +619,19 @@ export function useAgentStream(options: UseAgentStreamOptions) {
           providerConfig,
           executionStrategy: effectiveExecutionStrategy,
           webSearch,
+          searchMode: webSearch ? "allowed" : "disabled",
           autoContinue,
           systemPrompt,
           metadata: requestMetadata,
+          queueIfBusy: true,
         });
       } catch (error) {
-        if (requestLogId && !requestFinished) {
-          requestFinished = true;
-          activityLogger.updateLog(requestLogId, {
+        if (requestState.requestLogId && !requestState.requestFinished) {
+          requestState.requestFinished = true;
+          activityLogger.updateLog(requestState.requestLogId, {
             eventType: "chat_request_error",
             status: "error",
-            duration: Date.now() - requestStartedAt,
+            duration: Date.now() - requestState.requestStartedAt,
             error: error instanceof Error ? error.message : String(error),
           });
         }
@@ -634,45 +650,61 @@ export function useAgentStream(options: UseAgentStreamOptions) {
         }
         clearOptimisticItem();
         clearOptimisticTurn();
-        setMessages((prev) => prev.filter((msg) => msg.id !== assistantMsgId));
-        setIsSending(false);
-        currentStreamingSessionIdRef.current = null;
-        if (unlisten) {
-          unlisten();
+        removeQueuedTurnState(
+          requestState.queuedTurnId ? [requestState.queuedTurnId] : [],
+        );
+        setMessages((prev) =>
+          prev.filter(
+            (msg) =>
+              msg.id !== assistantMsgId &&
+              (!expectingQueue || !userMsgId || msg.id !== userMsgId),
+          ),
+        );
+        clearActiveStreamIfMatch(eventName);
+        disposeListener();
+        if (!expectingQueue && !activeStreamRef.current) {
+          setIsSending(false);
         }
       }
     },
     [
-      currentAssistantMsgIdRef,
-      currentStreamingSessionIdRef,
+      activeStreamRef,
+      buildQueuedRuntimeStatus,
+      buildRuntimeStatusSummary,
+      clearActiveStreamIfMatch,
       ensureSession,
       executionStrategy,
       getRequiredWorkspaceId,
       modelRef,
       onWriteFile,
       providerTypeRef,
+      queuedTurns.length,
       runtime,
+      sessionIdRef,
+      setActiveStream,
+      setCurrentTurnId,
       setMessages,
+      setPendingActions,
+      setQueuedTurns,
       setThreadItems,
       setThreadTurns,
-      setCurrentTurnId,
-      setPendingActions,
       setWorkspacePathMissing,
       systemPrompt,
       warnedKeysRef,
-      sessionIdRef,
-      buildRuntimeStatusSummary,
     ],
   );
 
   const stopSending = useCallback(async () => {
-    if (unlistenRef.current) {
-      unlistenRef.current();
-      unlistenRef.current = null;
+    const activeStream = activeStreamRef.current;
+    if (activeStream) {
+      const activeUnlisten = listenerMapRef.current.get(activeStream.eventName);
+      if (activeUnlisten) {
+        activeUnlisten();
+        listenerMapRef.current.delete(activeStream.eventName);
+      }
     }
 
-    const activeSessionId =
-      currentStreamingSessionIdRef.current || sessionIdRef.current;
+    const activeSessionId = activeStream?.sessionId || sessionIdRef.current;
     if (activeSessionId) {
       try {
         await runtime.interruptTurn(activeSessionId);
@@ -681,15 +713,17 @@ export function useAgentStream(options: UseAgentStreamOptions) {
       }
     }
 
-    if (currentAssistantMsgIdRef.current) {
-      const optimisticTurnId = `local-turn:${currentAssistantMsgIdRef.current}`;
-      const optimisticItemId = `${`local-item:${currentAssistantMsgIdRef.current}`}:turn-summary`;
+    setQueuedTurns([]);
+
+    if (activeStream?.assistantMsgId) {
+      const optimisticTurnId = `local-turn:${activeStream.assistantMsgId}`;
+      const optimisticItemId = `${`local-item:${activeStream.assistantMsgId}`}:turn-summary`;
       setThreadItems((prev) => removeThreadItemState(prev, optimisticItemId));
       setThreadTurns((prev) => removeThreadTurnState(prev, optimisticTurnId));
       setCurrentTurnId((prev) => (prev === optimisticTurnId ? null : prev));
       setMessages((prev) =>
         prev.map((msg) =>
-          msg.id === currentAssistantMsgIdRef.current
+          msg.id === activeStream.assistantMsgId
             ? {
                 ...updateMessageArtifactsStatus(msg, "complete"),
                 isThinking: false,
@@ -699,26 +733,57 @@ export function useAgentStream(options: UseAgentStreamOptions) {
             : msg,
         ),
       );
-      currentAssistantMsgIdRef.current = null;
     }
 
-    currentStreamingSessionIdRef.current = null;
-    setIsSending(false);
+    setActiveStream(null);
     toast.info("已停止生成");
   }, [
-    currentAssistantMsgIdRef,
-    currentStreamingSessionIdRef,
     runtime,
     sessionIdRef,
+    setActiveStream,
+    setCurrentTurnId,
     setMessages,
+    setQueuedTurns,
     setThreadItems,
     setThreadTurns,
-    setCurrentTurnId,
   ]);
+
+  const removeQueuedTurn = useCallback(
+    async (queuedTurnId: string) => {
+      const activeSessionId = sessionIdRef.current;
+      if (!activeSessionId || !queuedTurnId.trim()) {
+        return false;
+      }
+
+      try {
+        const removed = await runtime.removeQueuedTurn(
+          activeSessionId,
+          queuedTurnId,
+        );
+        if (removed) {
+          setQueuedTurns((prev) =>
+            prev
+              .filter((item) => item.queued_turn_id !== queuedTurnId)
+              .map((item, index) => ({
+                ...item,
+                position: index + 1,
+              })),
+          );
+        }
+        return removed;
+      } catch (error) {
+        console.error("[AsterChat] 移除排队消息失败:", error);
+        toast.error("移除排队消息失败");
+        return false;
+      }
+    },
+    [runtime, sessionIdRef, setQueuedTurns],
+  );
 
   return {
     isSending,
     sendMessage,
     stopSending,
+    removeQueuedTurn,
   };
 }

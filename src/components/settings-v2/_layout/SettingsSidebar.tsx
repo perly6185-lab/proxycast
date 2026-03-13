@@ -135,6 +135,7 @@ export function SettingsSidebar({
   const [expandedGroups, setExpandedGroups] = useState<
     Record<SettingsGroupKey, boolean>
   >({
+    [SettingsGroupKey.Overview]: true,
     [SettingsGroupKey.Account]: true,
     [SettingsGroupKey.General]: true,
     [SettingsGroupKey.Agent]: true,

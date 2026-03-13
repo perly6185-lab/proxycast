@@ -28,6 +28,7 @@ export interface BaseComposerProps {
   hasAdditionalContent?: boolean;
   rows?: number;
   autoFocus?: boolean;
+  allowSendWhileLoading?: boolean;
   children: (context: BaseComposerRenderContext) => React.ReactNode;
 }
 
@@ -50,6 +51,7 @@ export const BaseComposer: React.FC<BaseComposerProps> = ({
   hasAdditionalContent = false,
   rows = 1,
   autoFocus = false,
+  allowSendWhileLoading = false,
   children,
 }) => {
   const internalTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -59,8 +61,10 @@ export const BaseComposer: React.FC<BaseComposerProps> = ({
     return text.trim().length > 0 || hasAdditionalContent;
   }, [hasAdditionalContent, text]);
 
-  const canSend = hasContent && !disabled && !isLoading;
-  const isPrimaryDisabled = !isLoading && !canSend;
+  const canSend =
+    hasContent && !disabled && (!isLoading || allowSendWhileLoading);
+  const isPrimaryDisabled =
+    isLoading && !allowSendWhileLoading ? false : !canSend;
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -101,7 +105,7 @@ export const BaseComposer: React.FC<BaseComposerProps> = ({
   );
 
   const onPrimaryAction = useCallback(() => {
-    if (isLoading) {
+    if (isLoading && !allowSendWhileLoading) {
       onStop?.();
       return;
     }
@@ -111,7 +115,7 @@ export const BaseComposer: React.FC<BaseComposerProps> = ({
     }
 
     onSend();
-  }, [canSend, isLoading, onSend, onStop]);
+  }, [allowSendWhileLoading, canSend, isLoading, onSend, onStop]);
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {

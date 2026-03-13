@@ -276,7 +276,8 @@ const defaultMocks: Record<string, any> = {
     uptime: null,
     version: null,
   }),
-  openclaw_get_dashboard_url: () => "http://127.0.0.1:18790/#token=mock-openclaw",
+  openclaw_get_dashboard_url: () =>
+    "http://127.0.0.1:18790/#token=mock-openclaw",
   openclaw_get_channels: () => [],
   openclaw_get_progress_logs: () => [],
   openclaw_sync_provider_config: () => ({
@@ -681,6 +682,51 @@ const defaultMocks: Record<string, any> = {
   add_skill_repo: () => ({ success: true }),
   remove_skill_repo: () => ({ success: true }),
   get_installed_proxycast_skills: () => [],
+  inspect_local_skill_for_app: () => ({
+    content: "# Mock Skill",
+    metadata: {},
+    allowedTools: [],
+    resourceSummary: {
+      hasScripts: false,
+      hasReferences: false,
+      hasAssets: false,
+    },
+    standardCompliance: {
+      isStandard: true,
+      validationErrors: [],
+      deprecatedFields: [],
+    },
+  }),
+  create_skill_scaffold_for_app: () => ({
+    content: "# Mock Skill",
+    metadata: {},
+    allowedTools: [],
+    resourceSummary: {
+      hasScripts: false,
+      hasReferences: false,
+      hasAssets: false,
+    },
+    standardCompliance: {
+      isStandard: true,
+      validationErrors: [],
+      deprecatedFields: [],
+    },
+  }),
+  inspect_remote_skill: () => ({
+    content: "# Mock Skill",
+    metadata: {},
+    allowedTools: [],
+    resourceSummary: {
+      hasScripts: false,
+      hasReferences: true,
+      hasAssets: false,
+    },
+    standardCompliance: {
+      isStandard: true,
+      validationErrors: [],
+      deprecatedFields: [],
+    },
+  }),
   install_skill_for_app: () => ({ success: true }),
   uninstall_skill_for_app: () => ({ success: true }),
   enable_skill: () => ({ success: true }),

@@ -543,6 +543,30 @@ pub fn create_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
         [],
     )?;
 
+    // 统一运行时排队 turn 表
+    // 持久化 pending 队列，用于应用重启后恢复会话级排队请求
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS agent_runtime_queued_turns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            queued_turn_id TEXT NOT NULL UNIQUE,
+            session_id TEXT NOT NULL,
+            event_name TEXT NOT NULL,
+            message_preview TEXT NOT NULL,
+            message_text TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            image_count INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_runtime_queued_turns_session
+         ON agent_runtime_queued_turns(session_id, id)",
+        [],
+    )?;
+
     // ============================================================================
     // General Chat 相关表
     // ============================================================================

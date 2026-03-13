@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type Dispatch,
@@ -36,6 +37,14 @@ export function useAgentTools(options: UseAgentToolsOptions) {
 
   const [pendingActions, setPendingActions] = useState<ActionRequired[]>([]);
   const warnedKeysRef = useRef<Set<string>>(new Set());
+  const queuedFallbackResponsesRef = useRef<
+    Map<
+      string,
+      Omit<ConfirmResponse, "requestId"> & {
+        requestId: string;
+      }
+    >
+  >(new Map());
 
   const confirmAction = useCallback(
     async (response: ConfirmResponse) => {
@@ -94,7 +103,55 @@ export function useAgentTools(options: UseAgentToolsOptions) {
             });
 
             if (!resolvedAction) {
-              throw new Error("Ask 请求 ID 尚未就绪，请稍后再试");
+              queuedFallbackResponsesRef.current.set(fallbackPromptKey, {
+                ...response,
+                actionType,
+                requestId: pendingAction.requestId,
+                userData,
+              });
+              setPendingActions((prev) =>
+                prev.map((item) =>
+                  item.requestId === pendingAction.requestId
+                    ? {
+                        ...item,
+                        status: "queued",
+                        submittedResponse: normalizedResponse || undefined,
+                        submittedUserData,
+                      }
+                    : item,
+                ),
+              );
+              setMessages((prev) =>
+                prev.map((msg) => ({
+                  ...msg,
+                  actionRequests: msg.actionRequests?.map((item) =>
+                    item.requestId === pendingAction.requestId
+                      ? {
+                          ...item,
+                          status: "queued" as const,
+                          submittedResponse: normalizedResponse || undefined,
+                          submittedUserData,
+                        }
+                      : item,
+                  ),
+                  contentParts: msg.contentParts?.map((part) =>
+                    part.type === "action_required" &&
+                    part.actionRequired.requestId === pendingAction.requestId
+                      ? {
+                          ...part,
+                          actionRequired: {
+                            ...part.actionRequired,
+                            status: "queued" as const,
+                            submittedResponse: normalizedResponse || undefined,
+                            submittedUserData,
+                          },
+                        }
+                      : part,
+                  ),
+                })),
+              );
+              toast.info("已记录你的回答，等待系统请求就绪后自动提交");
+              return;
             }
 
             effectiveRequestId = resolvedAction.requestId;
@@ -189,6 +246,37 @@ export function useAgentTools(options: UseAgentToolsOptions) {
       setThreadItems,
     ],
   );
+
+  useEffect(() => {
+    for (const pendingAction of pendingActions) {
+      if (
+        pendingAction.isFallback ||
+        pendingAction.status === "submitted" ||
+        (pendingAction.actionType !== "ask_user" &&
+          pendingAction.actionType !== "elicitation")
+      ) {
+        continue;
+      }
+
+      const promptKey = resolveActionPromptKey(pendingAction);
+      if (!promptKey) {
+        continue;
+      }
+
+      const queuedResponse = queuedFallbackResponsesRef.current.get(promptKey);
+      if (!queuedResponse) {
+        continue;
+      }
+
+      queuedFallbackResponsesRef.current.delete(promptKey);
+      void confirmAction({
+        ...queuedResponse,
+        requestId: pendingAction.requestId,
+        actionType: pendingAction.actionType,
+      });
+      break;
+    }
+  }, [confirmAction, pendingActions]);
 
   const handlePermissionResponse = useCallback(
     async (response: ConfirmResponse) => {

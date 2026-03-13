@@ -658,6 +658,7 @@ pub fn build_history_tool_io_eviction_plan_for_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use proxycast_core::agent::types::{AgentMessage, FunctionCall, MessageContent, ToolCall};
     use std::ffi::OsString;
     use std::sync::{Mutex, OnceLock};

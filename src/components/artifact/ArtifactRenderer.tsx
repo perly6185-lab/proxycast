@@ -13,10 +13,22 @@ import React, {
   useEffect,
   useRef,
 } from "react";
-import { Loader2, AlertTriangle, RefreshCw } from "lucide-react";
+import {
+  AlertCircle,
+  AlertTriangle,
+  FileCode2,
+  FileText,
+  LayoutTemplate,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { artifactRegistry } from "@/lib/artifact/registry";
 import { useDebouncedValue } from "@/lib/artifact/hooks";
+import {
+  formatArtifactWritePhaseLabel,
+  resolveArtifactWritePhase,
+} from "@/components/agent/chat/utils/messageArtifacts";
 import { ErrorFallbackRenderer } from "./ErrorFallbackRenderer";
 import { CanvasAdapter } from "./CanvasAdapter";
 import type { Artifact, ArtifactRendererProps } from "@/lib/artifact/types";
@@ -95,13 +107,325 @@ const RendererSkeleton: React.FC<{ tone?: "dark" | "light" }> = memo(
           tone === "light" ? "text-muted-foreground" : "text-gray-400",
         )}
       >
-      <Loader2 className="w-8 h-8 animate-spin" />
-      <span className="text-sm">加载渲染器...</span>
+        <Loader2 className="w-8 h-8 animate-spin" />
+        <span className="text-sm">加载渲染器...</span>
       </div>
     </div>
   ),
 );
 RendererSkeleton.displayName = "RendererSkeleton";
+
+type EmptyArtifactSurfaceMode = "writing" | "finished" | "failed";
+type EmptyArtifactSkeletonKind = "document" | "code" | "preview" | "generic";
+
+interface EmptyArtifactSurfaceState {
+  mode: EmptyArtifactSurfaceMode;
+  title: string;
+  detail: string;
+  skeletonKind: EmptyArtifactSkeletonKind;
+}
+
+function resolveArtifactPath(artifact: Pick<Artifact, "title" | "meta">): string {
+  if (typeof artifact.meta.filePath === "string" && artifact.meta.filePath.trim()) {
+    return artifact.meta.filePath.trim();
+  }
+  if (typeof artifact.meta.filename === "string" && artifact.meta.filename.trim()) {
+    return artifact.meta.filename.trim();
+  }
+  return artifact.title;
+}
+
+function resolveEmptyArtifactSkeletonKind(
+  artifact: Pick<Artifact, "type">,
+): EmptyArtifactSkeletonKind {
+  if (artifact.type === "document" || artifact.type === "canvas:document") {
+    return "document";
+  }
+  if (artifact.type === "code") {
+    return "code";
+  }
+  if (
+    artifact.type === "html" ||
+    artifact.type === "svg" ||
+    artifact.type === "react" ||
+    artifact.type === "mermaid"
+  ) {
+    return "preview";
+  }
+  return "generic";
+}
+
+function resolveEmptyArtifactSurfaceState(
+  artifact: Pick<Artifact, "content" | "error" | "meta" | "status" | "type">,
+): EmptyArtifactSurfaceState | null {
+  if (artifact.content.trim()) {
+    return null;
+  }
+
+  const writePhase = resolveArtifactWritePhase(artifact);
+  const skeletonKind = resolveEmptyArtifactSkeletonKind(artifact);
+
+  if (
+    artifact.status === "error" ||
+    writePhase === "failed"
+  ) {
+    return {
+      mode: "failed",
+      title: "写入未完成",
+      detail:
+        artifact.error?.trim() ||
+        "文件写入过程中出现异常，暂时没有可渲染的内容。",
+      skeletonKind,
+    };
+  }
+
+  if (
+    artifact.status === "complete" ||
+    writePhase === "completed" ||
+    writePhase === "persisted"
+  ) {
+    return {
+      mode: "finished",
+      title: "写入已结束",
+      detail: "文件已经创建完成，但当前还没有可直接预览的内容。",
+      skeletonKind,
+    };
+  }
+
+  if (
+    artifact.status === "pending" ||
+    artifact.status === "streaming" ||
+    writePhase === "preparing" ||
+    writePhase === "streaming"
+  ) {
+    const phaseLabel = formatArtifactWritePhaseLabel(writePhase);
+    return {
+      mode: "writing",
+      title: phaseLabel,
+      detail:
+        writePhase === "preparing"
+          ? "文件已创建，正在生成首段内容。"
+          : "内容正在持续写入，首段到达后会立即替换这块骨架。",
+      skeletonKind,
+    };
+  }
+
+  return null;
+}
+
+const SkeletonBar: React.FC<{
+  className?: string;
+  tone?: "dark" | "light";
+}> = memo(({ className, tone = "dark" }) => (
+  <div
+    className={cn(
+      "h-3 animate-pulse rounded-full",
+      tone === "light" ? "bg-muted" : "bg-white/10",
+      className,
+    )}
+  />
+));
+SkeletonBar.displayName = "SkeletonBar";
+
+const DocumentSkeleton: React.FC<{ tone?: "dark" | "light" }> = memo(
+  ({ tone = "dark" }) => (
+    <div className="space-y-4">
+      <SkeletonBar tone={tone} className="h-6 w-1/3" />
+      <SkeletonBar tone={tone} className="w-full" />
+      <SkeletonBar tone={tone} className="w-5/6" />
+      <SkeletonBar tone={tone} className="w-[92%]" />
+      <div className="pt-4">
+        <SkeletonBar tone={tone} className="h-4 w-1/4" />
+      </div>
+      <SkeletonBar tone={tone} className="w-full" />
+      <SkeletonBar tone={tone} className="w-4/5" />
+      <SkeletonBar tone={tone} className="w-[88%]" />
+    </div>
+  ),
+);
+DocumentSkeleton.displayName = "DocumentSkeleton";
+
+const CodeSkeleton: React.FC<{ tone?: "dark" | "light" }> = memo(
+  ({ tone = "dark" }) => (
+    <div className="space-y-3">
+      {Array.from({ length: 8 }).map((_, index) => (
+        <div key={index} className="flex items-center gap-4">
+          <div
+            className={cn(
+              "w-6 text-right text-xs",
+              tone === "light" ? "text-muted-foreground/70" : "text-gray-500",
+            )}
+          >
+            {index + 1}
+          </div>
+          <SkeletonBar
+            tone={tone}
+            className={cn(
+              "h-3",
+              index % 3 === 0
+                ? "w-3/5"
+                : index % 3 === 1
+                  ? "w-4/5"
+                  : "w-2/3",
+            )}
+          />
+        </div>
+      ))}
+    </div>
+  ),
+);
+CodeSkeleton.displayName = "CodeSkeleton";
+
+const PreviewSkeleton: React.FC<{ tone?: "dark" | "light" }> = memo(
+  ({ tone = "dark" }) => (
+    <div className="space-y-4">
+      <div
+        className={cn(
+          "h-56 animate-pulse rounded-3xl border",
+          tone === "light"
+            ? "border-border bg-muted/70"
+            : "border-white/10 bg-white/5",
+        )}
+      />
+      <SkeletonBar tone={tone} className="w-1/3" />
+      <SkeletonBar tone={tone} className="w-2/3" />
+    </div>
+  ),
+);
+PreviewSkeleton.displayName = "PreviewSkeleton";
+
+const GenericSkeleton: React.FC<{ tone?: "dark" | "light" }> = memo(
+  ({ tone = "dark" }) => (
+    <div className="space-y-4">
+      <div
+        className={cn(
+          "flex h-28 w-full animate-pulse items-center justify-center rounded-3xl border",
+          tone === "light"
+            ? "border-border bg-muted/60"
+            : "border-white/10 bg-white/5",
+        )}
+      >
+        <FileText
+          className={cn(
+            "h-8 w-8",
+            tone === "light" ? "text-muted-foreground/70" : "text-gray-500",
+          )}
+        />
+      </div>
+      <SkeletonBar tone={tone} className="w-1/2" />
+      <SkeletonBar tone={tone} className="w-5/6" />
+      <SkeletonBar tone={tone} className="w-2/3" />
+    </div>
+  ),
+);
+GenericSkeleton.displayName = "GenericSkeleton";
+
+const EmptyArtifactSurface: React.FC<{
+  artifact: Artifact;
+  state: EmptyArtifactSurfaceState;
+  tone?: "dark" | "light";
+}> = memo(({ artifact, state, tone = "dark" }) => {
+  const filePath = resolveArtifactPath(artifact);
+  const isWriting = state.mode === "writing";
+  const isFailed = state.mode === "failed";
+  const Icon = isFailed
+    ? AlertCircle
+    : state.skeletonKind === "code"
+      ? FileCode2
+      : state.skeletonKind === "preview"
+        ? LayoutTemplate
+        : FileText;
+
+  return (
+    <div
+      data-testid="artifact-empty-surface"
+      data-empty-mode={state.mode}
+      className="flex h-full min-h-[320px] flex-col"
+    >
+      <div
+        className={cn(
+          "border-b px-5 py-4",
+          tone === "light"
+            ? "border-border bg-background"
+            : "border-white/10 bg-[#1e2227]",
+        )}
+      >
+        <div className="flex items-start gap-3">
+          <div
+            className={cn(
+              "mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl",
+              isFailed
+                ? "bg-destructive/10 text-destructive"
+                : tone === "light"
+                  ? "bg-primary/10 text-primary"
+                  : "bg-white/10 text-white",
+            )}
+          >
+            <Icon className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div
+              className={cn(
+                "text-sm font-semibold",
+                tone === "light" ? "text-foreground" : "text-white",
+              )}
+            >
+              {state.title}
+            </div>
+            <div
+              className={cn(
+                "mt-1 text-sm leading-6",
+                tone === "light" ? "text-muted-foreground" : "text-gray-400",
+              )}
+            >
+              {state.detail}
+            </div>
+            <div
+              className={cn(
+                "mt-2 truncate text-xs",
+                tone === "light" ? "text-muted-foreground/90" : "text-gray-500",
+              )}
+            >
+              {filePath}
+            </div>
+          </div>
+        </div>
+        {isWriting ? (
+          <div
+            className={cn(
+              "mt-4 h-1.5 overflow-hidden rounded-full",
+              tone === "light" ? "bg-muted" : "bg-white/10",
+            )}
+          >
+            <div
+              className={cn(
+                "h-full w-2/5 rounded-r-full animate-pulse",
+                tone === "light" ? "bg-primary/60" : "bg-white/40",
+              )}
+            />
+          </div>
+        ) : null}
+      </div>
+      <div
+        className={cn(
+          "flex-1 px-6 py-6",
+          tone === "light" ? "bg-background" : "bg-[#1e2227]",
+        )}
+      >
+        {state.skeletonKind === "document" ? (
+          <DocumentSkeleton tone={tone} />
+        ) : state.skeletonKind === "code" ? (
+          <CodeSkeleton tone={tone} />
+        ) : state.skeletonKind === "preview" ? (
+          <PreviewSkeleton tone={tone} />
+        ) : (
+          <GenericSkeleton tone={tone} />
+        )}
+      </div>
+    </div>
+  );
+});
+EmptyArtifactSurface.displayName = "EmptyArtifactSurface";
 
 /**
  * 流式状态指示器 Props
@@ -315,6 +639,22 @@ export const ArtifactRenderer: React.FC<ArtifactRendererComponentProps> = memo(
 
     // 获取渲染器注册项
     const entry = artifactRegistry.get(artifact.type);
+    const emptySurfaceState = resolveEmptyArtifactSurfaceState(artifact);
+
+    if (emptySurfaceState) {
+      return (
+        <div className={cn("relative h-full", className)}>
+          <EmptyArtifactSurface
+            artifact={artifact}
+            state={emptySurfaceState}
+            tone={tone}
+          />
+          {(isStreaming || isCompleting) && (
+            <StreamingIndicator isCompleting={isCompleting} />
+          )}
+        </div>
+      );
+    }
 
     // 如果有错误且选择显示源码，直接显示源码
     if (renderError && showSourceOnError) {

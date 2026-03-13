@@ -62,6 +62,21 @@ pub fn resolve_skills_dir() -> Result<PathBuf, String> {
     resolve_runtime_subdir("skills")
 }
 
+pub fn resolve_project_skills_dir() -> Option<PathBuf> {
+    std::env::current_dir()
+        .ok()
+        .map(|cwd| resolve_project_skills_dir_from_cwd(&cwd))
+}
+
+pub fn resolve_proxycast_skill_roots() -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::new();
+    if let Some(project_dir) = resolve_project_skills_dir() {
+        roots.push(project_dir);
+    }
+    roots.push(resolve_skills_dir()?);
+    Ok(roots)
+}
+
 pub fn resolve_user_memory_path() -> Result<PathBuf, String> {
     with_app_roots(resolve_user_memory_path_from_roots)
 }
@@ -96,6 +111,10 @@ fn resolve_runtime_subdir(subdir: &str) -> Result<PathBuf, String> {
 
 fn fallback_runtime_subdir(subdir: &str) -> PathBuf {
     fallback_app_data_dir().join(subdir)
+}
+
+fn resolve_project_skills_dir_from_cwd(cwd: &Path) -> PathBuf {
+    cwd.join(".agents").join("skills")
 }
 
 fn fallback_app_data_dir() -> PathBuf {
@@ -559,6 +578,13 @@ mod tests {
             fs::read_to_string(resolved.join("legacy-skill").join("SKILL.md")).unwrap(),
             "legacy skill"
         );
+    }
+
+    #[test]
+    fn resolve_project_skills_dir_from_cwd_builds_agents_skills_path() {
+        let cwd = Path::new("/tmp/workspace");
+        let resolved = resolve_project_skills_dir_from_cwd(cwd);
+        assert_eq!(resolved, cwd.join(".agents").join("skills"));
     }
 
     #[test]

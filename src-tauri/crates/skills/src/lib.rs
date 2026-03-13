@@ -21,8 +21,9 @@ pub use execution_callback::{
 pub use llm_provider::{LlmProvider, SkillError};
 pub use proxycast_llm_provider::ProxyCastLlmProvider;
 pub use skill_loader::{
-    find_skill_by_name, get_proxycast_skills_dir, load_skill_from_file, load_skills_from_directory,
-    parse_allowed_tools, parse_boolean, parse_skill_frontmatter, parse_workflow_steps,
-    LoadedSkillDefinition, SkillFrontmatter, SkillTriggerConfig, WorkflowStep,
+    find_skill_by_name, get_project_skills_dir, get_proxycast_skills_dir, get_skill_roots,
+    load_skill_from_file, load_skills_from_directory, parse_allowed_tools, parse_boolean,
+    parse_skill_frontmatter, parse_workflow_steps, LoadedSkillDefinition, SkillFrontmatter,
+    SkillTriggerConfig, WorkflowStep,
 };
 pub use skill_matcher::{SkillMatch, SkillMatcher};

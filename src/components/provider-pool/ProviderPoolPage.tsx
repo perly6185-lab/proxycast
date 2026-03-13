@@ -35,7 +35,6 @@ import { ProviderIcon } from "@/icons/providers";
 import { ApiKeyProviderSection, AddCustomProviderModal } from "./api-key";
 import type { ApiKeyProviderSectionRef } from "./api-key";
 import { RelayProvidersSection } from "./RelayProvidersSection";
-import { ModelRegistryTab } from "./ModelRegistryTab";
 import { AsrProviderSection } from "@/components/voice";
 import type { AddCustomProviderRequest } from "@/lib/api/apiKeyProvider";
 import {
@@ -85,7 +84,7 @@ const isConfigTab = (tab: TabType): tab is ConfigTabType => {
 };
 
 // 分类类型
-type CategoryType = "oauth" | "apikey" | "connect" | "models" | "voice";
+type CategoryType = "oauth" | "apikey" | "connect" | "voice";
 
 export const ProviderPoolPage = forwardRef<
   ProviderPoolPageRef,
@@ -400,19 +399,6 @@ export const ProviderPoolPage = forwardRef<
         </button>
         <button
           onClick={() => {
-            setActiveCategory("models");
-          }}
-          className={`px-4 py-2 text-sm font-medium rounded-lg border transition-colors ${
-            activeCategory === "models"
-              ? "border-primary bg-primary/10 text-primary"
-              : "border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted"
-          }`}
-          data-testid="models-category-tab"
-        >
-          模型库
-        </button>
-        <button
-          onClick={() => {
             setActiveCategory("voice");
           }}
           className={`px-4 py-2 text-sm font-medium rounded-lg border transition-colors ${
@@ -499,9 +485,6 @@ export const ProviderPoolPage = forwardRef<
           />
         </div>
       )}
-
-      {/* 模型库分类 */}
-      {activeCategory === "models" && <ModelRegistryTab />}
 
       {/* 语音服务分类 */}
       {activeCategory === "voice" && (

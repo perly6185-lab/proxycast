@@ -1,4 +1,10 @@
-import { useEffect, type ReactNode, type MouseEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type MouseEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
@@ -14,6 +20,10 @@ interface ModalProps {
   closeOnOverlayClick?: boolean;
   /** 内容区最大宽度，默认 max-w-lg */
   maxWidth?: string;
+  /** 是否允许拖拽弹窗 */
+  draggable?: boolean;
+  /** 指定拖拽手柄选择器，仅命中该区域时才允许拖拽 */
+  dragHandleSelector?: string;
 }
 
 export function Modal({
@@ -24,7 +34,17 @@ export function Modal({
   showCloseButton = true,
   closeOnOverlayClick = true,
   maxWidth = "max-w-lg",
+  draggable = false,
+  dragHandleSelector,
 }: ModalProps) {
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const dragStateRef = useRef<{
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+
   // ESC 键关闭
   useEffect(() => {
     if (!isOpen) return;
@@ -51,12 +71,77 @@ export function Modal({
     };
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen) {
+      setDragOffset({ x: 0, y: 0 });
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   const handleOverlayClick = (e: MouseEvent<HTMLDivElement>) => {
     if (closeOnOverlayClick && e.target === e.currentTarget) {
       onClose();
     }
+  };
+
+  const handleDragStart = (e: MouseEvent<HTMLDivElement>) => {
+    if (!draggable) {
+      return;
+    }
+
+    const target = e.target as HTMLElement | null;
+    if (
+      dragHandleSelector &&
+      (!target || !target.closest(dragHandleSelector))
+    ) {
+      return;
+    }
+
+    const insideInteractive = Boolean(
+      target?.closest(
+        'button, a, input, textarea, select, [role="button"], [role="link"]',
+      ),
+    );
+    const insideHandle = dragHandleSelector
+      ? Boolean(target?.closest(dragHandleSelector))
+      : true;
+
+    if (insideInteractive && !insideHandle) {
+      return;
+    }
+
+    dragStateRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: dragOffset.x,
+      originY: dragOffset.y,
+    };
+
+    const originalUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+
+    const handleMouseMove = (moveEvent: globalThis.MouseEvent) => {
+      const state = dragStateRef.current;
+      if (!state) {
+        return;
+      }
+
+      setDragOffset({
+        x: state.originX + (moveEvent.clientX - state.startX),
+        y: state.originY + (moveEvent.clientY - state.startY),
+      });
+    };
+
+    const handleMouseUp = () => {
+      dragStateRef.current = null;
+      document.body.style.userSelect = originalUserSelect;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
   };
 
   return createPortal(
@@ -66,6 +151,14 @@ export function Modal({
     >
       <div
         className={`relative w-full ${maxWidth} rounded-lg bg-background shadow-xl ${className}`}
+        data-draggable={draggable ? "true" : "false"}
+        onMouseDown={handleDragStart}
+        style={{
+          transform:
+            dragOffset.x !== 0 || dragOffset.y !== 0
+              ? `translate(${dragOffset.x}px, ${dragOffset.y}px)`
+              : undefined,
+        }}
       >
         {showCloseButton && (
           <button

@@ -295,6 +295,85 @@ pub fn run() {
                 tracing::info!("[启动] PluginManager 任务事件发射器已设置");
             }
 
+            let startup_runtime_resume = {
+                let aster_agent_state = app.try_state::<crate::agent::AsterAgentState>();
+                let db_state = app.try_state::<crate::database::DbConnection>();
+                let api_key_provider_service =
+                    app.try_state::<crate::commands::api_key_provider_cmd::ApiKeyProviderServiceState>();
+                let log_state = app.try_state::<crate::LogState>();
+                let config_manager = app.try_state::<crate::config::GlobalConfigManagerState>();
+                let mcp_manager = app.try_state::<crate::mcp::McpManagerState>();
+                let heartbeat_state =
+                    app.try_state::<crate::services::heartbeat_service::HeartbeatServiceState>();
+
+                match (
+                    aster_agent_state,
+                    db_state,
+                    api_key_provider_service,
+                    log_state,
+                    config_manager,
+                    mcp_manager,
+                    heartbeat_state,
+                ) {
+                    (
+                        Some(aster_agent_state),
+                        Some(db_state),
+                        Some(api_key_provider_service),
+                        Some(log_state),
+                        Some(config_manager),
+                        Some(mcp_manager),
+                        Some(heartbeat_state),
+                    ) => Some((
+                        app.handle().clone(),
+                        aster_agent_state.inner().clone(),
+                        db_state.inner().clone(),
+                        crate::commands::api_key_provider_cmd::ApiKeyProviderServiceState(
+                            api_key_provider_service.0.clone(),
+                        ),
+                        log_state.inner().clone(),
+                        crate::config::GlobalConfigManagerState(
+                            config_manager.0.clone(),
+                        ),
+                        mcp_manager.inner().clone(),
+                        heartbeat_state.inner().clone(),
+                    )),
+                    _ => None,
+                }
+            };
+
+            if let Some((
+                app_handle,
+                state,
+                db,
+                api_key_provider_service,
+                logs,
+                config_manager,
+                mcp_manager,
+                heartbeat_state,
+            )) = startup_runtime_resume
+            {
+                match crate::commands::aster_agent_cmd::resume_persisted_runtime_queues_on_startup(
+                    app_handle,
+                    &state,
+                    &db,
+                    &api_key_provider_service,
+                    &logs,
+                    &config_manager,
+                    &mcp_manager,
+                    &heartbeat_state,
+                ) {
+                    Ok(resumed) if resumed > 0 => {
+                        tracing::info!("[启动] 已恢复 {} 个会话的排队执行", resumed);
+                    }
+                    Ok(_) => {
+                        tracing::debug!("[启动] 无需恢复持久化排队执行");
+                    }
+                    Err(error) => {
+                        tracing::warn!("[启动] 恢复持久化排队执行失败: {}", error);
+                    }
+                }
+            }
+
             #[cfg(debug_assertions)]
             {
                 let app_handle = app.handle().clone();
@@ -1068,7 +1147,9 @@ pub fn run() {
             commands::skill_cmd::remove_skill_repo,
             commands::skill_cmd::refresh_skill_cache,
             commands::skill_cmd::get_installed_proxycast_skills,
-            commands::skill_cmd::get_local_skill_content,
+            commands::skill_cmd::inspect_local_skill_for_app,
+            commands::skill_cmd::create_skill_scaffold_for_app,
+            commands::skill_cmd::inspect_remote_skill,
             // Skill Execution commands
             commands::skill_exec_cmd::execute_skill,
             commands::skill_exec_cmd::list_executable_skills,
@@ -1288,6 +1369,7 @@ pub fn run() {
             commands::aster_agent_cmd::aster_agent_stop,
             commands::aster_agent_cmd::agent_runtime_submit_turn,
             commands::aster_agent_cmd::agent_runtime_interrupt_turn,
+            commands::aster_agent_cmd::agent_runtime_remove_queued_turn,
             commands::aster_agent_cmd::aster_session_create,
             commands::aster_agent_cmd::aster_session_set_execution_strategy,
             commands::aster_agent_cmd::aster_session_list,

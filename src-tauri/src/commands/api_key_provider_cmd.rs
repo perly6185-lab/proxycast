@@ -541,12 +541,34 @@ pub async fn test_api_key_provider_connection(
 pub async fn test_api_key_provider_chat(
     db: State<'_, DbConnection>,
     service: State<'_, ApiKeyProviderServiceState>,
+    model_registry_state: State<'_, crate::commands::model_registry_cmd::ModelRegistryState>,
     provider_id: String,
     model_name: Option<String>,
     prompt: String,
 ) -> Result<ChatTestResult, String> {
+    let provider = service
+        .0
+        .get_provider(&db, &provider_id)?
+        .ok_or_else(|| format!("Provider 不存在: {provider_id}"))?;
+
+    let fallback_models = {
+        let guard = model_registry_state.read().await;
+        if let Some(model_registry) = guard.as_ref() {
+            model_registry
+                .get_local_fallback_model_ids_with_hints(
+                    &provider_id,
+                    &provider.provider.api_host,
+                    Some(provider.provider.provider_type),
+                    &provider.provider.custom_models,
+                )
+                .await
+        } else {
+            Vec::new()
+        }
+    };
+
     service
         .0
-        .test_chat(&db, &provider_id, model_name, prompt)
+        .test_chat_with_fallback_models(&db, &provider_id, model_name, prompt, fallback_models)
         .await
 }

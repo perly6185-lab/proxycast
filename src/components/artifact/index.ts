@@ -31,6 +31,13 @@ export { ArtifactToolbar } from "./ArtifactToolbar";
 export type { ArtifactToolbarProps } from "./ArtifactToolbar";
 
 /**
+ * Artifact 画布过渡遮罩组件
+ * 在文件写入开始但首段内容尚未到达前展示稳定反馈
+ */
+export { ArtifactCanvasOverlay } from "./ArtifactCanvasOverlay";
+export type { ArtifactCanvasOverlayProps } from "./ArtifactCanvasOverlay";
+
+/**
  * Artifact 列表组件
  * 显示当前消息中的所有 artifacts
  */

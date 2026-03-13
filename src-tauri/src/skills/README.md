@@ -12,13 +12,14 @@
 
 ## Skills 集成架构
 
-### AI 自动调用 Skills（方案 A）
+### AI 自动调用 Skills（标准化后）
 
 ProxyCast 通过以下机制让 AI 能够自动发现和调用 Skills：
 
 1. **Agent 初始化时加载 Skills**
    - `AsterAgentState::init_agent_with_db()` 调用 `load_proxycast_skills()`
-   - 从 `~/.proxycast/skills/` 目录加载所有 Skills
+   - 技能包以 Agent Skills 标准 `SKILL.md` 为主格式
+   - 默认从应用级 Skills 目录加载，并支持项目级 `./.agents/skills`
    - 注册到 aster-rust 的 `global_registry`
 
 2. **SkillTool 自动注册**
@@ -95,3 +96,13 @@ commands/skill_cmd.rs
 
 - 设计文档: `.kiro/specs/skills-integration/design.md`
 - 需求文档: `.kiro/specs/skills-integration/requirements.md`
+- 路线图: `docs/roadmap/proxycast-skills-standardization-roadmap.md`
+
+## 当前标准约定
+
+- Agent Skills 是唯一标准格式
+- ProxyCast 私有能力统一写入 `metadata.proxycast_*`
+- Workflow 不再推荐使用 `steps-json` 内联，优先通过 `metadata.proxycast_workflow_ref` 指向 `references/` 下文件
+- 服务层和执行层共用 `SkillService::inspect_*` inspection 结果作为标准合规事实源，并向前端暴露标准合规状态与资源摘要
+- 无效 Skill 仍可在管理页中看到检查结果，但不会进入运行时自动加载和可执行列表
+- 管理链路支持创建最小标准 Skill 脚手架，新建结果会立即经过统一 inspection 校验

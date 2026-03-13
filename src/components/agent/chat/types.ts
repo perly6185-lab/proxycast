@@ -47,7 +47,7 @@ export interface ActionRequired {
   /** 请求的数据结构（elicitation 类型） */
   requestedSchema?: any;
   /** 前端交互状态（用于保留已提交的 ask/elicitation 面板） */
-  status?: "pending" | "submitted";
+  status?: "pending" | "queued" | "submitted";
   /** 是否为前端根据 Ask 工具调用生成的临时请求（尚未拿到真实 requestId） */
   isFallback?: boolean;
   /** 已提交的响应文本（用于展示回显） */
@@ -84,13 +84,34 @@ export interface ConfirmResponse {
   userData?: unknown;
 }
 
+export type ArtifactWriteSource =
+  | "tool_start"
+  | "artifact_snapshot"
+  | "tool_result"
+  | "message_content";
+
+export type ArtifactWritePhase =
+  | "preparing"
+  | "streaming"
+  | "persisted"
+  | "completed"
+  | "failed";
+
+export interface ArtifactWriteMetadata extends Record<string, unknown> {
+  writePhase?: ArtifactWritePhase;
+  previewText?: string;
+  latestChunk?: string;
+  isPartial?: boolean;
+  lastUpdateSource?: ArtifactWriteSource;
+}
+
 export interface WriteArtifactContext {
   artifact?: Artifact;
   artifactId?: string;
-  source?: "tool_start" | "artifact_snapshot" | "tool_result" | "message_content";
+  source?: ArtifactWriteSource;
   sourceMessageId?: string;
   status?: ArtifactStatus;
-  metadata?: Record<string, unknown>;
+  metadata?: ArtifactWriteMetadata;
 }
 
 export interface AgentRuntimeStatus {

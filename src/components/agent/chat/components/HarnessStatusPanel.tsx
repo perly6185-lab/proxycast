@@ -1,4 +1,15 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import {
   AlertCircle,
   Bot,
@@ -13,6 +24,7 @@ import {
   HardDriveDownload,
   ListChecks,
   Loader2,
+  Search,
   ShieldAlert,
   Sparkles,
   TerminalSquare,
@@ -42,13 +54,24 @@ import {
   openPathWithDefaultApp,
   revealPathInFinder,
 } from "@/lib/api/fileSystem";
+import { SearchResultPreviewList } from "./SearchResultPreviewList";
 import type { ActionRequired } from "../types";
 import type {
   HarnessFileAction,
+  HarnessActiveFileWrite,
   HarnessFileKind,
   HarnessOutputSignal,
   HarnessSessionState,
 } from "../utils/harnessState";
+import { formatArtifactWritePhaseLabel } from "../utils/messageArtifacts";
+import {
+  isUnifiedWebSearchToolName,
+  resolveSearchResultPreviewItemsFromText,
+} from "../utils/searchResultPreview";
+import {
+  classifySearchQuerySemantic,
+  summarizeSearchQuerySemantics,
+} from "../utils/searchQueryGrouping";
 
 interface HarnessEnvironmentSummary {
   skillsCount: number;
@@ -110,6 +133,7 @@ type FileDisplayMode = "timeline" | "grouped";
 type HarnessSectionKey =
   | "runtime"
   | "approvals"
+  | "writes"
   | "files"
   | "outputs"
   | "plan"
@@ -128,6 +152,18 @@ interface HarnessSummaryCard {
   value: string;
   hint: string;
   icon: LucideIcon;
+}
+
+interface TextSegment {
+  type: "text" | "url";
+  value: string;
+}
+
+const URL_PATTERN_SOURCE = String.raw`\bhttps?:\/\/[^\s<>"'\`]+`;
+const URL_TRAILING_PUNCTUATION = /[),.;!?]+$/;
+
+function createUrlPattern(): RegExp {
+  return new RegExp(URL_PATTERN_SOURCE, "gi");
 }
 
 function getFileName(path: string): string {
@@ -209,6 +245,93 @@ function resolveKindIcon(kind: HarnessFileKind): LucideIcon {
 
 function getSignalPath(signal: HarnessOutputSignal): string | undefined {
   return signal.offloadFile || signal.outputFile || signal.artifactPath;
+}
+
+function normalizeUrlCandidate(rawUrl: string): {
+  url: string;
+  trailing: string;
+} {
+  const normalized = rawUrl.replace(URL_TRAILING_PUNCTUATION, "");
+  return {
+    url: normalized || rawUrl,
+    trailing: rawUrl.slice((normalized || rawUrl).length),
+  };
+}
+
+function splitTextIntoSegments(text: string): TextSegment[] {
+  if (!text.trim()) {
+    return [{ type: "text", value: text }];
+  }
+
+  const segments: TextSegment[] = [];
+  let lastIndex = 0;
+  const urlPattern = createUrlPattern();
+
+  for (const match of text.matchAll(urlPattern)) {
+    const rawUrl = match[0];
+    const matchIndex = match.index ?? 0;
+
+    if (matchIndex > lastIndex) {
+      segments.push({
+        type: "text",
+        value: text.slice(lastIndex, matchIndex),
+      });
+    }
+
+    const { url, trailing } = normalizeUrlCandidate(rawUrl);
+    segments.push({ type: "url", value: url });
+    if (trailing) {
+      segments.push({ type: "text", value: trailing });
+    }
+    lastIndex = matchIndex + rawUrl.length;
+  }
+
+  if (lastIndex < text.length) {
+    segments.push({
+      type: "text",
+      value: text.slice(lastIndex),
+    });
+  }
+
+  return segments.length > 0 ? segments : [{ type: "text", value: text }];
+}
+
+function findFirstUrl(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+    const match = value.match(createUrlPattern());
+    if (!match || match.length === 0) {
+      continue;
+    }
+    return normalizeUrlCandidate(match[0]).url;
+  }
+  return undefined;
+}
+
+function isSearchOutputSignal(signal: HarnessOutputSignal): boolean {
+  if (isUnifiedWebSearchToolName(signal.toolName)) {
+    return true;
+  }
+
+  return signal.title === "联网检索摘要";
+}
+
+function isLikelyFilePath(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized || /^https?:\/\//i.test(normalized)) {
+    return false;
+  }
+
+  if (/^(~\/|\/|[A-Za-z]:[\\/]|\.{1,2}[\\/])/.test(normalized)) {
+    return true;
+  }
+
+  return (
+    /[\\/]/.test(normalized) &&
+    /\.[A-Za-z0-9_-]{1,12}(?:[#?].*)?$/.test(normalized)
+  );
 }
 
 function summarizeFileActions(events: HarnessSessionState["recentFileEvents"]): string {
@@ -310,6 +433,31 @@ function formatRuntimePhaseLabel(
   }
 }
 
+function formatWriteSourceLabel(source?: string): string {
+  switch (source) {
+    case "tool_start":
+      return "工具启动";
+    case "artifact_snapshot":
+      return "快照同步";
+    case "tool_result":
+      return "工具结果";
+    case "message_content":
+      return "消息流";
+    default:
+      return source || "运行中";
+  }
+}
+
+function getActiveWriteDescription(write: HarnessActiveFileWrite): string {
+  const parts = [
+    formatArtifactWritePhaseLabel(write.phase),
+    write.source ? formatWriteSourceLabel(write.source) : undefined,
+    write.updatedAt ? formatTime(write.updatedAt) : undefined,
+  ].filter(Boolean);
+
+  return parts.join(" · ");
+}
+
 function summarizeSchedulerEvent(event: SchedulerEvent): string {
   switch (event.type) {
     case "started":
@@ -335,24 +483,377 @@ function summarizeSchedulerEvent(event: SchedulerEvent): string {
   }
 }
 
+async function openExternalUrl(url: string): Promise<void> {
+  try {
+    await openExternal(url);
+  } catch {
+    if (typeof window !== "undefined" && typeof window.open === "function") {
+      window.open(url, "_blank");
+      return;
+    }
+    throw new Error("当前环境不支持打开外部链接");
+  }
+}
+
+function InteractiveText({
+  text,
+  className,
+  mono = false,
+  stopPropagation = false,
+  onOpenUrl,
+}: {
+  text?: string;
+  className?: string;
+  mono?: boolean;
+  stopPropagation?: boolean;
+  onOpenUrl: (url: string) => void | Promise<void>;
+}) {
+  if (!text?.trim()) {
+    return null;
+  }
+
+  const segments = splitTextIntoSegments(text);
+
+  return (
+    <span
+      className={cn(
+        "whitespace-pre-wrap break-all",
+        mono && "font-mono",
+        className,
+      )}
+    >
+      {segments.map((segment, index) => {
+        if (segment.type === "text") {
+          return (
+            <span key={`text-${index}`} className="whitespace-pre-wrap">
+              {segment.value}
+            </span>
+          );
+        }
+
+        const handleOpen = (
+          event:
+            | ReactMouseEvent<HTMLSpanElement>
+            | ReactKeyboardEvent<HTMLSpanElement>,
+        ) => {
+          if ("key" in event && event.key !== "Enter" && event.key !== " ") {
+            return;
+          }
+          event.preventDefault();
+          if (stopPropagation) {
+            event.stopPropagation();
+          }
+          void onOpenUrl(segment.value);
+        };
+
+        return (
+          <span
+            key={`url-${segment.value}-${index}`}
+            role="link"
+            tabIndex={0}
+            aria-label={`打开链接：${segment.value}`}
+            className="cursor-pointer underline decoration-dotted underline-offset-2 text-primary transition-colors hover:text-primary/80"
+            onClick={handleOpen}
+            onKeyDown={handleOpen}
+          >
+            {segment.value}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+function PathTextLink({
+  path,
+  className,
+  stopPropagation = false,
+  onOpenPath,
+}: {
+  path?: string;
+  className?: string;
+  stopPropagation?: boolean;
+  onOpenPath: (path: string) => void | Promise<void>;
+}) {
+  if (!path?.trim()) {
+    return null;
+  }
+
+  const normalizedPath = path.trim();
+
+  const handleOpen = (
+    event:
+      | ReactMouseEvent<HTMLSpanElement>
+      | ReactKeyboardEvent<HTMLSpanElement>,
+  ) => {
+    if ("key" in event && event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    if (stopPropagation) {
+      event.stopPropagation();
+    }
+    void onOpenPath(normalizedPath);
+  };
+
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      aria-label={`系统打开路径：${normalizedPath}`}
+      className={cn(
+        "cursor-pointer break-all underline decoration-dotted underline-offset-2 text-primary transition-colors hover:text-primary/80",
+        className,
+      )}
+      onClick={handleOpen}
+      onKeyDown={handleOpen}
+    >
+      {normalizedPath}
+    </span>
+  );
+}
+
+function ActionableBadge({
+  value,
+  variant,
+  onOpenUrl,
+  onOpenPath,
+}: {
+  value: string;
+  variant: ComponentProps<typeof Badge>["variant"];
+  onOpenUrl: (url: string) => void | Promise<void>;
+  onOpenPath: (path: string) => void | Promise<void>;
+}) {
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const matchedUrl = findFirstUrl(normalized);
+  if (matchedUrl && matchedUrl === normalized) {
+    return (
+      <Badge variant={variant} className="max-w-full whitespace-normal">
+        <InteractiveText text={normalized} onOpenUrl={onOpenUrl} />
+      </Badge>
+    );
+  }
+
+  if (isLikelyFilePath(normalized)) {
+    return (
+      <Badge variant={variant} className="max-w-full whitespace-normal">
+        <PathTextLink path={normalized} onOpenPath={onOpenPath} />
+      </Badge>
+    );
+  }
+
+  return <Badge variant={variant}>{normalized}</Badge>;
+}
+
+function SearchOutputCard({
+  signal,
+  onOpenUrl,
+  onOpenDetail,
+}: {
+  signal: HarnessOutputSignal;
+  onOpenUrl: (url: string) => void | Promise<void>;
+  onOpenDetail: () => void;
+}) {
+  const [resultsExpanded, setResultsExpanded] = useState(true);
+  const results = useMemo(
+    () =>
+      resolveSearchResultPreviewItemsFromText(
+        signal.content?.trim() || signal.preview?.trim() || signal.summary.trim(),
+      ),
+    [signal.content, signal.preview, signal.summary],
+  );
+
+  useEffect(() => {
+    setResultsExpanded(true);
+  }, [signal.id]);
+  const semantic = useMemo(
+    () => classifySearchQuerySemantic(signal.summary),
+    [signal.summary],
+  );
+
+  return (
+    <div className="rounded-xl border border-border bg-background p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-xs font-medium text-orange-600">
+            <span className="h-2 w-2 rounded-full bg-emerald-500" />
+            <Search className="h-3.5 w-3.5" />
+            <span>已搜索</span>
+          </div>
+          <div className="mt-2 truncate text-sm font-semibold text-foreground">
+            {signal.summary}
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {signal.title}
+            {results.length > 0 ? ` · ${results.length} 条结果` : ""}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Badge variant="secondary">{semantic.label}</Badge>
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {results.length > 0 ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded-full"
+              aria-label={
+                resultsExpanded
+                  ? `收起搜索结果：${signal.summary}`
+                  : `展开搜索结果：${signal.summary}`
+              }
+              onClick={() => setResultsExpanded((prev) => !prev)}
+            >
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 transition-transform",
+                  resultsExpanded && "rotate-180",
+                )}
+              />
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-full"
+            aria-label={`查看工具输出：${signal.title}`}
+            onClick={onOpenDetail}
+          >
+            <Eye className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      {results.length > 0 && resultsExpanded ? (
+        <SearchResultPreviewList
+          items={results}
+          onOpenUrl={onOpenUrl}
+          popoverSide="left"
+          popoverAlign="start"
+          className="mt-3"
+        />
+      ) : !results.length && signal.preview ? (
+        <div className="mt-3 rounded-xl bg-muted/50 px-3 py-3 text-xs text-muted-foreground">
+          <InteractiveText text={signal.preview} onOpenUrl={onOpenUrl} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SearchOutputBatchCard({
+  signals,
+  onOpenUrl,
+  onOpenDetail,
+}: {
+  signals: HarnessOutputSignal[];
+  onOpenUrl: (url: string) => void | Promise<void>;
+  onOpenDetail: (signal: HarnessOutputSignal) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const semanticSummaries = useMemo(
+    () => summarizeSearchQuerySemantics(signals.map((signal) => signal.summary)),
+    [signals],
+  );
+  const preview = signals
+    .slice(0, 2)
+    .map((signal) => signal.summary)
+    .join(" · ");
+  const hiddenCount = Math.max(signals.length - 2, 0);
+
+  return (
+    <div className="rounded-xl border border-border bg-background p-3">
+      <button
+        type="button"
+        className="flex w-full items-start gap-3 text-left"
+        onClick={() => setExpanded((prev) => !prev)}
+        aria-label={expanded ? "收起搜索批次" : "展开搜索批次"}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-xs font-medium text-orange-600">
+            <span className="h-2 w-2 rounded-full bg-emerald-500" />
+            <Search className="h-3.5 w-3.5" />
+            <span>已搜索 {signals.length} 组查询</span>
+          </div>
+          <div className="mt-2 truncate text-sm font-semibold text-foreground">
+            {preview}
+            {hiddenCount > 0 ? ` 等 ${hiddenCount} 组` : ""}
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            联网检索批次
+          </div>
+        </div>
+        <span
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground"
+          aria-hidden="true"
+        >
+          <ChevronDown
+            className={cn(
+              "h-4 w-4 transition-transform",
+              expanded && "rotate-180",
+            )}
+          />
+        </span>
+      </button>
+      {semanticSummaries.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {semanticSummaries.map((item) => (
+            <Badge key={item.key} variant="secondary">
+              {item.label} {item.count}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+
+      {expanded ? (
+        <div className="mt-3 space-y-3">
+          {signals.map((signal) => (
+            <SearchOutputCard
+              key={signal.id}
+              signal={signal}
+              onOpenUrl={onOpenUrl}
+              onOpenDetail={() => onOpenDetail(signal)}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SummaryCard({
   title,
   value,
   hint,
   icon: Icon,
   onClick,
+  compact = false,
 }: {
   title: string;
   value: string;
   hint: string;
   icon: LucideIcon;
   onClick?: () => void;
+  compact?: boolean;
 }) {
   const cardContent = (
     <div className="flex items-start justify-between gap-3">
       <div>
         <div className="text-xs font-medium text-muted-foreground">{title}</div>
-        <div className="mt-1 text-base font-semibold text-foreground">{value}</div>
+        <div
+          className={cn(
+            "mt-1 font-semibold text-foreground",
+            compact ? "text-sm" : "text-base",
+          )}
+        >
+          {value}
+        </div>
         <div className="mt-1 text-xs text-muted-foreground">{hint}</div>
       </div>
       <div className="rounded-lg bg-muted p-2 text-muted-foreground">
@@ -365,7 +866,10 @@ function SummaryCard({
     return (
       <button
         type="button"
-        className="rounded-xl border border-border bg-background/80 p-3 text-left transition-colors hover:bg-muted/60"
+        className={cn(
+          "rounded-xl border border-border bg-background/80 text-left transition-colors hover:bg-muted/60",
+          compact ? "p-2.5" : "p-3",
+        )}
         onClick={onClick}
         aria-label={`跳转到${title}`}
       >
@@ -375,7 +879,12 @@ function SummaryCard({
   }
 
   return (
-    <div className="rounded-xl border border-border bg-background/80 p-3">
+    <div
+      className={cn(
+        "rounded-xl border border-border bg-background/80",
+        compact ? "p-2.5" : "p-3",
+      )}
+    >
       {cardContent}
     </div>
   );
@@ -519,6 +1028,36 @@ export function HarnessStatusPanel({
     [harnessState.outputSignals, outputFilter],
   );
 
+  const groupedOutputEntries = useMemo(() => {
+    const entries: Array<
+      | { type: "single"; signal: HarnessOutputSignal }
+      | { type: "search_batch"; signals: HarnessOutputSignal[] }
+    > = [];
+
+    for (const signal of filteredOutputSignals) {
+      const isSearch = isSearchOutputSignal(signal);
+      const lastEntry = entries[entries.length - 1];
+
+      if (
+        isSearch &&
+        lastEntry &&
+        lastEntry.type === "search_batch"
+      ) {
+        lastEntry.signals.push(signal);
+        continue;
+      }
+
+      if (isSearch) {
+        entries.push({ type: "search_batch", signals: [signal] });
+        continue;
+      }
+
+      entries.push({ type: "single", signal });
+    }
+
+    return entries;
+  }, [filteredOutputSignals]);
+
   const groupedFileEvents = useMemo(() => {
     const groups = new Map<
       string,
@@ -580,14 +1119,17 @@ export function HarnessStatusPanel({
       if (harnessState.runtimeStatus) {
         sections.push({ key: "runtime", label: "当前阶段" });
       }
+      if (harnessState.activeFileWrites.length > 0) {
+        sections.push({ key: "writes", label: "文件写入" });
+      }
+      if (harnessState.outputSignals.length > 0) {
+        sections.push({ key: "outputs", label: "工具输出" });
+      }
       if (harnessState.pendingApprovals.length > 0) {
         sections.push({ key: "approvals", label: "待审批" });
       }
       if (harnessState.recentFileEvents.length > 0) {
         sections.push({ key: "files", label: "文件活动" });
-      }
-      if (harnessState.outputSignals.length > 0) {
-        sections.push({ key: "outputs", label: "工具输出" });
       }
       if (
         harnessState.plan.phase !== "idle" ||
@@ -614,6 +1156,7 @@ export function HarnessStatusPanel({
     },
     [
       harnessState.delegatedTasks.length,
+      harnessState.activeFileWrites.length,
       harnessState.latestContextTrace.length,
       harnessState.outputSignals.length,
       harnessState.pendingApprovals.length,
@@ -641,6 +1184,18 @@ export function HarnessStatusPanel({
             harnessState.runtimeStatus.detail ||
             harnessState.runtimeStatus.title,
           icon: Loader2,
+        });
+      }
+
+      if (harnessState.activeFileWrites.length > 0) {
+        cards.push({
+          sectionKey: "writes",
+          title: "文件写入",
+          value: `${harnessState.activeFileWrites.length}`,
+          hint:
+            harnessState.activeFileWrites[0]?.displayName ||
+            "暂无正在处理的文件",
+          icon: FileText,
         });
       }
 
@@ -693,6 +1248,7 @@ export function HarnessStatusPanel({
       environment.activeContextCount,
       environment.contextEnabled,
       environment.contextItemsCount,
+      harnessState.activeFileWrites,
       harnessState.pendingApprovals.length,
       harnessState.plan.items,
       harnessState.plan.phase,
@@ -831,6 +1387,37 @@ export function HarnessStatusPanel({
     }
   }, [previewDialog.content]);
 
+  const handleOpenPathValue = useCallback(
+    async (path: string) => {
+      const normalizedPath = path.trim();
+      if (!normalizedPath) {
+        toast.error("当前没有可打开的文件路径");
+        return;
+      }
+
+      try {
+        await (onOpenPath ?? openPathWithDefaultApp)(normalizedPath);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "打开文件失败");
+      }
+    },
+    [onOpenPath],
+  );
+
+  const handleOpenExternalLink = useCallback(async (url: string) => {
+    const normalizedUrl = url.trim();
+    if (!normalizedUrl) {
+      toast.error("当前没有可打开的链接");
+      return;
+    }
+
+    try {
+      await openExternalUrl(normalizedUrl);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "打开链接失败");
+    }
+  }, []);
+
   const handleRevealPath = useCallback(async () => {
     const path = previewDialog.path?.trim();
     if (!path) {
@@ -852,12 +1439,8 @@ export function HarnessStatusPanel({
       return;
     }
 
-    try {
-      await (onOpenPath ?? openPathWithDefaultApp)(path);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "打开文件失败");
-    }
-  }, [onOpenPath, previewDialog.path]);
+    await handleOpenPathValue(path);
+  }, [handleOpenPathValue, previewDialog.path]);
 
   return (
     <>
@@ -869,11 +1452,18 @@ export function HarnessStatusPanel({
           layout === "sidebar"
             ? "rounded-xl border border-border"
             : layout === "dialog"
-              ? "overflow-hidden rounded-xl border border-border/70 bg-background"
+              ? "flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border/70 bg-background"
               : "mx-3 mt-2 rounded-2xl border border-border",
         )}
       >
-        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div
+          data-harness-drag-handle={isDialogLayout ? "true" : undefined}
+          className={cn(
+            "flex items-center justify-between gap-3 border-b border-border px-4 py-3",
+            isDialogLayout &&
+              "shrink-0 cursor-grab select-none px-5 py-4 active:cursor-grabbing",
+          )}
+        >
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <Wrench className="h-4 w-4 text-muted-foreground" />
@@ -916,13 +1506,25 @@ export function HarnessStatusPanel({
         </div>
 
         {leadContent ? (
-          <div className="border-b border-border px-4 py-4">{leadContent}</div>
+          <div
+            className={cn(
+              "border-b border-border px-4 py-4",
+              isDialogLayout && "shrink-0 px-5 py-4",
+            )}
+          >
+            {leadContent}
+          </div>
         ) : null}
 
         <div
           className={cn(
-            "grid gap-3 px-4 py-4",
-            layout === "sidebar" ? "grid-cols-1" : "md:grid-cols-2 xl:grid-cols-4",
+            "grid gap-2 px-4 py-4",
+            isDialogLayout && "shrink-0 px-5 py-3",
+            layout === "sidebar"
+              ? "grid-cols-1"
+              : isDialogLayout
+                ? "sm:grid-cols-2 xl:grid-cols-5"
+                : "md:grid-cols-2 xl:grid-cols-4",
           )}
         >
           {summaryCards.map((card) => (
@@ -933,6 +1535,7 @@ export function HarnessStatusPanel({
               hint={card.hint}
               icon={card.icon}
               onClick={() => scrollToSection(card.sectionKey)}
+              compact={isDialogLayout}
             />
           ))}
         </div>
@@ -944,13 +1547,19 @@ export function HarnessStatusPanel({
               layout === "sidebar"
                 ? "max-h-[24rem]"
                 : layout === "dialog"
-                  ? "max-h-[58vh]"
+                  ? "flex-1 min-h-0 overscroll-contain px-5"
                   : "max-h-[28rem]",
             )}
           >
             <div className="space-y-4 pb-1">
               {availableSections.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
+                <div
+                  className={cn(
+                    "flex flex-wrap gap-2",
+                    isDialogLayout &&
+                      "sticky top-0 z-10 -mx-1 -mt-1 bg-background/95 px-1 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/80",
+                  )}
+                >
                   {availableSections.map((item) => (
                     <button
                       key={item.key}
@@ -964,6 +1573,312 @@ export function HarnessStatusPanel({
                   ))}
                 </div>
               ) : null}
+              {harnessState.runtimeStatus ? (
+                <Section
+                  sectionKey="runtime"
+                  title="当前执行阶段"
+                  badge={formatRuntimePhaseLabel(harnessState.runtimeStatus)}
+                  registerRef={registerSectionRef}
+                >
+                  <div className="space-y-3">
+                    <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
+                      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                        <span>{harnessState.runtimeStatus.title}</span>
+                      </div>
+                      <InteractiveText
+                        text={harnessState.runtimeStatus.detail}
+                        className="mt-2 text-sm text-muted-foreground"
+                        onOpenUrl={handleOpenExternalLink}
+                      />
+                    </div>
+
+                    {harnessState.runtimeStatus.checkpoints &&
+                    harnessState.runtimeStatus.checkpoints.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {harnessState.runtimeStatus.checkpoints.map(
+                          (checkpoint, index) => (
+                            <ActionableBadge
+                              key={`${checkpoint}-${index}`}
+                              variant="outline"
+                              value={checkpoint}
+                              onOpenUrl={handleOpenExternalLink}
+                              onOpenPath={handleOpenPathValue}
+                            />
+                          ),
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                </Section>
+              ) : null}
+
+              {harnessState.activeFileWrites.length > 0 ? (
+                <Section
+                  sectionKey="writes"
+                  title="当前文件写入"
+                  badge={`${harnessState.activeFileWrites.length} 条`}
+                  registerRef={registerSectionRef}
+                >
+                  <div className="space-y-3">
+                    {harnessState.activeFileWrites.map((write) => (
+                      <button
+                        key={write.id}
+                        type="button"
+                        className="w-full rounded-xl border border-border bg-background p-3 text-left transition-colors hover:bg-muted/60"
+                        onClick={() =>
+                          void openPreview({
+                            title: write.displayName,
+                            description: getActiveWriteDescription(write),
+                            path: write.path,
+                            content: write.content,
+                            preview: write.preview || write.latestChunk,
+                          })
+                        }
+                        aria-label={`查看文件写入：${write.displayName}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <FileText className="h-4 w-4 text-muted-foreground" />
+                              <span className="truncate text-sm font-medium text-foreground">
+                                {write.displayName}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {getActiveWriteDescription(write)}
+                            </div>
+                            <PathTextLink
+                              path={write.path}
+                              className="mt-1 text-xs"
+                              stopPropagation={true}
+                              onOpenPath={handleOpenPathValue}
+                            />
+                          </div>
+                          <Badge variant="outline">
+                            {formatArtifactWritePhaseLabel(write.phase)}
+                          </Badge>
+                        </div>
+                        {write.preview || write.latestChunk ? (
+                          <div className="mt-2 rounded-lg bg-muted/50 p-2 text-xs text-muted-foreground">
+                            <InteractiveText
+                              text={write.preview || write.latestChunk}
+                              mono={true}
+                              stopPropagation={true}
+                              onOpenUrl={handleOpenExternalLink}
+                            />
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            正在准备文件内容...
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </Section>
+              ) : null}
+
+              {harnessState.outputSignals.length > 0 ? (
+                <Section
+                  sectionKey="outputs"
+                  title="工具输出"
+                  badge={
+                    filteredOutputSignals.length === harnessState.outputSignals.length
+                      ? `${harnessState.outputSignals.length} 条`
+                      : `${filteredOutputSignals.length} / ${harnessState.outputSignals.length} 条`
+                  }
+                  registerRef={registerSectionRef}
+                >
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      {outputFilterOptions.map((option) => {
+                        const count =
+                          option.value === "all"
+                            ? harnessState.outputSignals.length
+                            : harnessState.outputSignals.filter((signal) =>
+                                matchesOutputFilter(signal, option.value),
+                              ).length;
+                        const active = option.value === outputFilter;
+
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className={cn(
+                              "rounded-full border px-3 py-1 text-xs transition-colors",
+                              active
+                                ? "border-primary bg-primary/10 text-foreground"
+                                : "border-border bg-background text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                            )}
+                            onClick={() => setOutputFilter(option.value)}
+                            aria-pressed={active}
+                            aria-label={`工具输出筛选：${option.label}`}
+                          >
+                            {option.label} {count}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {filteredOutputSignals.length > 0 ? (
+                      groupedOutputEntries.map((entry) => {
+                        if (entry.type === "search_batch") {
+                          if (entry.signals.length === 1) {
+                            const signal = entry.signals[0];
+                            return (
+                              <SearchOutputCard
+                                key={signal.id}
+                                signal={signal}
+                                onOpenUrl={handleOpenExternalLink}
+                                onOpenDetail={() =>
+                                  void openPreview({
+                                    title: signal.title,
+                                    description: signal.summary,
+                                    path: getSignalPath(signal),
+                                    content: signal.content,
+                                    preview: signal.preview,
+                                  })
+                                }
+                              />
+                            );
+                          }
+
+                          return (
+                            <SearchOutputBatchCard
+                              key={entry.signals.map((signal) => signal.id).join("|")}
+                              signals={entry.signals}
+                              onOpenUrl={handleOpenExternalLink}
+                              onOpenDetail={(signal) =>
+                                void openPreview({
+                                  title: signal.title,
+                                  description: signal.summary,
+                                  path: getSignalPath(signal),
+                                  content: signal.content,
+                                  preview: signal.preview,
+                                })
+                              }
+                            />
+                          );
+                        }
+
+                        const signal = entry.signal;
+                        const signalPath = getSignalPath(signal);
+                        const signalUrl = findFirstUrl(
+                          signal.summary,
+                          signal.content,
+                          signal.preview,
+                          signal.title,
+                        );
+                        const canOpenPreview = Boolean(
+                          signalPath || signal.content || signal.preview,
+                        );
+                        const canOpenUrl = !canOpenPreview && Boolean(signalUrl);
+
+                        return (
+                          <button
+                            key={signal.id}
+                            type="button"
+                            className={cn(
+                              "w-full rounded-xl border border-border bg-background p-3 text-left transition-colors hover:bg-muted/60",
+                              !canOpenPreview && !canOpenUrl && "cursor-default",
+                            )}
+                            onClick={() =>
+                              canOpenPreview
+                                ? void openPreview({
+                                    title: signal.title,
+                                    description: signal.summary,
+                                    path: signalPath,
+                                    content: signal.content,
+                                    preview: signal.preview,
+                                  })
+                                : signalUrl
+                                  ? void handleOpenExternalLink(signalUrl)
+                                : undefined
+                            }
+                            aria-label={`查看工具输出：${signal.title}`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <TerminalSquare className="h-4 w-4 text-muted-foreground" />
+                                  <span className="truncate text-sm font-medium text-foreground">
+                                    {signal.title}
+                                  </span>
+                                </div>
+                                <InteractiveText
+                                  text={signal.summary}
+                                  className="mt-1 text-xs text-muted-foreground"
+                                  stopPropagation={true}
+                                  onOpenUrl={handleOpenExternalLink}
+                                />
+                                <PathTextLink
+                                  path={signalPath}
+                                  className="mt-1 text-xs"
+                                  stopPropagation={true}
+                                  onOpenPath={handleOpenPathValue}
+                                />
+                              </div>
+                              <Badge variant="outline">{signal.toolName}</Badge>
+                            </div>
+                            {signal.preview ? (
+                              <div className="mt-2 rounded-lg bg-muted/50 p-2 text-xs text-muted-foreground">
+                                <InteractiveText
+                                  text={signal.preview}
+                                  mono={true}
+                                  stopPropagation={true}
+                                  onOpenUrl={handleOpenExternalLink}
+                                />
+                              </div>
+                            ) : null}
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
+                        当前筛选条件下暂无记录。
+                      </div>
+                    )}
+                  </div>
+                </Section>
+              ) : null}
+
+              {harnessState.pendingApprovals.length > 0 ? (
+                <Section
+                  sectionKey="approvals"
+                  title="待处理审批"
+                  badge={`${harnessState.pendingApprovals.length} 条`}
+                  registerRef={registerSectionRef}
+                >
+                  <div className="space-y-3">
+                    {harnessState.pendingApprovals.map((item) => (
+                      <div
+                        key={item.requestId}
+                        className="rounded-xl border border-amber-200 bg-amber-50/80 p-3"
+                      >
+                        <div className="flex items-center gap-2 text-sm font-medium text-amber-900">
+                          <ShieldAlert className="h-4 w-4" />
+                          <InteractiveText
+                            text={item.prompt || "等待用户确认"}
+                            className="text-sm"
+                            onOpenUrl={handleOpenExternalLink}
+                          />
+                        </div>
+                        {describeApproval(item) ? (
+                          <InteractiveText
+                            text={describeApproval(item)}
+                            className="mt-2 text-xs text-amber-800"
+                            onOpenUrl={handleOpenExternalLink}
+                          />
+                        ) : null}
+                        <div className="mt-2 text-xs text-amber-700">
+                          请求 ID：{item.requestId}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Section>
+              ) : null}
+
               {harnessState.recentFileEvents.length > 0 ? (
                 <Section
                   sectionKey="files"
@@ -1063,9 +1978,12 @@ export function HarnessStatusPanel({
                                       {group.displayName}
                                     </span>
                                   </div>
-                                  <div className="mt-1 truncate text-xs text-muted-foreground">
-                                    {group.path}
-                                  </div>
+                                  <PathTextLink
+                                    path={group.path}
+                                    className="mt-1 text-xs"
+                                    stopPropagation={true}
+                                    onOpenPath={handleOpenPathValue}
+                                  />
                                 </div>
                                 <div className="flex shrink-0 items-center gap-2">
                                   <Badge variant="outline">{group.count} 次活动</Badge>
@@ -1083,9 +2001,14 @@ export function HarnessStatusPanel({
                                 <span>{group.actionSummary}</span>
                               </div>
                               {latestEvent.preview ? (
-                                <pre className="mt-2 overflow-hidden whitespace-pre-wrap break-all rounded-lg bg-muted/50 p-2 text-xs text-muted-foreground">
-                                  {latestEvent.preview}
-                                </pre>
+                                <div className="mt-2 rounded-lg bg-muted/50 p-2 text-xs text-muted-foreground">
+                                  <InteractiveText
+                                    text={latestEvent.preview}
+                                    mono={true}
+                                    stopPropagation={true}
+                                    onOpenUrl={handleOpenExternalLink}
+                                  />
+                                </div>
                               ) : null}
                             </button>
                           );
@@ -1117,9 +2040,12 @@ export function HarnessStatusPanel({
                                       {event.displayName}
                                     </span>
                                   </div>
-                                  <div className="mt-1 truncate text-xs text-muted-foreground">
-                                    {event.path}
-                                  </div>
+                                  <PathTextLink
+                                    path={event.path}
+                                    className="mt-1 text-xs"
+                                    stopPropagation={true}
+                                    onOpenPath={handleOpenPathValue}
+                                  />
                                 </div>
                                 <div className="flex shrink-0 items-center gap-2">
                                   <Badge variant="outline">
@@ -1137,9 +2063,14 @@ export function HarnessStatusPanel({
                                 <span>{event.sourceToolName}</span>
                               </div>
                               {event.preview ? (
-                                <pre className="mt-2 overflow-hidden whitespace-pre-wrap break-all rounded-lg bg-muted/50 p-2 text-xs text-muted-foreground">
-                                  {event.preview}
-                                </pre>
+                                <div className="mt-2 rounded-lg bg-muted/50 p-2 text-xs text-muted-foreground">
+                                  <InteractiveText
+                                    text={event.preview}
+                                    mono={true}
+                                    stopPropagation={true}
+                                    onOpenUrl={handleOpenExternalLink}
+                                  />
+                                </div>
                               ) : null}
                             </button>
                           );
@@ -1150,175 +2081,6 @@ export function HarnessStatusPanel({
                         当前筛选条件下暂无记录。
                       </div>
                     )}
-                  </div>
-                </Section>
-              ) : null}
-
-              {harnessState.outputSignals.length > 0 ? (
-                <Section
-                  sectionKey="outputs"
-                  title="工具输出"
-                  badge={
-                    filteredOutputSignals.length === harnessState.outputSignals.length
-                      ? `${harnessState.outputSignals.length} 条`
-                      : `${filteredOutputSignals.length} / ${harnessState.outputSignals.length} 条`
-                  }
-                  registerRef={registerSectionRef}
-                >
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap gap-2">
-                      {outputFilterOptions.map((option) => {
-                        const count =
-                          option.value === "all"
-                            ? harnessState.outputSignals.length
-                            : harnessState.outputSignals.filter((signal) =>
-                                matchesOutputFilter(signal, option.value),
-                              ).length;
-                        const active = option.value === outputFilter;
-
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            className={cn(
-                              "rounded-full border px-3 py-1 text-xs transition-colors",
-                              active
-                                ? "border-primary bg-primary/10 text-foreground"
-                                : "border-border bg-background text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                            )}
-                            onClick={() => setOutputFilter(option.value)}
-                            aria-pressed={active}
-                            aria-label={`工具输出筛选：${option.label}`}
-                          >
-                            {option.label} {count}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {filteredOutputSignals.length > 0 ? (
-                      filteredOutputSignals.map((signal) => {
-                      const signalPath = getSignalPath(signal);
-                      return (
-                        <button
-                          key={signal.id}
-                          type="button"
-                          className={cn(
-                            "w-full rounded-xl border border-border bg-background p-3 text-left transition-colors hover:bg-muted/60",
-                            !signalPath && !signal.preview && "cursor-default",
-                          )}
-                          onClick={() =>
-                            signalPath || signal.preview
-                              ? void openPreview({
-                                  title: signal.title,
-                                  description: signal.summary,
-                                  path: signalPath,
-                                  preview: signal.preview,
-                                })
-                              : undefined
-                          }
-                          aria-label={`查看工具输出：${signal.title}`}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2">
-                                <TerminalSquare className="h-4 w-4 text-muted-foreground" />
-                                <span className="truncate text-sm font-medium text-foreground">
-                                  {signal.title}
-                                </span>
-                              </div>
-                              <div className="mt-1 text-xs text-muted-foreground">
-                                {signal.summary}
-                              </div>
-                              {signalPath ? (
-                                <div className="mt-1 truncate text-xs text-muted-foreground">
-                                  {signalPath}
-                                </div>
-                              ) : null}
-                            </div>
-                            <Badge variant="outline">{signal.toolName}</Badge>
-                          </div>
-                          {signal.preview ? (
-                            <pre className="mt-2 overflow-hidden whitespace-pre-wrap break-all rounded-lg bg-muted/50 p-2 text-xs text-muted-foreground">
-                              {signal.preview}
-                            </pre>
-                          ) : null}
-                        </button>
-                      );
-                      })
-                    ) : (
-                      <div className="rounded-lg border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
-                        当前筛选条件下暂无记录。
-                      </div>
-                    )}
-                  </div>
-                </Section>
-              ) : null}
-
-              {harnessState.runtimeStatus ? (
-                <Section
-                  sectionKey="runtime"
-                  title="当前执行阶段"
-                  badge={formatRuntimePhaseLabel(harnessState.runtimeStatus)}
-                  registerRef={registerSectionRef}
-                >
-                  <div className="space-y-3">
-                    <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
-                      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                        <span>{harnessState.runtimeStatus.title}</span>
-                      </div>
-                      <div className="mt-2 text-sm text-muted-foreground">
-                        {harnessState.runtimeStatus.detail}
-                      </div>
-                    </div>
-
-                    {harnessState.runtimeStatus.checkpoints &&
-                    harnessState.runtimeStatus.checkpoints.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {harnessState.runtimeStatus.checkpoints.map(
-                          (checkpoint, index) => (
-                            <Badge
-                              key={`${checkpoint}-${index}`}
-                              variant="outline"
-                              className="max-w-full whitespace-normal text-left"
-                            >
-                              {checkpoint}
-                            </Badge>
-                          ),
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
-                </Section>
-              ) : null}
-
-              {harnessState.pendingApprovals.length > 0 ? (
-                <Section
-                  sectionKey="approvals"
-                  title="待处理审批"
-                  badge={`${harnessState.pendingApprovals.length} 条`}
-                  registerRef={registerSectionRef}
-                >
-                  <div className="space-y-3">
-                    {harnessState.pendingApprovals.map((item) => (
-                      <div
-                        key={item.requestId}
-                        className="rounded-xl border border-amber-200 bg-amber-50/80 p-3"
-                      >
-                        <div className="flex items-center gap-2 text-sm font-medium text-amber-900">
-                          <ShieldAlert className="h-4 w-4" />
-                          <span>{item.prompt || "等待用户确认"}</span>
-                        </div>
-                        {describeApproval(item) ? (
-                          <div className="mt-2 text-xs text-amber-800">
-                            {describeApproval(item)}
-                          </div>
-                        ) : null}
-                        <div className="mt-2 text-xs text-amber-700">
-                          请求 ID：{item.requestId}
-                        </div>
-                      </div>
-                    ))}
                   </div>
                 </Section>
               ) : null}
@@ -1344,9 +2106,11 @@ export function HarnessStatusPanel({
                           key={item.id}
                           className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2"
                         >
-                          <div className="min-w-0 text-sm text-foreground">
-                            {item.content}
-                          </div>
+                          <InteractiveText
+                            text={item.content}
+                            className="min-w-0 text-sm text-foreground"
+                            onOpenUrl={handleOpenExternalLink}
+                          />
                           <Badge
                             variant={
                               item.status === "completed"
@@ -1414,7 +2178,10 @@ export function HarnessStatusPanel({
                         {subAgentRuntime.progress.currentTasks.length > 0 ? (
                           <div className="mt-2 text-xs text-muted-foreground">
                             当前任务：
-                            {subAgentRuntime.progress.currentTasks.join("、")}
+                            <InteractiveText
+                              text={subAgentRuntime.progress.currentTasks.join("、")}
+                              onOpenUrl={handleOpenExternalLink}
+                            />
                           </div>
                         ) : null}
                       </div>
@@ -1441,9 +2208,11 @@ export function HarnessStatusPanel({
                               {task.model ? <span>模型：{task.model}</span> : null}
                             </div>
                             {task.summary ? (
-                              <div className="mt-2 text-xs text-muted-foreground">
-                                {task.summary}
-                              </div>
+                              <InteractiveText
+                                text={task.summary}
+                                className="mt-2 text-xs text-muted-foreground"
+                                onOpenUrl={handleOpenExternalLink}
+                              />
                             ) : null}
                           </div>
                           <Badge
@@ -1476,7 +2245,10 @@ export function HarnessStatusPanel({
                               key={`${event.type}-${index}`}
                               className="text-xs text-muted-foreground"
                             >
-                              {summarizeSchedulerEvent(event)}
+                              <InteractiveText
+                                text={summarizeSchedulerEvent(event)}
+                                onOpenUrl={handleOpenExternalLink}
+                              />
                             </div>
                           ))}
                         </div>
@@ -1485,13 +2257,19 @@ export function HarnessStatusPanel({
 
                     {subAgentRuntime.error ? (
                       <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-                        {subAgentRuntime.error}
+                        <InteractiveText
+                          text={subAgentRuntime.error}
+                          onOpenUrl={handleOpenExternalLink}
+                        />
                       </div>
                     ) : null}
 
                     {subAgentRuntime.result?.mergedSummary ? (
                       <div className="rounded-xl border border-border bg-background p-3 text-sm text-muted-foreground">
-                        {subAgentRuntime.result.mergedSummary}
+                        <InteractiveText
+                          text={subAgentRuntime.result.mergedSummary}
+                          onOpenUrl={handleOpenExternalLink}
+                        />
                       </div>
                     ) : null}
                   </div>
@@ -1515,9 +2293,11 @@ export function HarnessStatusPanel({
                           <Workflow className="h-4 w-4 text-muted-foreground" />
                           <span>{step.stage}</span>
                         </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {step.detail}
-                        </div>
+                        <InteractiveText
+                          text={step.detail}
+                          className="mt-1 text-xs text-muted-foreground"
+                          onOpenUrl={handleOpenExternalLink}
+                        />
                       </div>
                     ))}
                   </div>
@@ -1534,9 +2314,13 @@ export function HarnessStatusPanel({
                   <div className="flex flex-wrap gap-2">
                     {environment.skillNames.length > 0 ? (
                       environment.skillNames.map((name) => (
-                        <Badge key={name} variant="secondary">
-                          {name}
-                        </Badge>
+                        <ActionableBadge
+                          key={name}
+                          variant="secondary"
+                          value={name}
+                          onOpenUrl={handleOpenExternalLink}
+                          onOpenPath={handleOpenPathValue}
+                        />
                       ))
                     ) : (
                       <span className="text-xs text-muted-foreground">
@@ -1548,9 +2332,13 @@ export function HarnessStatusPanel({
                   <div className="flex flex-wrap gap-2">
                     {environment.memorySignals.length > 0 ? (
                       environment.memorySignals.map((signal) => (
-                        <Badge key={signal} variant="outline">
-                          {signal}
-                        </Badge>
+                        <ActionableBadge
+                          key={signal}
+                          variant="outline"
+                          value={signal}
+                          onOpenUrl={handleOpenExternalLink}
+                          onOpenPath={handleOpenPathValue}
+                        />
                       ))
                     ) : (
                       <span className="text-xs text-muted-foreground">
@@ -1565,7 +2353,20 @@ export function HarnessStatusPanel({
                       {environment.contextItemsCount}
                     </div>
                     {environment.contextItemNames.length > 0 ? (
-                      <div>活跃上下文：{environment.contextItemNames.join("、")}</div>
+                      <div className="space-y-1">
+                        <div>活跃上下文：</div>
+                        <div className="flex flex-wrap gap-2">
+                          {environment.contextItemNames.map((item) => (
+                            <ActionableBadge
+                              key={item}
+                              variant="outline"
+                              value={item}
+                              onOpenUrl={handleOpenExternalLink}
+                              onOpenPath={handleOpenPathValue}
+                            />
+                          ))}
+                        </div>
+                      </div>
                     ) : null}
                   </div>
 
@@ -1609,12 +2410,18 @@ export function HarnessStatusPanel({
             <DialogTitle className="pr-8">{previewDialog.title}</DialogTitle>
             <DialogDescription className="space-y-1">
               {previewDialog.description ? (
-                <span className="block">{previewDialog.description}</span>
+                <InteractiveText
+                  text={previewDialog.description}
+                  className="block"
+                  onOpenUrl={handleOpenExternalLink}
+                />
               ) : null}
               {previewDialog.path ? (
-                <span className="block break-all text-xs">
-                  {previewDialog.path}
-                </span>
+                <PathTextLink
+                  path={previewDialog.path}
+                  className="block text-xs"
+                  onOpenPath={handleOpenPathValue}
+                />
               ) : null}
             </DialogDescription>
           </DialogHeader>
@@ -1650,9 +2457,13 @@ export function HarnessStatusPanel({
                   {previewDialog.error}
                 </div>
               ) : previewDialog.content ? (
-                <pre className="whitespace-pre-wrap break-all px-4 py-4 text-xs leading-6 text-foreground">
-                  {previewDialog.content}
-                </pre>
+                <div className="px-4 py-4 text-xs leading-6 text-foreground">
+                  <InteractiveText
+                    text={previewDialog.content}
+                    mono={true}
+                    onOpenUrl={handleOpenExternalLink}
+                  />
+                </div>
               ) : (
                 <div className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
                   <Eye className="h-4 w-4" />

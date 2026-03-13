@@ -2356,7 +2356,8 @@ function ThemeWorkbenchSidebarComponent({
     if (n === "load_skill") return "加载技能";
     if (n.includes("write_file") || n.includes("create_file")) return "创建文件";
     if (n.includes("read_file")) return "读取文件";
-    if (n.includes("search_query") || n.includes("web_search") || n === "search") return "网络检索";
+    if (n.includes("websearch")) return "网络检索";
+    if (n.includes("webfetch")) return "网页抓取";
     if (n.includes("social_generate_cover") || n.includes("generate_image")) return "生成封面图";
     if (n.includes("execute") || n.includes("bash")) return "执行命令";
     if (n.includes("context") || n.includes("retrieve")) return "检索上下文";

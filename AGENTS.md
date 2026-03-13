@@ -24,6 +24,13 @@
 3. **谨慎新增子目录 AGENTS.md** - 仅当某个目录树存在长期稳定、只对该子树生效的规则时才新增；临时排障说明不要新增 AGENTS
 4. **优先索引化而不是堆叠说明** - 根 AGENTS 更适合作为目录与约定入口，详细上下文交给专门文档
 
+## UI 全局指导
+
+1. **界面改动先看视觉规范** - 涉及配色、渐变、卡片布局、设置页重排、工作台改版时，先读 `docs/aiprompts/design-language.md`
+2. **宽度按页面类型选** - 表单页保持窄阅读宽度，卡片/工作台页面使用更宽的自适应内容区，不要整仓统一 `max-width`
+3. **中文排版优先** - 避免过大英文 tracking、重复标题和挤压式统计卡文案
+4. **渐变只做氛围层** - 禁止用互相打架的多层渐变制造分割感，背景存在感必须弱于内容
+
 ## 详细文档
 
 模块级详细文档位于 `docs/aiprompts/`：
@@ -36,6 +43,7 @@
 | [converter.md](docs/aiprompts/converter.md) | 协议转换 |
 | [server.md](docs/aiprompts/server.md) | HTTP 服务器 |
 | [components.md](docs/aiprompts/components.md) | 组件系统 |
+| [design-language.md](docs/aiprompts/design-language.md) | 全局 UI 视觉语言 |
 | [hooks.md](docs/aiprompts/hooks.md) | React Hooks |
 | [services.md](docs/aiprompts/services.md) | 业务服务 |
 | [commands.md](docs/aiprompts/commands.md) | Tauri 命令 |
@@ -92,6 +100,10 @@ npm run lint
 
 - 需要继续浏览器 E2E、复用现有 Playwright MCP 会话、排查 DevBridge/console 错误时，先读 `docs/aiprompts/playwright-e2e.md`
 - 如果只是仓库级规则，不要继续往本文件堆叠步骤说明
+
+## UI 设计入口
+
+- 需要统一配色、修正渐变、调整页面宽度策略、重排卡片工作台时，先读 `docs/aiprompts/design-language.md`
 
 ## 项目架构
 

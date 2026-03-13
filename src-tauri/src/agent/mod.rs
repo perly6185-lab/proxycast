@@ -24,7 +24,10 @@ pub use credential_bridge::{
     create_aster_provider, AsterProviderConfig, CredentialBridge, CredentialBridgeError,
 };
 pub use heartbeat_service_adapter::HeartbeatServiceAdapter;
-pub use proxycast_agent::{convert_agent_event, convert_to_tauri_message, TauriAgentEvent};
+pub use proxycast_agent::{
+    convert_agent_event, convert_to_tauri_message, QueueInsertResult, QueuedTurnSnapshot,
+    QueuedTurnTask, SessionTurnQueueManager, TauriAgentEvent,
+};
 pub use subagent_scheduler::{
     ProxyCastScheduler, ProxyCastSubAgentExecutor, SubAgentProgressEvent, SubAgentRole,
 };

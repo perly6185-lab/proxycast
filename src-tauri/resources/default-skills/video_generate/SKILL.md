@@ -2,10 +2,13 @@
 name: video_generate
 description: 提交视频生成任务，并触发前端视频生成流程。
 allowed-tools: proxycast_create_video_generation_task
-argument-hint: 输入主题、受众、平台、时长、画幅、风格、素材来源。
-when-to-use: 用户要求生成视频，或将现有文稿改编为短视频。
-version: 1.0.1
-execution-mode: prompt
+metadata:
+  proxycast_argument_hint: 输入主题、受众、平台、时长、画幅、风格、素材来源。
+  proxycast_when_to_use: 用户要求生成视频，或将现有文稿改编为短视频。
+  proxycast_version: 1.1.0
+  proxycast_execution_mode: prompt
+  proxycast_surface: creator
+  proxycast_category: media
 ---
 
 你是 ProxyCast 的视频任务编排助手。

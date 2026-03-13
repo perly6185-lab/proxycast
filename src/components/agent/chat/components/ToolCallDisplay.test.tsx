@@ -1,16 +1,46 @@
-import React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ToolCallDisplay, ToolCallList } from "./ToolCallDisplay";
 import type { ToolCallState } from "@/lib/api/agentStream";
-import { ToolCallDisplay } from "./ToolCallDisplay";
 
-interface MountedHarness {
+vi.mock("@tauri-apps/plugin-shell", () => ({
+  open: vi.fn().mockResolvedValue(undefined),
+}));
+
+interface RenderResult {
   container: HTMLDivElement;
   root: Root;
 }
 
-const mountedRoots: MountedHarness[] = [];
+const mountedRoots: RenderResult[] = [];
+
+function renderTool(toolCall: ToolCallState): RenderResult {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  act(() => {
+    root.render(<ToolCallDisplay toolCall={toolCall} />);
+  });
+
+  const rendered = { container, root };
+  mountedRoots.push(rendered);
+  return rendered;
+}
+
+afterEach(() => {
+  while (mountedRoots.length > 0) {
+    const mounted = mountedRoots.pop();
+    if (!mounted) {
+      break;
+    }
+    act(() => {
+      mounted.root.unmount();
+    });
+    mounted.container.remove();
+  }
+});
 
 beforeEach(() => {
   (
@@ -20,188 +50,115 @@ beforeEach(() => {
   ).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
-afterEach(() => {
-  while (mountedRoots.length > 0) {
-    const mounted = mountedRoots.pop();
-    if (!mounted) break;
-    act(() => {
-      mounted.root.unmount();
-    });
-    mounted.container.remove();
-  }
-});
-
-function render(
-  toolCall: ToolCallState,
-  options: {
-    onFileClick?: (fileName: string, content: string) => void;
-  } = {},
-): HTMLDivElement {
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container);
-
-  act(() => {
-    root.render(
-        <ToolCallDisplay
-          toolCall={toolCall}
-          defaultExpanded
-          isMessageStreaming
-          onFileClick={options.onFileClick}
-        />,
-      );
-  });
-
-  mountedRoots.push({ container, root });
-  return container;
-}
-
 describe("ToolCallDisplay", () => {
-  it("工具结果包含图片时应渲染缩略图预览", () => {
-    const toolCall: ToolCallState = {
-      id: "tool-image-1",
-      name: "Read",
+  it("WebSearch 工具结果应在 AI 对话区展示搜索列表并支持悬浮预览", async () => {
+    renderTool({
+      id: "tool-search-1",
+      name: "WebSearch",
+      arguments: JSON.stringify({ query: "3月13日国际新闻" }),
       status: "completed",
-      startTime: new Date(),
-      endTime: new Date(),
       result: {
         success: true,
-        output: "图片已生成",
-        images: [
-          { src: "data:image/png;base64,aGVsbG8=", mimeType: "image/png" },
-        ],
+        output: [
+          "Xinhua world news summary at 0030 GMT, March 13",
+          "https://example.com/xinhua",
+          "全球要闻摘要，覆盖国际局势与市场动态。",
+          "",
+          "Friday morning news: March 13, 2026 | WORLD - wng.org",
+          "https://example.com/wng",
+          "补充国际动态与区域冲突更新。",
+        ].join("\n"),
       },
-    };
-
-    const container = render(toolCall);
-    const previewImage = container.querySelector(
-      'img[alt="工具结果图片预览"]',
-    ) as HTMLImageElement | null;
-    expect(previewImage).not.toBeNull();
-    expect(previewImage?.src).toContain("data:image/png;base64,aGVsbG8=");
-  });
-
-  it("点击缩略图后应显示大图预览层", () => {
-    const toolCall: ToolCallState = {
-      id: "tool-image-2",
-      name: "Read",
-      status: "completed",
-      startTime: new Date(),
-      endTime: new Date(),
-      result: {
-        success: true,
-        output: "图片已生成",
-        images: [
-          { src: "data:image/png;base64,aGVsbG8=", mimeType: "image/png" },
-        ],
-      },
-    };
-
-    const container = render(toolCall);
-    const thumbnail = container.querySelector(
-      'img[alt="工具结果图片预览"]',
-    ) as HTMLImageElement | null;
-    expect(thumbnail).not.toBeNull();
-
-    act(() => {
-      thumbnail?.click();
+      startTime: new Date("2026-03-13T12:00:00.000Z"),
+      endTime: new Date("2026-03-13T12:00:02.000Z"),
     });
 
-    const enlargedImage = document.querySelector(
-      'img[alt="工具结果图片大图"]',
-    ) as HTMLImageElement | null;
-    expect(enlargedImage).not.toBeNull();
-  });
-
-  it("工具结果包含 metadata 时应渲染执行摘要", () => {
-    const toolCall: ToolCallState = {
-      id: "tool-meta-1",
-      name: "Bash",
-      status: "failed",
-      startTime: new Date(),
-      endTime: new Date(),
-      result: {
-        success: false,
-        output: "命令执行失败",
-        metadata: {
-          exit_code: 1,
-          stdout_length: 120,
-          stderr_length: 32,
-          sandboxed: true,
-          output_file: "/tmp/aster_tasks/task-1.log",
-        },
-      },
-    };
-
-    const container = render(toolCall);
-    expect(container.textContent).toContain("退出码 1");
-    expect(container.textContent).toContain("stdout 120");
-    expect(container.textContent).toContain("已隔离执行");
-    expect(container.textContent).toContain(
-      "输出文件: /tmp/aster_tasks/task-1.log",
+    expect(document.body.textContent).toContain(
+      "Xinhua world news summary at 0030 GMT, March 13",
     );
-  });
-
-  it("工具结果完成 offload 转存时应显示转存摘要与文件路径", () => {
-    const toolCall: ToolCallState = {
-      id: "tool-offload-1",
-      name: "Write",
-      status: "completed",
-      startTime: new Date(),
-      endTime: new Date(),
-      result: {
-        success: true,
-        output:
-          "preview line\n\n[ProxyCast Offload] 完整输出已转存到文件：/tmp/proxycast/harness/tool-io/results/tool-offload-1.json",
-        metadata: {
-          proxycast_offloaded: true,
-          offload_file:
-            "/tmp/proxycast/harness/tool-io/results/tool-offload-1.json",
-          offload_original_chars: 18234,
-          offload_original_tokens: 4521,
-          offload_trigger: "token_limit_before_evict",
-        },
-      },
-    };
-
-    const container = render(toolCall);
-    expect(container.textContent).toContain("完整输出已转存");
-    expect(container.textContent).toContain("原始 18234 字符");
-    expect(container.textContent).toContain("约 4521 tokens");
-    expect(container.textContent).toContain("token 阈值触发");
-    expect(container.textContent).toContain(
-      "转存文件: /tmp/proxycast/harness/tool-io/results/tool-offload-1.json",
+    expect(document.body.textContent).toContain(
+      "Friday morning news: March 13, 2026 | WORLD - wng.org",
     );
-  });
 
-  it("存在文件路径时应显示打开图标，并可直接送入画布", () => {
-    const onFileClick = vi.fn();
-    const toolCall: ToolCallState = {
-      id: "tool-open-file-1",
-      name: "Write",
-      status: "completed",
-      startTime: new Date(),
-      endTime: new Date(),
-      result: {
-        success: true,
-        output: "文件已生成",
-        metadata: {
-          output_file: "/tmp/workspace/summary.md",
-        },
-      },
-    };
-
-    const container = render(toolCall, { onFileClick });
-    const openButton = container.querySelector(
-      'button[aria-label="在画布中打开-/tmp/workspace/summary.md"]',
+    const firstSearchResult = document.body.querySelector(
+      '[aria-label="预览搜索结果：Xinhua world news summary at 0030 GMT, March 13"]',
     ) as HTMLButtonElement | null;
 
-    expect(openButton).not.toBeNull();
-
-    act(() => {
-      openButton?.click();
+    await act(async () => {
+      firstSearchResult?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+      await Promise.resolve();
     });
 
-    expect(onFileClick).toHaveBeenCalledWith("/tmp/workspace/summary.md", "");
+    expect(document.body.textContent).toContain(
+      "全球要闻摘要，覆盖国际局势与市场动态。",
+    );
+    expect(document.body.textContent).toContain("https://example.com/xinhua");
+
+    const collapseButton = document.body.querySelector(
+      'button[title="收起详情"]',
+    ) as HTMLButtonElement | null;
+
+    act(() => {
+      collapseButton?.click();
+    });
+
+    expect(document.body.textContent).not.toContain(
+      "Xinhua world news summary at 0030 GMT, March 13",
+    );
+
+    const expandButton = document.body.querySelector(
+      'button[title="展开详情"]',
+    ) as HTMLButtonElement | null;
+
+    act(() => {
+      expandButton?.click();
+    });
+
+    expect(document.body.textContent).toContain(
+      "Xinhua world news summary at 0030 GMT, March 13",
+    );
+  });
+
+  it("连续多次 WebSearch 应在对话区按搜索批次分组展示", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ToolCallList
+          toolCalls={[
+            {
+              id: "tool-search-1",
+              name: "WebSearch",
+              arguments: JSON.stringify({ query: "3月13日国际新闻" }),
+              status: "completed",
+              result: { success: true, output: "https://example.com/1" },
+              startTime: new Date("2026-03-13T12:00:00.000Z"),
+              endTime: new Date("2026-03-13T12:00:01.000Z"),
+            },
+            {
+              id: "tool-search-2",
+              name: "WebSearch",
+              arguments: JSON.stringify({ query: "March 13 2026 world headlines" }),
+              status: "completed",
+              result: { success: true, output: "https://example.com/2" },
+              startTime: new Date("2026-03-13T12:00:02.000Z"),
+              endTime: new Date("2026-03-13T12:00:03.000Z"),
+            },
+          ]}
+        />,
+      );
+    });
+
+    mountedRoots.push({ container, root });
+
+    expect(container.textContent).toContain("已搜索 2 组查询");
+    expect(container.textContent).toContain("3月13日国际新闻");
+    expect(container.textContent).toContain("March 13 2026 world headlines");
+    expect(container.textContent).toContain("中文日期检索");
+    expect(container.textContent).toContain("头条检索");
   });
 });

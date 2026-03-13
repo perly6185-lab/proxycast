@@ -329,6 +329,7 @@ export function DecisionPanel({ request, onSubmit }: DecisionPanelProps) {
   const [elicitationAnswer, setElicitationAnswer] = useState("");
   const [elicitationOther, setElicitationOther] = useState("");
   const isSubmitted = request.status === "submitted";
+  const isQueued = request.status === "queued";
   const submittedAnswer = resolveSubmittedAnswerText(request);
   const isFallbackAskPending =
     request.actionType === "ask_user" && request.isFallback;
@@ -383,8 +384,6 @@ export function DecisionPanel({ request, onSubmit }: DecisionPanelProps) {
     request.actionType === "elicitation"
       ? elicitationAnswer.trim().length > 0 ||
         elicitationOther.trim().length > 0
-      : isFallbackAskPending
-        ? false
       : questions.length === 0 ||
         questions.every((_, qIndex) => {
           const selected = selectedOptions[qIndex] ?? [];
@@ -442,13 +441,17 @@ export function DecisionPanel({ request, onSubmit }: DecisionPanelProps) {
     });
   };
 
-  if (isSubmitted) {
+  if (isSubmitted || isQueued) {
     const submittedTitle =
-      request.actionType === "tool_confirmation"
+      isQueued
+        ? "已记录你的回答"
+        : request.actionType === "tool_confirmation"
         ? "已处理权限请求"
         : "已提交你的回答";
     const submittedClassName =
-      request.actionType === "tool_confirmation"
+      isQueued
+        ? "border-sky-200 bg-sky-50/50 dark:border-sky-800 dark:bg-sky-950/20"
+        : request.actionType === "tool_confirmation"
         ? "border-amber-200 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20"
         : request.actionType === "elicitation"
           ? "border-indigo-200 bg-indigo-50/50 dark:border-indigo-800 dark:bg-indigo-950/20"
@@ -488,7 +491,11 @@ export function DecisionPanel({ request, onSubmit }: DecisionPanelProps) {
             </div>
           )}
 
-          <p className="text-xs text-muted-foreground">已提交，等待助手继续执行...</p>
+          <p className="text-xs text-muted-foreground">
+            {isQueued
+              ? "答案已记录，等待系统请求 ID 就绪后会自动提交。"
+              : "已提交，等待助手继续执行..."}
+          </p>
         </CardContent>
       </Card>
     );
@@ -614,9 +621,7 @@ export function DecisionPanel({ request, onSubmit }: DecisionPanelProps) {
                       option.label,
                     );
                     const shouldAutoSubmit =
-                      questions.length === 1 &&
-                      !q.multiSelect &&
-                      !isFallbackAskPending;
+                      questions.length === 1 && !q.multiSelect;
 
                     return (
                       <button
@@ -681,7 +686,7 @@ export function DecisionPanel({ request, onSubmit }: DecisionPanelProps) {
 
           {isFallbackAskPending && (
             <p className="text-xs text-muted-foreground">
-              正在等待系统生成可提交的 Ask 请求，请稍候（你可以先选择答案）。
+              如果系统请求 ID 还没就绪，你现在提交的答案会先被记录，并在就绪后自动提交。
             </p>
           )}
 
@@ -694,7 +699,7 @@ export function DecisionPanel({ request, onSubmit }: DecisionPanelProps) {
               className="bg-blue-600 hover:bg-blue-700"
             >
               <CheckCircle className="mr-1 h-4 w-4" />
-              {isFallbackAskPending ? "等待系统就绪..." : "提交答案"}
+              {isFallbackAskPending ? "记录答案" : "提交答案"}
             </Button>
             <Button size="sm" variant="outline" onClick={handleDeny}>
               <XCircle className="mr-1 h-4 w-4" />

@@ -9,10 +9,16 @@ vi.mock("./InputbarTools", () => ({
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
-  TooltipProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipProvider: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  TooltipContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipTrigger: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
+  TooltipContent: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
 }));
 
 const mountedRoots: Array<{ root: Root; container: HTMLDivElement }> = [];
@@ -37,7 +43,9 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const renderInputbarCore = () => {
+const renderInputbarCore = (
+  props?: Partial<React.ComponentProps<typeof InputbarCore>>,
+) => {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -53,6 +61,7 @@ const renderInputbarCore = () => {
         showTranslate={false}
         toolMode="attach-only"
         visualVariant="floating"
+        {...props}
       />,
     );
   });
@@ -64,12 +73,18 @@ const renderInputbarCore = () => {
 describe("InputbarCore", () => {
   it("主题工作台未聚焦时应使用单行紧凑态，点击展开，移出后收起", () => {
     const container = renderInputbarCore();
-    const textarea = container.querySelector("textarea") as HTMLTextAreaElement | null;
-    const inputBar = container.querySelector('[data-testid="inputbar-core-container"]') as HTMLDivElement | null;
+    const textarea = container.querySelector(
+      "textarea",
+    ) as HTMLTextAreaElement | null;
+    const inputBar = container.querySelector(
+      '[data-testid="inputbar-core-container"]',
+    ) as HTMLDivElement | null;
     expect(textarea).toBeTruthy();
     expect(inputBar).toBeTruthy();
     expect(textarea?.className).toContain("floating-collapsed");
-    expect(container.querySelector('[data-testid="inputbar-tools"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="inputbar-tools"]'),
+    ).toBeNull();
 
     act(() => {
       inputBar?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
@@ -77,25 +92,91 @@ describe("InputbarCore", () => {
     });
 
     expect(textarea?.className).not.toContain("floating-collapsed");
-    expect(container.querySelector('[data-testid="inputbar-tools"]')).toBeTruthy();
+    expect(
+      container.querySelector('[data-testid="inputbar-tools"]'),
+    ).toBeTruthy();
 
     act(() => {
       inputBar?.dispatchEvent(
-        new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }),
+        new MouseEvent("mouseout", {
+          bubbles: true,
+          relatedTarget: document.body,
+        }),
       );
     });
 
     expect(textarea?.className).not.toContain("floating-collapsed");
-    expect(container.querySelector('[data-testid="inputbar-tools"]')).toBeTruthy();
+    expect(
+      container.querySelector('[data-testid="inputbar-tools"]'),
+    ).toBeTruthy();
 
     act(() => {
       textarea?.blur();
       inputBar?.dispatchEvent(
-        new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }),
+        new MouseEvent("mouseout", {
+          bubbles: true,
+          relatedTarget: document.body,
+        }),
       );
     });
 
     expect(textarea?.className).toContain("floating-collapsed");
-    expect(container.querySelector('[data-testid="inputbar-tools"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="inputbar-tools"]'),
+    ).toBeNull();
+  });
+
+  it("生成中应显示排队与停止按钮，并渲染排队列表", () => {
+    const onSend = vi.fn();
+    const onStop = vi.fn();
+    const container = renderInputbarCore({
+      text: "下一条需求",
+      onSend,
+      onStop,
+      isLoading: true,
+      queuedTurns: [
+        {
+          queued_turn_id: "queued-1",
+          message_preview: "本周复盘摘要",
+          message_text: "这里是完整的排队输入内容，点击后应展开查看。",
+          created_at: 1700000000000,
+          image_count: 0,
+          position: 1,
+        },
+      ],
+    });
+
+    const queueButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("排队"),
+    );
+    const stopButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("停止"),
+    );
+
+    expect(queueButton).toBeTruthy();
+    expect(stopButton).toBeTruthy();
+    expect(container.textContent).toContain("已排队 1");
+    expect(container.textContent).not.toContain("这里是完整的排队输入内容");
+
+    const queueCard = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("本周复盘摘要"),
+    );
+    expect(queueCard).toBeTruthy();
+
+    act(() => {
+      queueCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("这里是完整的排队输入内容");
+
+    act(() => {
+      queueButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    act(() => {
+      stopButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onStop).toHaveBeenCalledTimes(1);
   });
 });

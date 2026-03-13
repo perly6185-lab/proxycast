@@ -1,36 +1,43 @@
 /**
  * 个人资料设置页面组件
  *
- * 参考成熟产品的资料实现
- * 功能包括：用户头像、昵称、个人简介、偏好标签等
+ * 保留现有资料读写逻辑，升级为更清晰的摘要卡 + 分区表单布局。
  */
 
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  User,
-  Mail,
-  Edit2,
-  Camera,
-  Info,
-  CheckCircle2,
   AlertCircle,
+  Camera,
+  CheckCircle2,
+  Edit2,
+  Info,
+  Mail,
+  Plus,
+  Sparkles,
   Tag,
+  User,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getConfig, saveConfig, type Config } from "@/lib/api/appConfig";
+import {
+  getConfig,
+  saveConfig,
+  type Config,
+  type UserProfile,
+} from "@/lib/api/appConfig";
 
-interface UserProfile {
-  /** 用户头像 URL */
-  avatar_url?: string;
-  /** 昵称 */
-  nickname?: string;
-  /** 个人简介 */
-  bio?: string;
-  /** 邮箱 */
-  email?: string;
-  /** 偏好标签 */
-  tags?: string[];
+type EditableProfileField = "nickname" | "bio" | "email";
+
+interface ProfileFieldMeta {
+  key: EditableProfileField;
+  label: string;
+  description: string;
+  placeholder: string;
+  icon: LucideIcon;
+  editable?: boolean;
+  multiline?: boolean;
+  hint: string;
 }
 
 const DEFAULT_USER_PROFILE: UserProfile = {
@@ -41,12 +48,36 @@ const DEFAULT_USER_PROFILE: UserProfile = {
   tags: [],
 };
 
-// 标签到字段名的映射
-const LABEL_TO_FIELD_MAP: Record<string, keyof UserProfile> = {
-  昵称: "nickname",
-  简介: "bio",
-  邮箱: "email",
-};
+const PROFILE_FIELDS: ProfileFieldMeta[] = [
+  {
+    key: "nickname",
+    label: "昵称",
+    description: "展示在工作区与 AI 语境中的称呼。",
+    placeholder: "还没有设置昵称",
+    icon: User,
+    editable: true,
+    hint: "建议使用你最常用的称呼，便于系统在多处一致展示。",
+  },
+  {
+    key: "bio",
+    label: "个人简介",
+    description: "用几句话说明你的工作背景、兴趣和当前目标。",
+    placeholder: "补充你的角色、关注方向或当前项目，AI 会更快理解你。",
+    icon: Edit2,
+    editable: true,
+    multiline: true,
+    hint: "按 Enter 保存，使用 Shift + Enter 换行。",
+  },
+  {
+    key: "email",
+    label: "邮箱",
+    description: "账号识别邮箱，当前页面仅展示，不支持直接修改。",
+    placeholder: "尚未绑定邮箱",
+    icon: Mail,
+    editable: false,
+    hint: "如需修改邮箱，请使用账号相关入口或后续专用流程。",
+  },
+];
 
 const SUGGESTED_TAGS = [
   "编程",
@@ -59,48 +90,225 @@ const SUGGESTED_TAGS = [
   "研究者",
 ];
 
+function hasText(value?: string) {
+  return Boolean(value?.trim());
+}
+
+interface ProfileFieldCardProps {
+  field: EditableProfileField;
+  icon: LucideIcon;
+  label: string;
+  description: string;
+  value: string;
+  placeholder: string;
+  editable?: boolean;
+  multiline?: boolean;
+  hint: string;
+  isEditing: boolean;
+  editValue: string;
+  onStartEdit: (field: EditableProfileField, currentValue: string) => void;
+  onEditValueChange: (value: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}
+
+function ProfileFieldCard({
+  field,
+  icon: Icon,
+  label,
+  description,
+  value,
+  placeholder,
+  editable = true,
+  multiline = false,
+  hint,
+  isEditing,
+  editValue,
+  onStartEdit,
+  onEditValueChange,
+  onSave,
+  onCancel,
+}: ProfileFieldCardProps) {
+  return (
+    <article className="rounded-[22px] border border-slate-200/80 bg-white/90 p-4 shadow-sm shadow-slate-950/5">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-slate-100 text-slate-700">
+            <Icon className="h-5 w-5" />
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-semibold text-slate-900">{label}</p>
+              {!editable && (
+                <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
+                  只读
+                </span>
+              )}
+            </div>
+            <p className="text-sm leading-6 text-slate-500">{description}</p>
+          </div>
+        </div>
+
+        {editable && !isEditing && (
+          <button
+            type="button"
+            aria-label={`编辑${label}`}
+            onClick={() => onStartEdit(field, value)}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+          >
+            <Edit2 className="h-3.5 w-3.5" />
+            编辑
+          </button>
+        )}
+      </div>
+
+      <div className="mt-4">
+        {isEditing ? (
+          multiline ? (
+            <textarea
+              id={`profile-field-${field}`}
+              value={editValue}
+              onChange={(event) => {
+                onEditValueChange(event.target.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  onSave();
+                } else if (event.key === "Escape") {
+                  onCancel();
+                }
+              }}
+              rows={4}
+              className="min-h-[120px] w-full rounded-[18px] border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm leading-6 text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-slate-300 focus:bg-white"
+              placeholder={placeholder}
+              autoFocus
+            />
+          ) : (
+            <input
+              id={`profile-field-${field}`}
+              type="text"
+              value={editValue}
+              onChange={(event) => {
+                onEditValueChange(event.target.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  onSave();
+                } else if (event.key === "Escape") {
+                  onCancel();
+                }
+              }}
+              className="w-full rounded-[18px] border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-slate-300 focus:bg-white"
+              placeholder={placeholder}
+              autoFocus
+            />
+          )
+        ) : (
+          <div className="rounded-[18px] border border-slate-100 bg-slate-50/80 px-4 py-3">
+            <p
+              className={cn(
+                "text-sm leading-6",
+                value ? "text-slate-700" : "text-slate-400",
+              )}
+            >
+              {value || placeholder}
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <p className="text-xs leading-5 text-slate-500">{hint}</p>
+        {isEditing && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              aria-label={`取消编辑${label}`}
+              onClick={onCancel}
+              className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              aria-label={`保存${label}`}
+              onClick={onSave}
+              className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800"
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              保存
+            </button>
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
 export function ProfileSettings() {
   const [config, setConfig] = useState<Config | null>(null);
   const [profile, setProfile] = useState<UserProfile>(DEFAULT_USER_PROFILE);
-  const [_loading, setLoading] = useState(true);
-  const [editingField, setEditingField] = useState<keyof UserProfile | null>(
-    null,
-  );
+  const [loading, setLoading] = useState(true);
+  const [editingField, setEditingField] =
+    useState<EditableProfileField | null>(null);
   const [editValue, setEditValue] = useState("");
   const [message, setMessage] = useState<{
     type: "success" | "error";
     text: string;
   } | null>(null);
   const [newTag, setNewTag] = useState("");
+  const messageTimerRef = useRef<number | null>(null);
 
-  // 加载配置
   useEffect(() => {
-    loadConfig();
+    void loadConfig();
+    return () => {
+      if (messageTimerRef.current !== null) {
+        window.clearTimeout(messageTimerRef.current);
+      }
+    };
   }, []);
 
   const loadConfig = async () => {
     setLoading(true);
     try {
-      const c = await getConfig();
-      setConfig(c);
-      setProfile(c.user_profile || DEFAULT_USER_PROFILE);
-    } catch (e) {
-      console.error("加载用户资料失败:", e);
+      const loadedConfig = await getConfig();
+      setConfig(loadedConfig);
+      setProfile(loadedConfig.user_profile || DEFAULT_USER_PROFILE);
+    } catch (error) {
+      console.error("加载用户资料失败:", error);
     } finally {
       setLoading(false);
     }
   };
 
-  // 保存配置
-  const saveProfile = async (key: keyof UserProfile, value: any) => {
-    if (!config) return;
+  const showMessage = (type: "success" | "error", text: string) => {
+    if (messageTimerRef.current !== null) {
+      window.clearTimeout(messageTimerRef.current);
+    }
+
+    setMessage({ type, text });
+    messageTimerRef.current = window.setTimeout(() => {
+      setMessage(null);
+      messageTimerRef.current = null;
+    }, 3000);
+  };
+
+  const saveProfileEntry = async <K extends keyof UserProfile>(
+    key: K,
+    value: UserProfile[K],
+  ) => {
+    if (!config) {
+      showMessage("error", "资料配置尚未加载完成，暂时无法保存。");
+      return;
+    }
 
     try {
       const newProfile = {
         ...profile,
         [key]: value,
       };
-      // 确保其他字段也存在
       const completeProfile: UserProfile = {
         avatar_url: newProfile.avatar_url || profile.avatar_url || "",
         nickname: newProfile.nickname || profile.nickname || "",
@@ -112,88 +320,74 @@ export function ProfileSettings() {
         ...config,
         user_profile: completeProfile,
       };
+
       await saveConfig(updatedFullConfig);
       setConfig(updatedFullConfig);
       setProfile(completeProfile);
-
-      showMessage("success", "保存成功");
-    } catch (e) {
-      console.error("保存用户资料失败:", e);
-      showMessage("error", `保存失败: ${e}`);
+      showMessage("success", "资料已保存");
+    } catch (error) {
+      console.error("保存用户资料失败:", error);
+      showMessage("error", `保存失败: ${error}`);
     }
   };
 
-  // 开始编辑
   const handleStartEdit = (
-    fieldOrLabel: keyof UserProfile | string,
+    field: EditableProfileField,
     currentValue: string = "",
   ) => {
-    // 如果是标签，转换为字段名
-    const field =
-      typeof fieldOrLabel === "string"
-        ? LABEL_TO_FIELD_MAP[fieldOrLabel] ||
-          (fieldOrLabel as keyof UserProfile)
-        : fieldOrLabel;
-
-    // 如果正在编辑同一个字段，不做任何操作
     if (editingField === field) {
       return;
-    }
-
-    // 如果正在编辑不同的字段，先取消当前编辑（不保存）
-    if (editingField && editingField !== field) {
-      setEditValue("");
     }
 
     setEditingField(field);
     setEditValue(currentValue);
   };
 
-  // 保存编辑
   const handleSaveEdit = () => {
-    if (editingField) {
-      saveProfile(editingField, editValue);
-      setEditingField(null);
-      setEditValue("");
+    if (!editingField) {
+      return;
     }
+
+    void saveProfileEntry(editingField, editValue);
+    setEditingField(null);
+    setEditValue("");
   };
 
-  // 取消编辑
   const handleCancelEdit = () => {
     setEditingField(null);
     setEditValue("");
   };
 
-  // 添加标签
   const handleAddTag = () => {
-    if (newTag && !(profile.tags || []).includes(newTag)) {
-      saveProfile("tags", [...(profile.tags || []), newTag]);
-      setNewTag("");
+    const trimmedTag = newTag.trim();
+    if (!trimmedTag || (profile.tags || []).includes(trimmedTag)) {
+      return;
     }
+
+    void saveProfileEntry("tags", [...(profile.tags || []), trimmedTag]);
+    setNewTag("");
   };
 
-  // 删除标签
   const handleRemoveTag = (tag: string) => {
-    saveProfile(
+    void saveProfileEntry(
       "tags",
-      (profile.tags || []).filter((t) => t !== tag),
+      (profile.tags || []).filter((item) => item !== tag),
     );
   };
 
-  // 上传头像
   const handleUploadAvatar = async () => {
     try {
-      // 创建文件选择输入
       const input = document.createElement("input");
       input.type = "file";
       input.accept = "image/png,image/jpeg,image/gif,image/webp";
       input.style.display = "none";
 
-      input.onchange = async (e) => {
-        const file = (e.target as HTMLInputElement).files?.[0];
-        if (!file) return;
+      input.onchange = async (event) => {
+        const file = (event.target as HTMLInputElement).files?.[0];
+        if (!file) {
+          return;
+        }
 
-        // 验证文件大小（5MB）
         const maxSize = 5 * 1024 * 1024;
         if (file.size > maxSize) {
           showMessage(
@@ -203,287 +397,374 @@ export function ProfileSettings() {
           return;
         }
 
-        // 读取文件为 ArrayBuffer
-        const arrayBuffer = await file.arrayBuffer();
-        const _uint8Array = new Uint8Array(arrayBuffer);
-
-        // 调用 Tauri API 上传文件
-        // 注意：这需要后端支持从 bytes 保存文件，目前简化处理
+        await file.arrayBuffer();
         showMessage("success", "头像上传功能正在完善中");
       };
 
       document.body.appendChild(input);
       input.click();
       document.body.removeChild(input);
-    } catch (e) {
-      console.error("上传头像失败:", e);
-      showMessage("error", `上传失败: ${e}`);
+    } catch (error) {
+      console.error("上传头像失败:", error);
+      showMessage("error", `上传失败: ${error}`);
     }
   };
 
-  const showMessage = (type: "success" | "error", text: string) => {
-    setMessage({ type, text });
-    setTimeout(() => setMessage(null), 3000);
-  };
+  const tags = profile.tags || [];
+  const completionItems = [
+    hasText(profile.nickname),
+    hasText(profile.bio),
+    hasText(profile.email),
+    tags.length > 0,
+  ].filter(Boolean).length;
+  const completionPercent = Math.round((completionItems / 4) * 100);
+  const statusLabel =
+    completionPercent >= 75
+      ? "资料完整"
+      : completionPercent >= 40
+        ? "逐步成型"
+        : "待补充";
+  const statusClassName =
+    completionPercent >= 75
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+      : completionPercent >= 40
+        ? "border-sky-200 bg-sky-50 text-sky-700"
+        : "border-amber-200 bg-amber-50 text-amber-700";
+  const suggestedTags = SUGGESTED_TAGS.filter((tag) => !tags.includes(tag)).slice(
+    0,
+    6,
+  );
+  const quickTags = tags.slice(0, 3);
+  const extraTagCount = Math.max(tags.length - quickTags.length, 0);
+  const isInitialLoading = loading && !config;
 
-  const ProfileRow = ({
-    icon: Icon,
-    label,
-    value,
-    editable = true,
-    multiline = false,
-  }: {
-    icon: any;
-    label: string;
-    value: string;
-    editable?: boolean;
-    multiline?: boolean;
-  }) => {
-    // 获取对应的字段名
-    const field = LABEL_TO_FIELD_MAP[label] || (label as keyof UserProfile);
-
+  if (isInitialLoading) {
     return (
-      <div className="flex items-center justify-between px-4 py-3 border-b last:border-b-0">
-        <div className="flex items-center gap-3 min-w-0">
-          <Icon className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium">{label}</span>
-        </div>
-        <div className="flex items-center gap-2 flex-1 justify-end min-w-0 pl-4">
-          {editingField === field ? (
-            multiline ? (
-              <textarea
-                value={editValue}
-                onChange={(e) => {
-                  setEditValue(e.target.value);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSaveEdit();
-                  } else if (e.key === "Escape") {
-                    handleCancelEdit();
-                  }
-                }}
-                rows={3}
-                className="flex-1 max-w-xs px-3 py-2 rounded border bg-background text-sm focus:ring-1 focus:ring-primary/20 focus:border-primary outline-none resize-none"
-                autoFocus
-              />
-            ) : (
-              <input
-                type="text"
-                value={editValue}
-                onChange={(e) => {
-                  setEditValue(e.target.value);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleSaveEdit();
-                  } else if (e.key === "Escape") {
-                    handleCancelEdit();
-                  }
-                }}
-                className="flex-1 max-w-xs px-3 py-1.5 rounded border bg-background text-sm focus:ring-1 focus:ring-primary/20 focus:border-primary outline-none"
-                autoFocus
-              />
-            )
-          ) : (
-            <span className="text-sm text-muted-foreground truncate max-w-[420px] text-right">
-              {value || "未设置"}
-            </span>
-          )}
-          {editable && !editingField && (
-            <button
-              onClick={() => handleStartEdit(label, value)}
-              className="p-1.5 rounded hover:bg-muted transition-colors flex-shrink-0"
-            >
-              <Edit2 className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {editingField === field && (
-            <div className="flex gap-1 flex-shrink-0">
-              <button
-                onClick={handleSaveEdit}
-                className="p-1.5 rounded hover:bg-green-100 text-green-600 transition-colors"
-              >
-                <CheckCircle2 className="h-3.5 w-3.5" />
-              </button>
-              <button
-                onClick={handleCancelEdit}
-                className="p-1.5 rounded hover:bg-red-100 text-red-600 transition-colors"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
+      <div className="space-y-4">
+        <div className="h-[220px] animate-pulse rounded-[30px] border border-slate-200/80 bg-[linear-gradient(135deg,rgba(245,249,247,0.98)_0%,rgba(255,255,255,0.98)_52%,rgba(243,247,255,0.96)_100%)]" />
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.95fr)]">
+          <div className="space-y-4">
+            <div className="h-[320px] animate-pulse rounded-[26px] border border-slate-200/80 bg-white" />
+          </div>
+          <div className="space-y-4">
+            <div className="h-[300px] animate-pulse rounded-[26px] border border-slate-200/80 bg-white" />
+            <div className="h-[180px] animate-pulse rounded-[26px] border border-slate-200/80 bg-white" />
+          </div>
         </div>
       </div>
     );
-  };
+  }
 
   return (
-    <div className="space-y-4 w-full">
-      {/* 头像和基本信息 */}
-      <div className="rounded-lg border p-4">
-        <div className="flex items-center gap-4">
-          {/* 头像 */}
-          <div className="relative group">
-            <div className="w-20 h-20 rounded-full bg-gradient-to-br from-primary/20 to-primary/10 flex items-center justify-center overflow-hidden">
-              {profile.avatar_url ? (
-                <img
-                  src={profile.avatar_url}
-                  alt="头像"
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <User className="h-10 w-10 text-primary/50" />
-              )}
-            </div>
-            <button
-              onClick={handleUploadAvatar}
-              className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-            >
-              <Camera className="h-6 w-6 text-white" />
-            </button>
-          </div>
-
-          {/* 昵称和简介 */}
-          <div className="flex-1">
-            <h3 className="text-lg font-semibold">
-              {profile.nickname || "未设置昵称"}
-            </h3>
-            <p className="text-sm text-muted-foreground mt-1">
-              {profile.bio || "未设置个人简介"}
-            </p>
-            {profile.email && (
-              <div className="flex items-center gap-1 mt-2 text-xs text-muted-foreground">
-                <Mail className="h-3 w-3" />
-                {profile.email}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* 详细信息编辑 */}
-      <div className="rounded-lg border overflow-hidden">
-        <ProfileRow icon={User} label="昵称" value={profile.nickname || ""} />
-        <ProfileRow
-          icon={Edit2}
-          label="简介"
-          value={profile.bio || ""}
-          multiline
-        />
-        <ProfileRow
-          icon={Mail}
-          label="邮箱"
-          value={profile.email || ""}
-          editable={false}
-        />
-      </div>
-
-      {/* 偏好标签 */}
-      <div className="rounded-lg border p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <Tag className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-sm font-medium">偏好标签</h3>
-        </div>
-
-        {/* 已选择的标签 */}
-        <div className="flex flex-wrap gap-2 mb-3">
-          {(profile.tags || []).map((tag) => (
-            <div
-              key={tag}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary/10 text-primary text-sm"
-            >
-              {tag}
-              <button
-                onClick={() => handleRemoveTag(tag)}
-                className="hover:bg-primary/20 rounded-full p-0.5 transition-colors"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
-          {!(profile.tags || []).length && (
-            <p className="text-sm text-muted-foreground">
-              还没有添加标签，选择一些您感兴趣的领域
-            </p>
-          )}
-        </div>
-
-        {/* 添加新标签 */}
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={newTag}
-            onChange={(e) => setNewTag(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleAddTag();
-              }
-            }}
-            placeholder="输入自定义标签"
-            className="flex-1 px-3 py-2 rounded-lg border bg-background text-sm focus:ring-1 focus:ring-primary/20 focus:border-primary outline-none"
-          />
-          <button
-            onClick={handleAddTag}
-            className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm hover:bg-primary/90"
-          >
-            添加
-          </button>
-        </div>
-
-        {/* 推荐标签 */}
-        <div className="mt-3">
-          <p className="text-xs text-muted-foreground mb-2">推荐标签：</p>
-          <div className="flex flex-wrap gap-2">
-            {SUGGESTED_TAGS.filter((tag) => !(profile.tags || []).includes(tag))
-              .slice(0, 6)
-              .map((tag) => (
-                <button
-                  key={tag}
-                  onClick={() => {
-                    const newTags = [...(profile.tags || []), tag];
-                    saveProfile("tags", newTags);
-                  }}
-                  className="px-3 py-1.5 rounded-full border text-sm hover:bg-muted transition-colors"
-                >
-                  + {tag}
-                </button>
-              ))}
-          </div>
-        </div>
-      </div>
-
-      {/* 提示信息 */}
-      <div className="flex items-start gap-2 text-xs text-muted-foreground p-3 bg-muted/30 rounded-lg">
-        <Info className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
-        <p>
-          您的个人资料用于个性化 AI 助理的回复。这些信息会帮助 AI
-          更好地理解您的需求和偏好。您随时可以修改这些信息。
-        </p>
-      </div>
-
-      {/* 消息提示 */}
+    <div className="space-y-5 pb-8">
       {message && (
         <div
           className={cn(
-            "flex items-center gap-2 p-3 rounded-lg",
+            "flex items-center gap-3 rounded-[20px] border px-4 py-3 text-sm shadow-sm shadow-slate-950/5",
             message.type === "success"
-              ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-              : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+              ? "border-emerald-200 bg-emerald-50/90 text-emerald-700"
+              : "border-rose-200 bg-rose-50/90 text-rose-700",
           )}
         >
           {message.type === "success" ? (
-            <CheckCircle2 className="h-4 w-4" />
+            <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
           ) : (
-            <AlertCircle className="h-4 w-4" />
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
           )}
-          <span className="text-sm">{message.text}</span>
+          <span>{message.text}</span>
         </div>
       )}
+
+      <section className="relative overflow-hidden rounded-[30px] border border-emerald-200/70 bg-[linear-gradient(135deg,rgba(245,250,248,0.98)_0%,rgba(255,255,255,0.98)_52%,rgba(242,247,255,0.96)_100%)] shadow-sm shadow-slate-950/5">
+        <div className="pointer-events-none absolute -left-16 top-[-68px] h-52 w-52 rounded-full bg-emerald-200/25 blur-3xl" />
+        <div className="pointer-events-none absolute right-[-88px] top-[-14px] h-56 w-56 rounded-full bg-sky-200/25 blur-3xl" />
+
+        <div className="relative flex flex-col gap-6 p-6 lg:p-7">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex items-start gap-4">
+              <div className="relative flex-shrink-0">
+                <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-[28px] border border-white/90 bg-[linear-gradient(145deg,rgba(255,255,255,0.95)_0%,rgba(230,244,238,0.92)_100%)] shadow-sm shadow-slate-950/5">
+                  {profile.avatar_url ? (
+                    <img
+                      src={profile.avatar_url}
+                      alt="头像"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <User className="h-11 w-11 text-slate-400" />
+                  )}
+                </div>
+                <button
+                  type="button"
+                  aria-label="更新头像"
+                  onClick={handleUploadAvatar}
+                  className="absolute -bottom-2 -right-2 flex h-10 w-10 items-center justify-center rounded-2xl border border-white bg-slate-900 text-white shadow-lg shadow-slate-950/15 transition hover:bg-slate-800"
+                >
+                  <Camera className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="min-w-0 space-y-3">
+                <span className="inline-flex items-center rounded-full border border-white/90 bg-white/85 px-3 py-1 text-xs font-semibold tracking-[0.16em] text-emerald-700 shadow-sm">
+                  PROFILE SNAPSHOT
+                </span>
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-2xl font-semibold tracking-tight text-slate-900">
+                      {profile.nickname || "未设置昵称"}
+                    </h2>
+                    <span
+                      className={cn(
+                        "rounded-full border px-3 py-1 text-xs font-medium",
+                        statusClassName,
+                      )}
+                    >
+                      {statusLabel}
+                    </span>
+                  </div>
+                  <p className="max-w-2xl text-sm leading-6 text-slate-600">
+                    {profile.bio ||
+                      "补充几句你的工作背景、关注方向或使用目标，AI 会更快进入正确语境。"}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <span className="inline-flex items-center gap-2 rounded-full border border-white/90 bg-white/85 px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm">
+                    <Mail className="h-3.5 w-3.5 text-slate-400" />
+                    {profile.email || "邮箱待补充"}
+                  </span>
+
+                  {quickTags.length > 0 ? (
+                    quickTags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="rounded-full border border-white/90 bg-white/85 px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm"
+                      >
+                        {tag}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="rounded-full border border-dashed border-slate-300 bg-white/70 px-3 py-1.5 text-xs text-slate-500">
+                      添加标签帮助 AI 理解你的领域偏好
+                    </span>
+                  )}
+
+                  {extraTagCount > 0 && (
+                    <span className="rounded-full border border-white/90 bg-white/85 px-3 py-1.5 text-xs font-medium text-slate-500 shadow-sm">
+                      +{extraTagCount} 个标签
+                    </span>
+                  )}
+                </div>
+
+                <p className="text-xs leading-5 text-slate-500">
+                  头像支持 PNG / JPG / GIF / WEBP，单文件不超过 5MB。
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[360px]">
+              <div className="rounded-[22px] border border-white/90 bg-white/88 p-4 shadow-sm">
+                <p className="text-sm font-semibold text-slate-800">
+                  资料完成度
+                </p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  昵称、简介、邮箱与偏好标签
+                </p>
+                <p className="mt-4 text-3xl font-semibold tracking-tight text-slate-900">
+                  {completionPercent}%
+                </p>
+              </div>
+              <div className="rounded-[22px] border border-white/90 bg-white/88 p-4 shadow-sm">
+                <p className="text-sm font-semibold text-slate-800">
+                  兴趣标签
+                </p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  用于偏好理解与内容召回
+                </p>
+                <p className="mt-4 text-3xl font-semibold tracking-tight text-slate-900">
+                  {tags.length}
+                </p>
+              </div>
+              <div className="rounded-[22px] border border-white/90 bg-white/88 p-4 shadow-sm">
+                <p className="text-sm font-semibold text-slate-800">
+                  个性化状态
+                </p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  当前资料可用于 AI 上下文提示
+                </p>
+                <p className="mt-4 text-xl font-semibold tracking-tight text-slate-900">
+                  {statusLabel}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.95fr)]">
+        <div className="space-y-4">
+          <article className="rounded-[26px] border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-950/5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">基础资料</p>
+                <p className="mt-1 text-sm leading-6 text-slate-500">
+                  这些信息会参与欢迎语、工作区称呼和部分个性化提示生成。
+                </p>
+              </div>
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-500">
+                {PROFILE_FIELDS.length} 项
+              </span>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              {PROFILE_FIELDS.map((field) => (
+                <ProfileFieldCard
+                  key={field.key}
+                  field={field.key}
+                  icon={field.icon}
+                  label={field.label}
+                  description={field.description}
+                  value={profile[field.key] || ""}
+                  placeholder={field.placeholder}
+                  editable={field.editable}
+                  multiline={field.multiline}
+                  hint={field.hint}
+                  isEditing={editingField === field.key}
+                  editValue={editValue}
+                  onStartEdit={handleStartEdit}
+                  onEditValueChange={setEditValue}
+                  onSave={handleSaveEdit}
+                  onCancel={handleCancelEdit}
+                />
+              ))}
+            </div>
+          </article>
+        </div>
+
+        <div className="space-y-4">
+          <article className="rounded-[26px] border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-950/5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                  <Tag className="h-4 w-4 text-emerald-600" />
+                  偏好标签
+                </div>
+                <p className="mt-1 text-sm leading-6 text-slate-500">
+                  标签帮助 AI 判断你更关注的主题和表达风格。
+                </p>
+              </div>
+              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+                {tags.length} 个已选
+              </span>
+            </div>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              {tags.length > 0 ? (
+                tags.map((tag) => (
+                  <div
+                    key={tag}
+                    className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm text-slate-700"
+                  >
+                    <span>{tag}</span>
+                    <button
+                      type="button"
+                      aria-label={`移除标签${tag}`}
+                      onClick={() => handleRemoveTag(tag)}
+                      className="rounded-full p-0.5 text-slate-400 transition hover:bg-slate-200 hover:text-slate-700"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-[20px] border border-dashed border-slate-300 bg-slate-50/60 px-4 py-3 text-sm leading-6 text-slate-500">
+                  还没有添加标签。可以从推荐标签开始，也可以输入自定义领域。
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 rounded-[22px] border border-slate-200 bg-slate-50/70 p-4">
+              <label
+                htmlFor="profile-new-tag"
+                className="text-xs font-medium tracking-[0.12em] text-slate-500"
+              >
+                CUSTOM TAG
+              </label>
+              <div className="mt-2 flex gap-2">
+                <input
+                  id="profile-new-tag"
+                  type="text"
+                  value={newTag}
+                  onChange={(event) => setNewTag(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      handleAddTag();
+                    }
+                  }}
+                  placeholder="例如：全栈工程、内容策略、效率工具"
+                  className="flex-1 rounded-[16px] border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-slate-300"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddTag}
+                  className="inline-flex items-center gap-2 rounded-[16px] bg-slate-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
+                >
+                  <Plus className="h-4 w-4" />
+                  添加标签
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <p className="text-xs font-medium tracking-[0.12em] text-slate-500">
+                推荐标签
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {suggestedTags.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => {
+                      void saveProfileEntry("tags", [...tags, tag]);
+                    }}
+                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
+                  >
+                    + {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </article>
+
+          <article className="rounded-[26px] border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-950/5">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+              <Sparkles className="h-4 w-4 text-sky-600" />
+              资料如何被使用
+            </div>
+            <div className="mt-4 space-y-3 rounded-[22px] border border-slate-100 bg-slate-50/70 p-4">
+              <div className="flex items-start gap-3">
+                <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400" />
+                <p className="text-sm leading-6 text-slate-600">
+                  昵称和简介会帮助 AI 在开场、建议和工作区提示中更自然地引用你的背景。
+                </p>
+              </div>
+              <div className="flex items-start gap-3">
+                <Tag className="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400" />
+                <p className="text-sm leading-6 text-slate-600">
+                  标签只用于偏好判断，不会替代系统提示词，也不会自动暴露给外部服务。
+                </p>
+              </div>
+              <div className="flex items-start gap-3">
+                <Mail className="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400" />
+                <p className="text-sm leading-6 text-slate-600">
+                  邮箱由账号体系维护，当前页面仅做展示，避免在多入口出现不一致状态。
+                </p>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
     </div>
   );
 }

@@ -37,7 +37,10 @@ export function groupSkillsBySourceKind(skills: Skill[]): SkillSection[] {
   for (const skill of skills) {
     if (skill.sourceKind === "builtin") {
       builtinSkills.push(skill);
-    } else if (skill.repoOwner && skill.repoName) {
+    } else if (
+      skill.catalogSource === "remote" ||
+      (!skill.catalogSource && skill.repoOwner && skill.repoName)
+    ) {
       remoteSkills.push(skill);
     } else {
       localSkills.push(skill);
@@ -54,7 +57,7 @@ export function groupSkillsBySourceKind(skills: Skill[]): SkillSection[] {
     {
       key: "local",
       title: "LOCAL SKILLS",
-      description: "本地已安装或手工放入的技能。",
+      description: "当前项目或本地目录中可直接使用的技能。",
       skills: localSkills,
     },
     {

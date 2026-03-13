@@ -10,6 +10,12 @@ import type {
   AgentThreadTurn,
   ToolResultImage,
 } from "./agentStream";
+import {
+  normalizeQueuedTurnSnapshots,
+  type QueuedTurnSnapshot,
+} from "./queuedTurn";
+
+export type { QueuedTurnSnapshot } from "./queuedTurn";
 
 /**
  * Agent 状态
@@ -107,6 +113,8 @@ export interface AutoContinueRequestPayload {
   source?: string;
 }
 
+export type AgentSearchMode = "disabled" | "allowed" | "required";
+
 /**
  * Aster 会话信息（匹配后端 SessionInfo 结构）
  */
@@ -155,12 +163,14 @@ export interface AsterSessionDetail {
   }>;
   turns?: AgentThreadTurn[];
   items?: AgentThreadItem[];
+  queued_turns?: QueuedTurnSnapshot[];
 }
 
 export interface AgentTurnConfigSnapshot {
   provider_config?: AsterProviderConfig;
   execution_strategy?: AsterExecutionStrategy;
   web_search?: boolean;
+  search_mode?: AgentSearchMode;
   auto_continue?: AutoContinueRequestPayload;
   system_prompt?: string;
   metadata?: Record<string, unknown>;
@@ -173,11 +183,18 @@ export interface AgentRuntimeSubmitTurnRequest {
   workspace_id: string;
   images?: ImageInput[];
   turn_config?: AgentTurnConfigSnapshot;
+  queue_if_busy?: boolean;
+  queued_turn_id?: string;
 }
 
 export interface AgentRuntimeInterruptTurnRequest {
   session_id: string;
   turn_id?: string;
+}
+
+export interface AgentRuntimeRemoveQueuedTurnRequest {
+  session_id: string;
+  queued_turn_id: string;
 }
 
 export interface AgentRuntimeRespondActionRequest {
@@ -204,6 +221,7 @@ interface InvokeAsterChatStreamOptions {
   providerConfig?: AsterProviderConfig;
   executionStrategy?: AsterExecutionStrategy;
   webSearch?: boolean;
+  searchMode?: AgentSearchMode;
   autoContinue?: AutoContinueRequestPayload;
   systemPrompt?: string;
   projectId?: string;
@@ -219,6 +237,7 @@ const invokeAsterChatStream = async ({
   providerConfig,
   executionStrategy,
   webSearch,
+  searchMode,
   autoContinue,
   systemPrompt,
   projectId,
@@ -237,6 +256,7 @@ const invokeAsterChatStream = async ({
       workspace_id: resolvedWorkspaceId,
       execution_strategy: executionStrategy,
       web_search: webSearch,
+      search_mode: searchMode,
       auto_continue: autoContinue,
       system_prompt: systemPrompt,
       metadata,
@@ -254,6 +274,12 @@ export async function interruptAgentRuntimeTurn(
   request: AgentRuntimeInterruptTurnRequest,
 ): Promise<boolean> {
   return await safeInvoke("agent_runtime_interrupt_turn", { request });
+}
+
+export async function removeAgentRuntimeQueuedTurn(
+  request: AgentRuntimeRemoveQueuedTurnRequest,
+): Promise<boolean> {
+  return await safeInvoke("agent_runtime_remove_queued_turn", { request });
 }
 
 export async function respondAgentRuntimeAction(
@@ -281,7 +307,13 @@ export async function listAgentRuntimeSessions(): Promise<AsterSessionInfo[]> {
 export async function getAgentRuntimeSession(
   sessionId: string,
 ): Promise<AsterSessionDetail> {
-  return await safeInvoke("agent_runtime_get_session", { sessionId });
+  const detail = await safeInvoke("agent_runtime_get_session", { sessionId });
+  return {
+    ...(detail as AsterSessionDetail),
+    queued_turns: normalizeQueuedTurnSnapshots(
+      (detail as AsterSessionDetail | null | undefined)?.queued_turns,
+    ),
+  };
 }
 
 export async function updateAgentRuntimeSession(
@@ -532,7 +564,13 @@ export async function listAsterSessions(): Promise<AsterSessionInfo[]> {
 export async function getAsterSession(
   sessionId: string,
 ): Promise<AsterSessionDetail> {
-  return await safeInvoke("aster_session_get", { sessionId });
+  const detail = await safeInvoke("aster_session_get", { sessionId });
+  return {
+    ...(detail as AsterSessionDetail),
+    queued_turns: normalizeQueuedTurnSnapshots(
+      (detail as AsterSessionDetail | null | undefined)?.queued_turns,
+    ),
+  };
 }
 
 /**

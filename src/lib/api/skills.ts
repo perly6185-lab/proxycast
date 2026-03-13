@@ -1,6 +1,45 @@
 import { safeInvoke } from "@/lib/dev-bridge";
 
 export type SkillSourceKind = "builtin" | "other";
+export type SkillCatalogSource = "project" | "user" | "remote";
+export type SkillScaffoldTarget = "project" | "user";
+
+export interface SkillResourceSummary {
+  hasScripts: boolean;
+  hasReferences: boolean;
+  hasAssets: boolean;
+}
+
+export interface SkillStandardCompliance {
+  isStandard: boolean;
+  validationErrors: string[];
+  deprecatedFields: string[];
+}
+
+export interface SkillInspection {
+  content: string;
+  license?: string;
+  metadata: Record<string, string>;
+  allowedTools: string[];
+  resourceSummary: SkillResourceSummary;
+  standardCompliance: SkillStandardCompliance;
+}
+
+export type LocalSkillInspection = SkillInspection;
+
+export interface RemoteSkillLocator extends Record<string, unknown> {
+  owner: string;
+  name: string;
+  branch: string;
+  directory: string;
+}
+
+export interface CreateSkillScaffoldRequest extends Record<string, unknown> {
+  target: SkillScaffoldTarget;
+  directory: string;
+  name: string;
+  description: string;
+}
 
 export interface Skill {
   key: string;
@@ -10,9 +49,15 @@ export interface Skill {
   readmeUrl?: string;
   installed: boolean;
   sourceKind: SkillSourceKind;
+  catalogSource?: SkillCatalogSource;
   repoOwner?: string;
   repoName?: string;
   repoBranch?: string;
+  license?: string;
+  metadata?: Record<string, string>;
+  allowedTools?: string[];
+  resourceSummary?: SkillResourceSummary;
+  standardCompliance?: SkillStandardCompliance;
 }
 
 export interface SkillRepo {
@@ -24,19 +69,61 @@ export interface SkillRepo {
 
 export type AppType = "claude" | "codex" | "gemini" | "proxycast";
 
+function normalizeStandardCompliance(
+  compliance?: Partial<SkillStandardCompliance> | null,
+): SkillStandardCompliance | undefined {
+  if (!compliance) {
+    return undefined;
+  }
+
+  return {
+    isStandard: Boolean(compliance.isStandard),
+    validationErrors: Array.isArray(compliance.validationErrors)
+      ? compliance.validationErrors
+      : [],
+    deprecatedFields: Array.isArray(compliance.deprecatedFields)
+      ? compliance.deprecatedFields
+      : [],
+  };
+}
+
+function normalizeSkill(skill: Skill): Skill {
+  return {
+    ...skill,
+    standardCompliance: normalizeStandardCompliance(skill.standardCompliance),
+  };
+}
+
+function normalizeInspection(inspection: SkillInspection): SkillInspection {
+  return {
+    ...inspection,
+    standardCompliance: normalizeStandardCompliance(
+      inspection.standardCompliance,
+    ) ?? {
+      isStandard: false,
+      validationErrors: [],
+      deprecatedFields: [],
+    },
+  };
+}
+
 export const skillsApi = {
   async getLocal(app: AppType = "proxycast"): Promise<Skill[]> {
-    return safeInvoke("get_local_skills_for_app", { app });
+    const skills = await safeInvoke<Skill[]>("get_local_skills_for_app", {
+      app,
+    });
+    return skills.map(normalizeSkill);
   },
 
   async getAll(
     app: AppType = "proxycast",
     options?: { refreshRemote?: boolean },
   ): Promise<Skill[]> {
-    return safeInvoke("get_skills_for_app", {
+    const skills = await safeInvoke<Skill[]>("get_skills_for_app", {
       app,
       refresh_remote: options?.refreshRemote ?? false,
     });
+    return skills.map(normalizeSkill);
   },
 
   async install(
@@ -72,7 +159,7 @@ export const skillsApi = {
   /**
    * 获取已安装的 ProxyCast Skills 目录列表
    *
-   * 扫描 ~/.proxycast/skills/ 目录,返回包含 SKILL.md 的子目录名列表。
+   * 扫描 ProxyCast 应用 skills 目录，返回包含 SKILL.md 的子目录名列表。
    * 这些 Skills 将被传递给 aster 用于 AI Agent 功能。
    *
    * @returns 已安装的 Skill 目录名列表
@@ -82,16 +169,44 @@ export const skillsApi = {
   },
 
   /**
-   * 获取本地已安装 Skill 的 SKILL.md 内容
+   * 获取本地已安装 Skill 的标准检查结果
    *
    * @param directory Skill 目录名
    * @param app 应用类型
-   * @returns SKILL.md 的文本内容
+   * @returns 标准检查结果与原始 SKILL.md 内容
    */
-  async getLocalSkillContent(
+  async inspectLocalSkill(
     directory: string,
     app: AppType = "proxycast",
-  ): Promise<string> {
-    return safeInvoke("get_local_skill_content", { app, directory });
+  ): Promise<SkillInspection> {
+    const inspection = await safeInvoke<SkillInspection>(
+      "inspect_local_skill_for_app",
+      { app, directory },
+    );
+    return normalizeInspection(inspection);
+  },
+
+  async createSkillScaffold(
+    request: CreateSkillScaffoldRequest,
+    app: AppType = "proxycast",
+  ): Promise<SkillInspection> {
+    const inspection = await safeInvoke<SkillInspection>(
+      "create_skill_scaffold_for_app",
+      {
+        app,
+        ...request,
+      },
+    );
+    return normalizeInspection(inspection);
+  },
+
+  async inspectRemoteSkill(
+    locator: RemoteSkillLocator,
+  ): Promise<SkillInspection> {
+    const inspection = await safeInvoke<SkillInspection>(
+      "inspect_remote_skill",
+      locator,
+    );
+    return normalizeInspection(inspection);
   },
 };

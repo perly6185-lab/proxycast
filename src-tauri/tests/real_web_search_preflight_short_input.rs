@@ -1,9 +1,9 @@
-use proxycast_agent::AsterAgentState;
+use proxycast_agent::{
+    execute_web_search_preflight_if_needed, resolve_request_tool_policy_with_mode, AsterAgentState,
+    RequestToolPolicyMode, WebSearchExecutionTracker,
+};
 use proxycast_core::database::dao::api_key_provider::ApiProviderType;
 use proxycast_core::database::init_database;
-use proxycast_lib::services::request_tool_policy_prompt_service::{
-    execute_web_search_preflight_if_needed, resolve_request_tool_policy, WebSearchExecutionTracker,
-};
 use proxycast_services::api_key_provider_service::ApiKeyProviderService;
 use uuid::Uuid;
 
@@ -84,7 +84,11 @@ async fn test_real_web_search_preflight_short_input_continue() {
     let guard = agent_arc.read().await;
     let agent = guard.as_ref().expect("Agent 未初始化");
 
-    let policy = resolve_request_tool_policy(Some(true), false);
+    let policy = resolve_request_tool_policy_with_mode(
+        Some(true),
+        Some(RequestToolPolicyMode::Required),
+        false,
+    );
     let mut tracker = WebSearchExecutionTracker::default();
     let execution = execute_web_search_preflight_if_needed(
         agent,

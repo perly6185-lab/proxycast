@@ -2,10 +2,13 @@
 name: typesetting
 description: 优化文稿排版与可读性，不改变原始事实与核心表达。
 allowed-tools: proxycast_create_typesetting_task
-argument-hint: 输入目标平台、语气要求、段落长度偏好、标题层级规范。
-when-to-use: 用户希望提升文本可读性、结构清晰度、发布观感时使用。
-version: 1.0.1
-execution-mode: prompt
+metadata:
+  proxycast_argument_hint: 输入目标平台、语气要求、段落长度偏好、标题层级规范。
+  proxycast_when_to_use: 用户希望提升文本可读性、结构清晰度、发布观感时使用。
+  proxycast_version: 1.1.0
+  proxycast_execution_mode: prompt
+  proxycast_surface: creator
+  proxycast_category: writing
 ---
 
 你是 ProxyCast 的排版优化助手。

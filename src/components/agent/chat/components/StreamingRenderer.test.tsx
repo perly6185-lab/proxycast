@@ -3,7 +3,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StreamingRenderer } from "./StreamingRenderer";
-import type { AgentRuntimeStatus, ContentPart } from "../types";
+import type {
+  AgentRuntimeStatus,
+  ContentPart,
+  WriteArtifactContext,
+} from "../types";
 
 const parseAIResponseMock = vi.fn();
 
@@ -89,6 +93,12 @@ function renderHarness(props: {
   contentParts?: ContentPart[];
   renderA2UIInline?: boolean;
   runtimeStatus?: AgentRuntimeStatus;
+  showRuntimeStatusInline?: boolean;
+  onWriteFile?: (
+    content: string,
+    fileName: string,
+    context?: WriteArtifactContext,
+  ) => void;
 }) {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -185,6 +195,43 @@ describe("StreamingRenderer", () => {
     expect(container.textContent).toContain("请先补充以下信息：");
   });
 
+  it("pending_write_file 应触发流式 onWriteFile 回调", () => {
+    const onWriteFile = vi.fn();
+    parseAIResponseMock.mockReturnValue({
+      parts: [
+        {
+          type: "pending_write_file",
+          content: "# 草稿\n正在生成中",
+          filePath: "notes/live.md",
+        },
+      ],
+      hasA2UI: false,
+      hasWriteFile: true,
+      hasPending: true,
+    });
+
+    renderHarness({
+      content: '<write_file path="notes/live.md"># 草稿\n正在生成中',
+      isStreaming: true,
+      onWriteFile,
+    });
+
+    expect(onWriteFile).toHaveBeenCalledTimes(1);
+    expect(onWriteFile).toHaveBeenCalledWith(
+      "# 草稿\n正在生成中",
+      "notes/live.md",
+      expect.objectContaining({
+        source: "message_content",
+        status: "streaming",
+        metadata: expect.objectContaining({
+          writePhase: "streaming",
+          lastUpdateSource: "message_content",
+          isPartial: true,
+        }),
+      }),
+    );
+  });
+
   it("应将 proposed_plan 片段渲染为独立计划卡片", () => {
     const { container } = renderHarness({
       content:
@@ -210,6 +257,7 @@ describe("StreamingRenderer", () => {
         detail: "正在理解请求并准备回合。",
         checkpoints: ["对话优先执行", "等待首个事件"],
       },
+      showRuntimeStatusInline: true,
     });
 
     expect(container.textContent).toContain("Agent 正在准备执行");

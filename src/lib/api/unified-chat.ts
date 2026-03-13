@@ -296,20 +296,36 @@ export function parseStreamEvent(payload: unknown): StreamEvent | null {
 
     case "ArtifactSnapshot":
     case "artifact_snapshot":
+      {
+        const nestedArtifact =
+          event.artifact && typeof event.artifact === "object"
+            ? (event.artifact as Record<string, unknown>)
+            : undefined;
       return {
         type: "artifact_snapshot",
         artifact: {
           artifactId: String(
-            event.artifact_id ||
+            nestedArtifact?.artifactId ||
+              nestedArtifact?.artifact_id ||
+              event.artifact_id ||
               event.artifactId ||
               event.id ||
               "artifact-unknown",
           ),
-          filePath: (event.file_path as string) || (event.filePath as string),
-          content: event.content as string,
-          metadata: event.metadata as Record<string, unknown>,
+          filePath:
+            (nestedArtifact?.filePath as string | undefined) ||
+            (nestedArtifact?.file_path as string | undefined) ||
+            (event.file_path as string | undefined) ||
+            (event.filePath as string | undefined),
+          content:
+            (nestedArtifact?.content as string | undefined) ||
+            (event.content as string | undefined),
+          metadata:
+            (nestedArtifact?.metadata as Record<string, unknown> | undefined) ||
+            (event.metadata as Record<string, unknown> | undefined),
         },
       };
+      }
 
     case "ActionRequired":
     case "action_required":

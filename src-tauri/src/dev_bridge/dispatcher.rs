@@ -570,6 +570,55 @@ pub async fn handle_command(
             }
         }
 
+        "inspect_local_skill_for_app" => {
+            let args = args.unwrap_or_default();
+            let app = args
+                .get("app")
+                .and_then(|value| value.as_str())
+                .unwrap_or("proxycast")
+                .to_string();
+            let directory = get_string_arg(&args, "directory", "directory")?;
+            let inspection = crate::commands::skill_cmd::inspect_local_skill_for_app(app, directory)
+                .map_err(|e| format!("检查本地 Skill 失败: {e}"))?;
+            Ok(serde_json::to_value(inspection)?)
+        }
+
+        "create_skill_scaffold_for_app" => {
+            let args = args.unwrap_or_default();
+            let app = args
+                .get("app")
+                .and_then(|value| value.as_str())
+                .unwrap_or("proxycast")
+                .to_string();
+            let target = get_string_arg(&args, "target", "target")?;
+            let directory = get_string_arg(&args, "directory", "directory")?;
+            let name = get_string_arg(&args, "name", "name")?;
+            let description = get_string_arg(&args, "description", "description")?;
+            let inspection = crate::commands::skill_cmd::create_skill_scaffold_for_app(
+                app,
+                target,
+                directory,
+                name,
+                description,
+            )
+            .map_err(|e| format!("创建 Skill 脚手架失败: {e}"))?;
+            Ok(serde_json::to_value(inspection)?)
+        }
+
+        "inspect_remote_skill" => {
+            let args = args.unwrap_or_default();
+            let owner = get_string_arg(&args, "owner", "owner")?;
+            let name = get_string_arg(&args, "name", "name")?;
+            let branch = get_string_arg(&args, "branch", "branch")?;
+            let directory = get_string_arg(&args, "directory", "directory")?;
+            let inspection = state
+                .skill_service
+                .inspect_remote_skill(&owner, &name, &branch, &directory)
+                .await
+                .map_err(|e| format!("检查远程 Skill 失败: {e}"))?;
+            Ok(serde_json::to_value(inspection)?)
+        }
+
         "test_api" => {
             // 测试 API 连接
             // 从 args 获取 provider

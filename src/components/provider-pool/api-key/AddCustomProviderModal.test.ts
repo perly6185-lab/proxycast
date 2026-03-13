@@ -16,6 +16,7 @@ import {
   isFormValid,
   hasRequiredFields,
 } from "./AddCustomProviderModal";
+import { PROVIDER_TYPE_VALUES } from "./ProviderConfigForm.utils";
 import type { ProviderType } from "@/lib/types/provider";
 
 // ============================================================================
@@ -23,19 +24,7 @@ import type { ProviderType } from "@/lib/types/provider";
 // ============================================================================
 
 /** 所有有效的 Provider 类型 */
-const VALID_PROVIDER_TYPES: ProviderType[] = [
-  "openai",
-  "openai-response",
-  "anthropic",
-  "gemini",
-  "azure-openai",
-  "vertexai",
-  "aws-bedrock",
-  "ollama",
-  "fal",
-  "new-api",
-  "gateway",
-];
+const VALID_PROVIDER_TYPES: ProviderType[] = PROVIDER_TYPE_VALUES;
 
 /**
  * 生成有效的 Provider 类型

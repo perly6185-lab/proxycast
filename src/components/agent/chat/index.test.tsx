@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   mockUseAgentChatUnified,
+  mockUseArtifactAutoPreviewSync,
   mockUseThemeContextWorkspace,
   mockUseTopicBranchBoard,
   mockGetProject,
@@ -29,6 +30,7 @@ const {
   mockSkillExecutionGetDetail,
 } = vi.hoisted(() => ({
   mockUseAgentChatUnified: vi.fn(),
+  mockUseArtifactAutoPreviewSync: vi.fn(),
   mockUseThemeContextWorkspace: vi.fn(),
   mockUseTopicBranchBoard: vi.fn(),
   mockGetProject: vi.fn(),
@@ -71,6 +73,7 @@ vi.mock("sonner", () => ({
 
 vi.mock("./hooks", () => ({
   useAgentChatUnified: mockUseAgentChatUnified,
+  useArtifactAutoPreviewSync: mockUseArtifactAutoPreviewSync,
   useThemeContextWorkspace: mockUseThemeContextWorkspace,
   useTopicBranchBoard: mockUseTopicBranchBoard,
 }));
@@ -1919,8 +1922,8 @@ describe("AgentChatPage 自动引导", () => {
               toolCalls: [
                 {
                   id: "tool-search-1",
-                  name: "search_query",
-                  arguments: JSON.stringify({ q: "Rokid Glasses 最新功能" }),
+                  name: "WebSearch",
+                  arguments: JSON.stringify({ query: "Rokid Glasses 最新功能" }),
                   status: "completed",
                   startTime: new Date("2026-03-06T11:00:01.500Z"),
                   endTime: new Date("2026-03-06T11:00:02.000Z"),

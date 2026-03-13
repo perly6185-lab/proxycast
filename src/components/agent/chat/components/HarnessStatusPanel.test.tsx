@@ -24,6 +24,7 @@ interface RenderResult {
 
 const mountedRoots: RenderResult[] = [];
 let originalClipboard: Clipboard | undefined;
+let originalWindowOpen: typeof window.open;
 
 function createHarnessState(
   overrides: Partial<HarnessSessionState> = {},
@@ -46,6 +47,7 @@ function createHarnessState(
     },
     delegatedTasks: [],
     outputSignals: [],
+    activeFileWrites: [],
     recentFileEvents: [],
     hasSignals: true,
     ...overrides,
@@ -103,6 +105,11 @@ beforeEach(() => {
       writeText: vi.fn().mockResolvedValue(undefined),
     },
   });
+  originalWindowOpen = window.open;
+  Object.defineProperty(window, "open", {
+    configurable: true,
+    value: vi.fn(),
+  });
 });
 
 afterEach(() => {
@@ -120,14 +127,24 @@ afterEach(() => {
     configurable: true,
     value: originalClipboard,
   });
+  Object.defineProperty(window, "open", {
+    configurable: true,
+    value: originalWindowOpen,
+  });
   vi.clearAllMocks();
 });
 
 describe("HarnessStatusPanel", () => {
   it("弹窗模式应默认展示完整内容且不渲染展开按钮", () => {
-    renderPanel({
+    const { container } = renderPanel({
       layout: "dialog",
     });
+    const panel = container.querySelector(
+      '[data-testid="harness-status-panel"]',
+    ) as HTMLDivElement | null;
+    const scrollArea = container.querySelector(
+      '[data-testid="harness-status-panel"] > .relative.overflow-auto',
+    ) as HTMLDivElement | null;
 
     expect(document.body.textContent).toContain("待审批");
     expect(document.body.textContent).toContain("文件活动");
@@ -135,6 +152,10 @@ describe("HarnessStatusPanel", () => {
     expect(document.body.textContent).toContain("上下文");
     expect(document.body.textContent).not.toContain("展开详情");
     expect(document.body.textContent).not.toContain("收起详情");
+    expect(panel?.className).toContain("flex");
+    expect(panel?.className).toContain("h-full");
+    expect(scrollArea?.className).toContain("flex-1");
+    expect(scrollArea?.className).toContain("min-h-0");
   });
 
   it("应支持自定义标题说明与前置运行概览内容", () => {
@@ -167,6 +188,32 @@ describe("HarnessStatusPanel", () => {
     expect(document.body.textContent).toContain("当前执行阶段");
     expect(document.body.textContent).toContain("正在建立执行回合");
     expect(document.body.textContent).toContain("等待首个模型事件");
+  });
+
+  it("存在 activeFileWrites 时应在工作台中展示当前文件写入", () => {
+    renderPanel({
+      harnessState: createHarnessState({
+        activeFileWrites: [
+          {
+            id: "write-1",
+            path: "/tmp/workspace/live.md",
+            displayName: "live.md",
+            phase: "streaming",
+            status: "streaming",
+            source: "artifact_snapshot",
+            updatedAt: new Date("2026-03-13T12:00:00.000Z"),
+            preview: "# 草稿\n正在写入",
+            latestChunk: "正在写入",
+            content: "# 草稿\n正在写入",
+          },
+        ],
+      }),
+    });
+
+    expect(document.body.textContent).toContain("当前文件写入");
+    expect(document.body.textContent).toContain("live.md");
+    expect(document.body.textContent).toContain("正在写入");
+    expect(document.body.textContent).toContain("快照同步");
   });
 
   it("摘要卡和快速导航应支持跳转到对应区块", () => {
@@ -488,6 +535,125 @@ describe("HarnessStatusPanel", () => {
     expect(outputSection?.textContent).toContain("1 / 4 条");
   });
 
+  it("搜索输出应展示结果列表并支持悬浮预览", async () => {
+    renderPanel({
+      harnessState: createHarnessState({
+        outputSignals: [
+          {
+            id: "signal-search",
+            toolCallId: "tool-search",
+            toolName: "WebSearch",
+            title: "联网检索摘要",
+            summary: "3月13日国际新闻",
+            content: [
+              "Xinhua world news summary at 0030 GMT, March 13",
+              "https://example.com/xinhua",
+              "全球要闻摘要，覆盖国际局势与市场动态。",
+              "",
+              "Friday morning news: March 13, 2026 | WORLD - wng.org",
+              "https://example.com/wng",
+              "补充国际动态与区域冲突更新。",
+            ].join("\n"),
+          },
+        ],
+      }),
+    });
+
+    expect(document.body.textContent).toContain("3月13日国际新闻");
+    expect(document.body.textContent).toContain(
+      "Xinhua world news summary at 0030 GMT, March 13",
+    );
+    expect(document.body.textContent).toContain(
+      "Friday morning news: March 13, 2026 | WORLD - wng.org",
+    );
+
+    const collapseButton = document.body.querySelector(
+      'button[aria-label="收起搜索结果：3月13日国际新闻"]',
+    ) as HTMLButtonElement | null;
+
+    act(() => {
+      collapseButton?.click();
+    });
+
+    expect(document.body.textContent).not.toContain(
+      "Xinhua world news summary at 0030 GMT, March 13",
+    );
+
+    const expandButton = document.body.querySelector(
+      'button[aria-label="展开搜索结果：3月13日国际新闻"]',
+    ) as HTMLButtonElement | null;
+
+    act(() => {
+      expandButton?.click();
+    });
+
+    expect(document.body.textContent).toContain(
+      "Xinhua world news summary at 0030 GMT, March 13",
+    );
+
+    const firstSearchResult = document.body.querySelector(
+      '[aria-label="预览搜索结果：Xinhua world news summary at 0030 GMT, March 13"]',
+    ) as HTMLButtonElement | null;
+
+    await act(async () => {
+      firstSearchResult?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain(
+      "全球要闻摘要，覆盖国际局势与市场动态。",
+    );
+    expect(document.body.textContent).toContain("https://example.com/xinhua");
+    expect(document.body.querySelector('[data-side="left"]')).not.toBeNull();
+
+    await act(async () => {
+      firstSearchResult?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(window.open).toHaveBeenCalledWith(
+      "https://example.com/xinhua",
+      "_blank",
+    );
+  });
+
+  it("连续多条搜索输出应在 harness 中按搜索批次分组展示", () => {
+    renderPanel({
+      harnessState: createHarnessState({
+        outputSignals: [
+          {
+            id: "signal-search-1",
+            toolCallId: "tool-search-1",
+            toolName: "WebSearch",
+            title: "联网检索摘要",
+            summary: "3月13日国际新闻",
+            content: "https://example.com/1",
+          },
+          {
+            id: "signal-search-2",
+            toolCallId: "tool-search-2",
+            toolName: "WebSearch",
+            title: "联网检索摘要",
+            summary: "March 13 2026 world headlines",
+            content: "https://example.com/2",
+          },
+        ],
+      }),
+    });
+
+    expect(document.body.textContent).toContain("已搜索 2 组查询");
+    expect(document.body.textContent).toContain("3月13日国际新闻");
+    expect(document.body.textContent).toContain(
+      "March 13 2026 world headlines",
+    );
+    expect(document.body.textContent).toContain("中文日期检索");
+    expect(document.body.textContent).toContain("头条检索");
+  });
+
   it("预览弹窗应支持复制路径和系统文件操作", async () => {
     const onLoadFilePreview = vi.fn().mockResolvedValue({
       path: "/tmp/workspace/draft.md",
@@ -556,5 +722,96 @@ describe("HarnessStatusPanel", () => {
     );
     expect(onRevealPath).toHaveBeenCalledWith("/tmp/workspace/draft.md");
     expect(onOpenPath).toHaveBeenCalledWith("/tmp/workspace/draft.md");
+  });
+
+  it("应支持直接点击文件路径并系统打开", async () => {
+    const onOpenPath = vi.fn().mockResolvedValue(undefined);
+
+    renderPanel({
+      harnessState: createHarnessState({
+        recentFileEvents: [
+          {
+            id: "event-open-path",
+            toolCallId: "tool-open-path",
+            path: "/tmp/workspace/direct-open.md",
+            displayName: "direct-open.md",
+            kind: "document",
+            action: "write",
+            sourceToolName: "Write",
+            timestamp: new Date("2026-03-13T12:20:00.000Z"),
+            preview: "直接打开路径",
+            clickable: true,
+          },
+        ],
+      }),
+      onOpenPath,
+    });
+
+    const pathLink = document.body.querySelector(
+      '[aria-label="系统打开路径：/tmp/workspace/direct-open.md"]',
+    ) as HTMLElement | null;
+
+    await act(async () => {
+      pathLink?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onOpenPath).toHaveBeenCalledWith("/tmp/workspace/direct-open.md");
+  });
+
+  it("应支持直接点击工作台中的 URL 链接", async () => {
+    renderPanel({
+      harnessState: createHarnessState({
+        latestContextTrace: [
+          {
+            stage: "联网检索",
+            detail:
+              "已获取资料：https://example.com/report ，可继续打开查看完整来源。",
+          },
+        ],
+      }),
+    });
+
+    const urlLink = document.body.querySelector(
+      '[aria-label="打开链接：https://example.com/report"]',
+    ) as HTMLElement | null;
+
+    await act(async () => {
+      urlLink?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(window.open).toHaveBeenCalledWith(
+      "https://example.com/report",
+      "_blank",
+    );
+  });
+
+  it("能力区中的上下文路径应支持直接系统打开", async () => {
+    const onOpenPath = vi.fn().mockResolvedValue(undefined);
+
+    renderPanel({
+      environment: {
+        skillsCount: 2,
+        skillNames: ["read_file", "write_todos"],
+        memorySignals: ["风格"],
+        contextItemsCount: 2,
+        activeContextCount: 1,
+        contextItemNames: ["/tmp/workspace/context/brief.md"],
+        contextEnabled: true,
+      },
+      onOpenPath,
+    });
+
+    const pathLink = document.body.querySelector(
+      '[aria-label="系统打开路径：/tmp/workspace/context/brief.md"]',
+    ) as HTMLElement | null;
+
+    await act(async () => {
+      pathLink?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onOpenPath).toHaveBeenCalledWith("/tmp/workspace/context/brief.md");
   });
 });

@@ -6,12 +6,14 @@ import {
   getAgentRuntimeSession,
   initAsterAgent,
   interruptAgentRuntimeTurn,
+  removeAgentRuntimeQueuedTurn,
   listAgentRuntimeSessions,
   respondAgentRuntimeAction,
   submitAgentRuntimeTurn,
   updateAgentRuntimeSession,
   type AsterExecutionStrategy,
   type AsterProviderConfig,
+  type AgentSearchMode,
   type AsterSessionDetail,
   type AsterSessionInfo,
   type AutoContinueRequestPayload,
@@ -28,9 +30,12 @@ export interface AgentRuntimeTurnRequest {
   providerConfig?: AsterProviderConfig;
   executionStrategy?: AsterExecutionStrategy;
   webSearch?: boolean;
+  searchMode?: AgentSearchMode;
   autoContinue?: AutoContinueRequestPayload;
   systemPrompt?: string;
   metadata?: Record<string, unknown>;
+  queueIfBusy?: boolean;
+  queuedTurnId?: string;
 }
 
 export interface AgentRuntimeActionResponse {
@@ -59,6 +64,7 @@ export interface AgentRuntimeAdapter {
   ): Promise<void>;
   submitTurn(request: AgentRuntimeTurnRequest): Promise<void>;
   interruptTurn(sessionId: string): Promise<boolean>;
+  removeQueuedTurn(sessionId: string, queuedTurnId: string): Promise<boolean>;
   respondToAction(request: AgentRuntimeActionResponse): Promise<void>;
   listenToTurnEvents(
     eventName: string,
@@ -105,15 +111,24 @@ export const defaultAgentRuntimeAdapter: AgentRuntimeAdapter = {
         provider_config: request.providerConfig,
         execution_strategy: request.executionStrategy,
         web_search: request.webSearch,
+        search_mode: request.searchMode,
         auto_continue: request.autoContinue,
         system_prompt: request.systemPrompt,
         metadata: request.metadata,
       },
+      queue_if_busy: request.queueIfBusy,
+      queued_turn_id: request.queuedTurnId,
     });
   },
   async interruptTurn(sessionId) {
     return interruptAgentRuntimeTurn({
       session_id: sessionId,
+    });
+  },
+  async removeQueuedTurn(sessionId, queuedTurnId) {
+    return removeAgentRuntimeQueuedTurn({
+      session_id: sessionId,
+      queued_turn_id: queuedTurnId,
     });
   },
   async respondToAction(request) {

@@ -6,7 +6,7 @@
  * - 显示 Skill 基本信息（名称、描述、来源）
  * - 安装/卸载操作按钮（非内置）
  * - 执行按钮（仅已安装的 Skill 显示）
- * - 查看内容按钮（内置或本地且已安装的 Skill 显示）
+ * - 检查详情按钮（本地可查看内容，远程可安装前预检）
  * - GitHub 链接按钮
  *
  * @module components/skills
@@ -20,17 +20,25 @@ import {
   Loader2,
   Play,
   FileText,
+  AlertTriangle,
+  CheckCircle2,
 } from "lucide-react";
 import type { Skill } from "@/lib/api/skills";
 
 /**
  * Skill 来源类型
  * - builtin: ProxyCast 内置技能
+ * - project: 当前项目 `.agents/skills` 中的技能
  * - official: 来自 proxycast/skills 官方仓库
  * - community: 来自其他 GitHub 仓库
  * - local: 本地安装，无仓库信息
  */
-export type SkillSource = "builtin" | "official" | "community" | "local";
+export type SkillSource =
+  | "builtin"
+  | "project"
+  | "official"
+  | "community"
+  | "local";
 
 /**
  * 判断 Skill 的来源类型
@@ -40,16 +48,24 @@ export type SkillSource = "builtin" | "official" | "community" | "local";
  *
  * 分类规则：
  * - "builtin": sourceKind="builtin"
- * - "official": repoOwner="proxycast" AND repoName="skills"
- * - "community": repoOwner 和 repoName 存在但不是 proxycast/skills
- * - "local": repoOwner 或 repoName 缺失
+ * - "project": catalogSource="project"
+ * - "local": catalogSource="user"
+ * - "official": catalogSource="remote" 且 repoOwner="proxycast" AND repoName="skills"
+ * - "community": catalogSource="remote" 且仓库不是 proxycast/skills
+ * - compat: catalogSource 缺失时回退到 repo 字段推断
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function getSkillSource(skill: Skill): SkillSource {
   if (skill.sourceKind === "builtin") {
     return "builtin";
   }
-  if (!skill.repoOwner || !skill.repoName) {
+  if (skill.catalogSource === "project") {
+    return "project";
+  }
+  if (skill.catalogSource === "user") {
+    return "local";
+  }
+  if (skill.catalogSource !== "remote" && (!skill.repoOwner || !skill.repoName)) {
     return "local";
   }
   if (skill.repoOwner === "proxycast" && skill.repoName === "skills") {
@@ -61,7 +77,7 @@ export function getSkillSource(skill: Skill): SkillSource {
 /**
  * 是否可查看本地 Skill 内容
  *
- * 仅内置或本地且已安装的 Skill 支持查看 SKILL.md。
+ * 仅内置、项目级或用户级本地且可直接使用的 Skill 支持查看 SKILL.md。
  *
  * @param skill - Skill 对象
  * @returns 是否显示查看内容入口
@@ -69,48 +85,83 @@ export function getSkillSource(skill: Skill): SkillSource {
 // eslint-disable-next-line react-refresh/only-export-components
 export function canViewLocalSkillContent(skill: Skill): boolean {
   const source = getSkillSource(skill);
-  return skill.installed && (source === "builtin" || source === "local");
+  return (
+    skill.installed &&
+    (source === "builtin" || source === "project" || source === "local")
+  );
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function canInspectSkill(skill: Skill): boolean {
+  if (canViewLocalSkillContent(skill)) {
+    return true;
+  }
+
+  const isRemoteCatalog =
+    skill.catalogSource === "remote" ||
+    (!skill.catalogSource && skill.repoOwner && skill.repoName);
+
+  return Boolean(
+    isRemoteCatalog && skill.repoOwner && skill.repoName && skill.repoBranch,
+  );
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function getInspectActionLabel(skill: Skill): string {
+  return canViewLocalSkillContent(skill) ? "查看内容" : "检查详情";
 }
 
 /**
  * 是否允许用户安装或卸载 Skill
  *
- * 内置 Skill 默认可用，不提供安装/卸载入口。
+ * 内置 Skill 和项目级 Skill 默认可用，不提供安装/卸载入口。
  *
  * @param skill - Skill 对象
  * @returns 是否显示安装/卸载操作
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function canManageSkillInstallation(skill: Skill): boolean {
-  return skill.sourceKind !== "builtin";
+  return skill.sourceKind !== "builtin" && skill.catalogSource !== "project";
 }
 
 /**
  * 来源标签配置
  */
-const sourceConfig: Record<SkillSource, { label: string; className: string }> =
-  {
-    builtin: {
-      label: "内置",
-      className:
-        "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
-    },
-    official: {
-      label: "官方",
-      className:
-        "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
-    },
-    community: {
-      label: "社区",
-      className:
-        "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
-    },
-    local: {
-      label: "本地",
-      className:
-        "bg-gray-100 text-gray-800 dark:bg-gray-800/50 dark:text-gray-400",
-    },
-  };
+const sourceConfig: Record<
+  SkillSource,
+  { label: string; className: string; surfaceClassName: string }
+> = {
+  builtin: {
+    label: "内置",
+    className:
+      "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
+    surfaceClassName: "from-orange-200/70 via-orange-50 to-white",
+  },
+  project: {
+    label: "项目",
+    className:
+      "bg-stone-100 text-stone-800 dark:bg-stone-900/30 dark:text-stone-300",
+    surfaceClassName: "from-stone-200/70 via-stone-50 to-white",
+  },
+  official: {
+    label: "官方",
+    className:
+      "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
+    surfaceClassName: "from-emerald-200/70 via-emerald-50 to-white",
+  },
+  community: {
+    label: "社区",
+    className:
+      "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
+    surfaceClassName: "from-sky-200/70 via-sky-50 to-white",
+  },
+  local: {
+    label: "本地",
+    className:
+      "bg-gray-100 text-gray-800 dark:bg-gray-800/50 dark:text-gray-400",
+    surfaceClassName: "from-slate-200/70 via-slate-50 to-white",
+  },
+};
 
 /**
  * 来源标签组件
@@ -123,10 +174,88 @@ function SourceBadge({ source }: { source: SkillSource }) {
 
   return (
     <span
-      className={`rounded-full px-2 py-0.5 text-xs font-medium ${className}`}
+      className={`inline-flex items-center rounded-full border border-black/5 px-2.5 py-1 text-xs font-medium shadow-sm ${className}`}
     >
       {label}
     </span>
+  );
+}
+
+function StandardBadge({ skill }: { skill: Skill }) {
+  const compliance = skill.standardCompliance;
+  if (!compliance) {
+    return null;
+  }
+  const deprecatedFields = compliance.deprecatedFields ?? [];
+
+  if (!compliance.isStandard) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
+        <AlertTriangle className="h-3 w-3" />
+        待修复
+      </span>
+    );
+  }
+
+  if (deprecatedFields.length > 0) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+        <AlertTriangle className="h-3 w-3" />
+        含兼容字段
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+      <CheckCircle2 className="h-3 w-3" />
+      标准
+    </span>
+  );
+}
+
+function getCategoryLabel(skill: Skill): string | null {
+  const category = skill.metadata?.proxycast_category;
+  if (!category) {
+    return null;
+  }
+
+  const labels: Record<string, string> = {
+    media: "媒体",
+    research: "调研",
+    writing: "写作",
+    social: "社媒",
+  };
+  return labels[category] ?? category;
+}
+
+function ResourceBadges({ skill }: { skill: Skill }) {
+  const summary = skill.resourceSummary;
+  if (!summary) {
+    return null;
+  }
+
+  const resources = [
+    summary.hasScripts ? "scripts" : null,
+    summary.hasReferences ? "references" : null,
+    summary.hasAssets ? "assets" : null,
+  ].filter(Boolean);
+
+  if (resources.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {resources.map((resource) => (
+        <span
+          key={resource}
+          className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+        >
+          {resource}
+        </span>
+      ))}
+    </>
   );
 }
 
@@ -145,7 +274,7 @@ interface SkillCardProps {
  * 展示单个 Skill 的信息和操作按钮，包括：
  * - 安装/卸载按钮（非内置）
  * - 执行按钮（仅已安装的 Skill 显示）
- * - 查看内容按钮（仅内置或本地且已安装的 Skill 显示）
+ * - 检查详情按钮（本地查看内容，远程执行安装前预检）
  * - GitHub 链接按钮
  *
  * @param props - 组件属性
@@ -189,111 +318,156 @@ export function SkillCard({
   };
 
   const handleViewContent = () => {
-    if (onViewContent && canViewLocalSkillContent(skill)) {
+    if (onViewContent && canInspectSkill(skill)) {
       onViewContent(skill);
     }
   };
 
   const source = getSkillSource(skill);
-  const showViewContent = Boolean(
-    onViewContent && canViewLocalSkillContent(skill),
+  const showViewContent = Boolean(onViewContent && canInspectSkill(skill));
+  const inspectActionLabel = getInspectActionLabel(skill);
+  const categoryLabel = getCategoryLabel(skill);
+  const validationErrors = skill.standardCompliance?.validationErrors ?? [];
+  const deprecatedFields = skill.standardCompliance?.deprecatedFields ?? [];
+  const hasResourceBadges = Boolean(
+    skill.resourceSummary?.hasScripts ||
+      skill.resourceSummary?.hasReferences ||
+      skill.resourceSummary?.hasAssets,
   );
+  const validationSummary =
+    validationErrors[0] ??
+    (deprecatedFields.length
+      ? `兼容字段：${deprecatedFields.join(", ")}`
+      : null);
+  const sourceStyle = sourceConfig[source];
+  const actionButtonBaseClassName =
+    "inline-flex h-11 items-center justify-center gap-2 rounded-xl px-3 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
-    <div className="rounded-lg border bg-card p-4 hover:shadow-md transition-shadow">
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex-1">
-          <div className="flex items-center gap-2 mb-1">
-            <h3 className="font-semibold text-lg">{skill.name}</h3>
-            <SourceBadge source={source} />
+    <article className="group relative flex h-full flex-col overflow-hidden rounded-[22px] border border-slate-200/80 bg-white shadow-sm shadow-slate-950/5 transition duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-lg">
+      <div
+        className={`absolute inset-x-0 top-0 h-24 bg-gradient-to-br ${sourceStyle.surfaceClassName} opacity-80`}
+      />
+      <div className="relative flex h-full flex-col p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <SourceBadge source={source} />
+              <StandardBadge skill={skill} />
+              {categoryLabel && (
+                <span className="inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
+                  {categoryLabel}
+                </span>
+              )}
+            </div>
+
+            <h3 className="mt-3 text-base font-semibold leading-6 text-slate-900">
+              {skill.name}
+            </h3>
+
+            {skill.repoOwner && skill.repoName && (
+              <p className="mt-1 text-xs text-slate-500">
+                {skill.repoOwner}/{skill.repoName}
+              </p>
+            )}
           </div>
-          {skill.repoOwner && skill.repoName && (
-            <p className="text-xs text-muted-foreground">
-              {skill.repoOwner}/{skill.repoName}
-            </p>
+
+          {skill.installed && (
+            <span className="inline-flex shrink-0 items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 shadow-sm dark:bg-emerald-900/30 dark:text-emerald-400">
+              {source === "project" ? "项目可用" : "已安装"}
+            </span>
           )}
         </div>
-        {skill.installed && (
-          <span className="rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
-            已安装
-          </span>
+
+        <p className="mt-4 min-h-[72px] text-sm leading-6 text-slate-600 line-clamp-3">
+          {skill.description || "暂无描述"}
+        </p>
+
+        {hasResourceBadges && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            <ResourceBadges skill={skill} />
+          </div>
         )}
-      </div>
 
-      <p className="text-sm text-muted-foreground mb-4 line-clamp-3">
-        {skill.description || "暂无描述"}
-      </p>
+        {validationSummary && (
+          <div className="mt-4 rounded-2xl border border-dashed border-amber-300 bg-amber-50/90 px-3 py-2.5 text-xs leading-5 text-amber-700 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+            {validationSummary}
+          </div>
+        )}
 
-      <div className="flex items-center gap-2">
-        {canManageInstallation && (
-          <button
-            onClick={handleAction}
-            disabled={installing}
-            className={`flex-1 flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-              skill.installed
-                ? "border border-red-500 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30"
-                : "bg-primary text-primary-foreground hover:bg-primary/90"
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
-          >
-            {installing ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {skill.installed ? "卸载中..." : "安装中..."}
-              </>
-            ) : (
-              <>
-                {skill.installed ? (
+        <div className="mt-auto pt-4">
+          <div className="flex flex-wrap gap-2 border-t border-slate-200/70 pt-4">
+            {canManageInstallation && (
+              <button
+                onClick={handleAction}
+                disabled={installing}
+                className={`min-w-[120px] flex-1 ${actionButtonBaseClassName} ${
+                  skill.installed
+                    ? "border border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:bg-rose-100 dark:hover:bg-rose-950/30"
+                    : "bg-slate-900 text-white shadow-sm hover:bg-slate-800"
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {installing ? (
                   <>
-                    <Trash2 className="h-4 w-4" />
-                    卸载
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    {skill.installed ? "卸载中..." : "安装中..."}
                   </>
                 ) : (
                   <>
-                    <Download className="h-4 w-4" />
-                    安装
+                    {skill.installed ? (
+                      <>
+                        <Trash2 className="h-4 w-4" />
+                        卸载
+                      </>
+                    ) : (
+                      <>
+                        <Download className="h-4 w-4" />
+                        安装
+                      </>
+                    )}
                   </>
                 )}
-              </>
+              </button>
             )}
-          </button>
-        )}
 
-        {/* 执行按钮 - 仅已安装的 Skill 显示 */}
-        {skill.installed && onExecute && (
-          <button
-            onClick={handleExecute}
-            disabled={installing}
-            className="flex items-center justify-center gap-2 rounded-lg border border-blue-500 px-3 py-2 text-sm font-medium text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="执行此 Skill"
-          >
-            <Play className="h-4 w-4" />
-            执行
-          </button>
-        )}
+            {/* 执行按钮 - 仅已安装的 Skill 显示 */}
+            {skill.installed && onExecute && (
+              <button
+                onClick={handleExecute}
+                disabled={installing}
+                className={`${actionButtonBaseClassName} min-w-[100px] flex-1 border border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100 dark:hover:bg-sky-950/30`}
+                title="执行此 Skill"
+              >
+                <Play className="h-4 w-4" />
+                执行
+              </button>
+            )}
 
-        {/* 查看内容按钮 - 仅内置或本地且已安装的 Skill 显示 */}
-        {showViewContent && (
-          <button
-            onClick={handleViewContent}
-            disabled={installing}
-            className="flex items-center justify-center gap-2 rounded-lg border border-amber-500 px-3 py-2 text-sm font-medium text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="查看 SKILL.md"
-          >
-            <FileText className="h-4 w-4" />
-            查看内容
-          </button>
-        )}
+            {/* 检查详情按钮 - 本地可查看内容，远程可安装前预检 */}
+            {showViewContent && (
+              <button
+                onClick={handleViewContent}
+                disabled={installing}
+                className={`${actionButtonBaseClassName} min-w-[100px] flex-1 border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 dark:hover:bg-amber-950/30`}
+                title={inspectActionLabel}
+              >
+                <FileText className="h-4 w-4" />
+                {inspectActionLabel}
+              </button>
+            )}
 
-        {skill.readmeUrl && (
-          <button
-            onClick={openGithub}
-            className="rounded-lg border p-2 hover:bg-muted"
-            title="在 GitHub 上查看"
-          >
-            <ExternalLink className="h-4 w-4" />
-          </button>
-        )}
+            {skill.readmeUrl && (
+              <button
+                onClick={openGithub}
+                className={`${actionButtonBaseClassName} w-11 shrink-0 border border-slate-200 bg-white px-0 text-slate-600 hover:border-slate-300 hover:bg-slate-50`}
+                title="在 GitHub 上查看"
+              >
+                <ExternalLink className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
       </div>
-    </div>
+    </article>
   );
 }

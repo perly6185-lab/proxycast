@@ -8,6 +8,7 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Home,
   User,
   BarChart3,
   Palette,
@@ -64,6 +65,18 @@ export function useSettingsCategory(): CategoryGroup[] {
 
   return useMemo(() => {
     const groups: CategoryGroup[] = [];
+
+    groups.push({
+      key: SettingsGroupKey.Overview,
+      title: t("settings.group.overview", "概览"),
+      items: [
+        {
+          key: SettingsTabs.Home,
+          label: t("settings.tab.home", "设置首页"),
+          icon: Home,
+        },
+      ],
+    });
 
     // 账号组
     groups.push({

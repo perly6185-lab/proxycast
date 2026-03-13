@@ -40,9 +40,13 @@ use crate::database::DbConnection;
 use crate::services::execution_tracker_service::{ExecutionTracker, RunFinishDecision, RunSource};
 use crate::services::memory_profile_prompt_service::build_memory_profile_prompt;
 use crate::skills::TauriExecutionCallback;
-use proxycast_agent::event_converter::{convert_agent_event, TauriToolResult};
+use proxycast_agent::event_converter::{
+    convert_agent_event, TauriArtifactSnapshot, TauriToolResult,
+};
+use proxycast_agent::WriteArtifactEventEmitter;
 use proxycast_skills::{
-    find_skill_by_name, get_proxycast_skills_dir, load_skills_from_directory, ExecutionCallback,
+    find_skill_by_name, get_skill_roots, load_skills_from_directory, ExecutionCallback,
+    LoadedSkillDefinition,
 };
 #[cfg(test)]
 use proxycast_skills::{
@@ -133,6 +137,18 @@ pub struct SkillExecutionResult {
     pub error: Option<String>,
     /// 已完成的步骤结果
     pub steps_completed: Vec<StepResult>,
+}
+
+fn invalid_skill_message(skill: &LoadedSkillDefinition) -> Option<String> {
+    if skill.standard_compliance.validation_errors.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "Skill '{}' 未通过标准校验: {}",
+        skill.skill_name,
+        skill.standard_compliance.validation_errors.join("; ")
+    ))
 }
 
 const SOCIAL_POST_WITH_COVER_SKILL_NAME: &str = "social_post_with_cover";
@@ -484,11 +500,37 @@ fn emit_social_write_file_events(
 ) {
     let event_name = format!("skill-exec-{execution_id}");
     let tool_id = build_social_tool_event_id(execution_id, file_path);
+    let artifact_id = format!("{tool_id}:artifact");
     let arguments = serde_json::json!({
         "path": file_path,
         "content": file_content,
     })
     .to_string();
+    let preview_text = file_content.trim().chars().take(480).collect::<String>();
+    let latest_chunk = file_content
+        .trim()
+        .chars()
+        .rev()
+        .take(240)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    let mut artifact_metadata = std::collections::HashMap::from([
+        ("complete".to_string(), serde_json::json!(true)),
+        ("writePhase".to_string(), serde_json::json!("persisted")),
+        ("isPartial".to_string(), serde_json::json!(false)),
+        (
+            "lastUpdateSource".to_string(),
+            serde_json::json!("tool_result"),
+        ),
+    ]);
+    if !preview_text.is_empty() {
+        artifact_metadata.insert("previewText".to_string(), serde_json::json!(preview_text));
+    }
+    if !latest_chunk.is_empty() {
+        artifact_metadata.insert("latestChunk".to_string(), serde_json::json!(latest_chunk));
+    }
 
     let tool_start = TauriAgentEvent::ToolStart {
         tool_name: SOCIAL_POST_WRITE_TOOL_NAME.to_string(),
@@ -499,6 +541,24 @@ fn emit_social_write_file_events(
         tracing::warn!("[execute_skill] 发送社媒写入工具开始事件失败: {}", err);
     }
 
+    let artifact_snapshot = TauriAgentEvent::ArtifactSnapshot {
+        artifact: TauriArtifactSnapshot {
+            artifact_id: artifact_id.clone(),
+            file_path: file_path.to_string(),
+            content: Some(file_content.to_string()),
+            metadata: Some(artifact_metadata.clone()),
+        },
+    };
+    if let Err(err) = app_handle.emit(&event_name, &artifact_snapshot) {
+        tracing::warn!("[execute_skill] 发送社媒产物快照事件失败: {}", err);
+    }
+
+    let mut tool_end_metadata = artifact_metadata;
+    tool_end_metadata.insert("artifact_streamed".to_string(), serde_json::json!(true));
+    tool_end_metadata.insert("artifact_id".to_string(), serde_json::json!(artifact_id));
+    tool_end_metadata.insert("artifact_path".to_string(), serde_json::json!(file_path));
+    tool_end_metadata.insert("path".to_string(), serde_json::json!(file_path));
+    tool_end_metadata.insert("file_path".to_string(), serde_json::json!(file_path));
     let tool_end = TauriAgentEvent::ToolEnd {
         tool_id,
         result: TauriToolResult {
@@ -506,7 +566,7 @@ fn emit_social_write_file_events(
             output: format!("写入社媒文稿: {file_path}"),
             error: None,
             images: None,
-            metadata: None,
+            metadata: Some(tool_end_metadata),
         },
     };
     if let Err(err) = app_handle.emit(&event_name, &tool_end) {
@@ -583,6 +643,10 @@ pub async fn execute_skill(
 
         // 1. 从 registry 加载 skill（Requirements 3.2）
         let skill = find_skill_by_name(&skill_name).map_err(map_find_skill_error)?;
+
+        if let Some(message) = invalid_skill_message(&skill) {
+            return Err(format_skill_error(SKILL_ERR_EXECUTE_FAILED, message));
+        }
 
         // 检查是否禁用了模型调用
         if skill.disable_model_invocation {
@@ -851,6 +915,7 @@ async fn execute_skill_prompt(
     let mut has_error = false;
     let mut error_message: Option<String> = None;
     let event_name = format!("skill-exec-{execution_id}");
+    let mut write_artifact_emitter = WriteArtifactEventEmitter::new(session_id.to_string());
 
     match stream_result {
         Ok(mut stream) => {
@@ -858,7 +923,14 @@ async fn execute_skill_prompt(
                 match event_result {
                     Ok(agent_event) => {
                         let tauri_events = convert_agent_event(agent_event);
-                        for tauri_event in tauri_events {
+                        for mut tauri_event in tauri_events {
+                            let extra_events =
+                                write_artifact_emitter.process_event(&mut tauri_event);
+                            for extra_event in &extra_events {
+                                if let Err(e) = app_handle.emit(&event_name, extra_event) {
+                                    tracing::error!("[execute_skill] 发送补充事件失败: {}", e);
+                                }
+                            }
                             if let TauriAgentEvent::TextDelta { ref text } = tauri_event {
                                 final_output.push_str(text);
                             }
@@ -1042,6 +1114,7 @@ async fn execute_skill_workflow(
 
         let mut step_output = String::new();
         let mut step_error: Option<String> = None;
+        let mut write_artifact_emitter = WriteArtifactEventEmitter::new(step_session_id.clone());
 
         match stream_result {
             Ok(mut stream) => {
@@ -1049,7 +1122,17 @@ async fn execute_skill_workflow(
                     match event_result {
                         Ok(agent_event) => {
                             let tauri_events = convert_agent_event(agent_event);
-                            for tauri_event in tauri_events {
+                            for mut tauri_event in tauri_events {
+                                let extra_events =
+                                    write_artifact_emitter.process_event(&mut tauri_event);
+                                for extra_event in &extra_events {
+                                    if let Err(e) = app_handle.emit(&event_name, extra_event) {
+                                        tracing::error!(
+                                            "[execute_skill_workflow] 发送补充事件失败: {}",
+                                            e
+                                        );
+                                    }
+                                }
                                 if let TauriAgentEvent::TextDelta { ref text } = tauri_event {
                                     step_output.push_str(text);
                                 }
@@ -1147,7 +1230,8 @@ async fn execute_skill_workflow(
 
 /// 列出可执行的 Skills
 ///
-/// 返回所有可以执行的 Skills 列表，过滤掉 disable_model_invocation=true 的 Skills。
+/// 返回所有可以执行的 Skills 列表，过滤掉无效 Skill 包和
+/// disable_model_invocation=true 的 Skills。
 ///
 /// # Returns
 /// * `Ok(Vec<ExecutableSkillInfo>)` - 可执行的 Skills 列表
@@ -1158,13 +1242,26 @@ async fn execute_skill_workflow(
 /// - 4.2: 包含 name, description, execution_mode
 /// - 4.3: 指示是否有 workflow 定义
 /// - 4.4: 过滤 disable_model_invocation=true 的 skills
+/// - 4.5: 过滤未通过标准校验的 skills
 #[tauri::command]
 pub async fn list_executable_skills() -> Result<Vec<ExecutableSkillInfo>, String> {
-    let skills_dir = get_proxycast_skills_dir()
-        .ok_or_else(|| format_skill_error(SKILL_ERR_CATALOG_UNAVAILABLE, "无法获取 Skills 目录"))?;
+    let skill_roots = get_skill_roots();
+    if skill_roots.is_empty() {
+        return Err(format_skill_error(
+            SKILL_ERR_CATALOG_UNAVAILABLE,
+            "无法获取 Skills 目录",
+        ));
+    }
 
-    // 加载所有 skills
-    let all_skills = load_skills_from_directory(&skills_dir);
+    let mut all_skills = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for skill_root in skill_roots {
+        for skill in load_skills_from_directory(&skill_root) {
+            if seen.insert(skill.skill_name.clone()) {
+                all_skills.push(skill);
+            }
+        }
+    }
 
     // 过滤掉 disable_model_invocation=true 的 skills（Requirements 4.4）
     let executable_skills: Vec<ExecutableSkillInfo> = all_skills
@@ -1210,6 +1307,9 @@ pub async fn list_executable_skills() -> Result<Vec<ExecutableSkillInfo>, String
 pub async fn get_skill_detail(skill_name: String) -> Result<SkillDetailInfo, String> {
     // 查找 skill（Requirements 5.1, 5.4）
     let skill = find_skill_by_name(&skill_name).map_err(map_find_skill_error)?;
+    if let Some(message) = invalid_skill_message(&skill) {
+        return Err(format_skill_error(SKILL_ERR_EXECUTE_FAILED, message));
+    }
 
     // 转换为 SkillDetailInfo（Requirements 5.2, 5.3）
     let detail = SkillDetailInfo {
@@ -1333,8 +1433,9 @@ mod tests {
         let content = r#"---
 name: test-skill
 description: A test skill
-model: claude-sonnet-4-5-20250514
-provider: claude
+metadata:
+  proxycast_model_preference: claude-sonnet-4-5-20250514
+  proxycast_provider_preference: claude
 ---
 
 # Test Skill
@@ -1514,8 +1615,9 @@ Body
 name: my-skill
 description: Test skill description
 allowed-tools: tool1, tool2
-model: gpt-4
-provider: openai
+metadata:
+  proxycast_model_preference: gpt-4
+  proxycast_provider_preference: openai
 ---
 
 # My Skill
@@ -1538,6 +1640,41 @@ Instructions here.
         assert_eq!(skill.provider, Some("openai".to_string()));
         assert!(!skill.disable_model_invocation);
         assert_eq!(skill.execution_mode, "prompt");
+        assert!(skill.standard_compliance.is_standard);
+    }
+
+    #[test]
+    fn test_load_skill_from_file_should_surface_invalid_workflow_reference() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let skill_dir = temp_dir.path().join("workflow-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+
+        let skill_file = skill_dir.join("SKILL.md");
+        std::fs::write(
+            &skill_file,
+            r#"---
+name: workflow-skill
+description: Workflow skill
+metadata:
+  proxycast_workflow_ref: references/missing.json
+---
+
+# Workflow Skill
+"#,
+        )
+        .unwrap();
+
+        let skill = load_skill_from_file("workflow-skill", &skill_file).unwrap();
+
+        assert!(!skill.standard_compliance.is_standard);
+        assert!(skill
+            .standard_compliance
+            .validation_errors
+            .iter()
+            .any(|error| error.contains("metadata.proxycast_workflow_ref")));
+        assert!(skill.workflow_steps.is_empty());
     }
 
     #[test]
@@ -1589,6 +1726,47 @@ Content 2
     }
 
     #[test]
+    fn test_load_skills_from_directory_should_skip_invalid_skill_packages() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path();
+
+        let valid_dir = skills_dir.join("skill-valid");
+        std::fs::create_dir(&valid_dir).unwrap();
+        std::fs::write(
+            valid_dir.join("SKILL.md"),
+            r#"---
+name: skill-valid
+description: Valid skill
+---
+Valid content
+"#,
+        )
+        .unwrap();
+
+        let invalid_dir = skills_dir.join("skill-invalid");
+        std::fs::create_dir(&invalid_dir).unwrap();
+        std::fs::write(
+            invalid_dir.join("SKILL.md"),
+            r#"---
+name: skill-invalid
+description: Invalid skill
+metadata:
+  proxycast_workflow_ref: references/missing.json
+---
+Invalid content
+"#,
+        )
+        .unwrap();
+
+        let skills = load_skills_from_directory(skills_dir);
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].skill_name, "skill-valid");
+    }
+
+    #[test]
     fn test_load_skills_from_nonexistent_directory() {
         let skills = load_skills_from_directory(std::path::Path::new("/nonexistent/path"));
         assert!(skills.is_empty());
@@ -1606,6 +1784,10 @@ Content 2
         assert_eq!(skill.skill_name, "social_post_with_cover");
         assert_eq!(skill.execution_mode, "workflow");
         assert_eq!(
+            skill.workflow_ref,
+            Some("references/workflow.json".to_string())
+        );
+        assert_eq!(
             skill.allowed_tools,
             Some(vec![
                 "social_generate_cover_image".to_string(),
@@ -1614,5 +1796,6 @@ Content 2
         );
         assert!(content.contains("<write_file") && content.contains("social-posts/"));
         assert!(!skill.disable_model_invocation);
+        assert!(skill.standard_compliance.is_standard);
     }
 }

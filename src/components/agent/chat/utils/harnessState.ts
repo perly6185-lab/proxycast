@@ -3,7 +3,12 @@ import type {
   ContextTraceStep,
   ToolCallState,
 } from "@/lib/api/agentStream";
+import type { ArtifactStatus } from "@/lib/artifact/types";
 import type { ActionRequired, AgentRuntimeStatus, Message } from "../types";
+import {
+  resolveArtifactPreviewText,
+  resolveArtifactWritePhase,
+} from "./messageArtifacts";
 
 export type HarnessTodoStatus = "pending" | "in_progress" | "completed";
 export type HarnessPlanPhase = "idle" | "planning" | "ready";
@@ -47,6 +52,7 @@ export interface HarnessOutputSignal {
   title: string;
   summary: string;
   preview?: string;
+  content?: string;
   outputFile?: string;
   offloadFile?: string;
   artifactPath?: string;
@@ -90,6 +96,19 @@ export interface HarnessFileEvent {
   clickable: boolean;
 }
 
+export interface HarnessActiveFileWrite {
+  id: string;
+  path: string;
+  displayName: string;
+  phase: NonNullable<ReturnType<typeof resolveArtifactWritePhase>>;
+  status: ArtifactStatus;
+  source?: string;
+  updatedAt?: Date;
+  preview?: string;
+  latestChunk?: string;
+  content?: string;
+}
+
 export interface HarnessSessionState {
   runtimeStatus: AgentRuntimeStatus | null;
   pendingApprovals: ActionRequired[];
@@ -98,6 +117,7 @@ export interface HarnessSessionState {
   activity: HarnessToolActivity;
   delegatedTasks: HarnessDelegatedTask[];
   outputSignals: HarnessOutputSignal[];
+  activeFileWrites: HarnessActiveFileWrite[];
   recentFileEvents: HarnessFileEvent[];
   hasSignals: boolean;
 }
@@ -145,6 +165,7 @@ const FILESYSTEM_TOOL_NAMES = new Set([
 ]);
 
 const WEB_TOOL_RE = /^(websearch|webfetch)|browser|playwright/i;
+const HARNESS_OUTPUT_SIGNAL_LIMIT = 8;
 const SKILL_TOOL_NAMES = new Set(["skill", "threestageworkflow"]);
 const PROXYCAST_TOOL_METADATA_BEGIN = "[ProxyCast 工具元数据开始]";
 const PROXYCAST_TOOL_METADATA_END = "[ProxyCast 工具元数据结束]";
@@ -397,6 +418,92 @@ function maybeKeepTextContent(raw?: string): string | undefined {
   return normalized;
 }
 
+function extractActiveFileWrites(
+  messages: Message[],
+): HarnessActiveFileWrite[] {
+  const activeWrites = new Map<string, HarnessActiveFileWrite>();
+
+  for (const message of messages) {
+    for (const artifact of message.artifacts || []) {
+      const phase = resolveArtifactWritePhase(artifact);
+      if (!phase || phase === "completed") {
+        continue;
+      }
+
+      const path =
+        typeof artifact.meta.filePath === "string" &&
+        artifact.meta.filePath.trim()
+          ? artifact.meta.filePath.trim()
+          : typeof artifact.meta.filename === "string" &&
+              artifact.meta.filename.trim()
+            ? artifact.meta.filename.trim()
+            : artifact.title;
+      if (!path) {
+        continue;
+      }
+
+      const updatedAt =
+        Number.isFinite(artifact.updatedAt) && artifact.updatedAt > 0
+          ? new Date(artifact.updatedAt)
+          : undefined;
+      const preview = buildTextPreview(
+        typeof artifact.meta.previewText === "string"
+          ? artifact.meta.previewText
+          : resolveArtifactPreviewText(artifact),
+        {
+          maxLines: 4,
+          maxChars: 240,
+        },
+      );
+      const latestChunk = buildTextPreview(
+        typeof artifact.meta.latestChunk === "string"
+          ? artifact.meta.latestChunk
+          : undefined,
+        {
+          maxLines: 3,
+          maxChars: 180,
+        },
+      );
+      const nextWrite: HarnessActiveFileWrite = {
+        id: artifact.id,
+        path,
+        displayName: fileNameFromPath(path),
+        phase,
+        status: artifact.status,
+        source:
+          typeof artifact.meta.lastUpdateSource === "string"
+            ? artifact.meta.lastUpdateSource
+            : typeof artifact.meta.source === "string"
+              ? artifact.meta.source
+              : undefined,
+        updatedAt,
+        preview,
+        latestChunk,
+        content: maybeKeepTextContent(artifact.content),
+      };
+      const previous = activeWrites.get(nextWrite.id);
+      if (!previous) {
+        activeWrites.set(nextWrite.id, nextWrite);
+        continue;
+      }
+
+      const previousTime = previous.updatedAt?.getTime() ?? 0;
+      const nextTime = nextWrite.updatedAt?.getTime() ?? 0;
+      if (nextTime >= previousTime) {
+        activeWrites.set(nextWrite.id, nextWrite);
+      }
+    }
+  }
+
+  return Array.from(activeWrites.values())
+    .sort((left, right) => {
+      const leftTime = left.updatedAt?.getTime() ?? 0;
+      const rightTime = right.updatedAt?.getTime() ?? 0;
+      return rightTime - leftTime;
+    })
+    .slice(0, 5);
+}
+
 function extractMetadata(
   toolCall: ToolCallState,
 ): Record<string, unknown> | null {
@@ -473,7 +580,9 @@ function pickFirstPath(value: unknown): string | undefined {
   return undefined;
 }
 
-function extractPathFromRecord(record: Record<string, unknown> | null): string | undefined {
+function extractPathFromRecord(
+  record: Record<string, unknown> | null,
+): string | undefined {
   if (!record) {
     return undefined;
   }
@@ -529,6 +638,31 @@ function extractContentFromRecord(
   return undefined;
 }
 
+function extractSearchQuery(
+  record: Record<string, unknown> | null,
+): string | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  for (const key of [
+    "q",
+    "query",
+    "question",
+    "search",
+    "keywords",
+    "keyword",
+    "url",
+  ]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
 function resolveFileKind(
   path: string,
   preferred?: HarnessFileKind,
@@ -577,16 +711,9 @@ function resolveFileKind(
   }
 
   if (
-    [
-      "md",
-      "markdown",
-      "txt",
-      "pdf",
-      "doc",
-      "docx",
-      "csv",
-      "rtf",
-    ].includes(extension)
+    ["md", "markdown", "txt", "pdf", "doc", "docx", "csv", "rtf"].includes(
+      extension,
+    )
   ) {
     return "document";
   }
@@ -610,6 +737,8 @@ function extractOutputSignal(
   if (!toolCall.result) return null;
 
   const metadata = extractMetadata(toolCall);
+  const argumentsRecord = asRecord(parseJsonValue(toolCall.arguments));
+  const normalizedName = normalizeToolName(toolCall.name);
   const output = toolCall.result.output;
   const outputFile =
     normalizeString(metadata?.output_file) ||
@@ -656,6 +785,11 @@ function extractOutputSignal(
   );
   const offloadTrigger = normalizeString(metadata?.offload_trigger);
   const preview = buildTextPreview(output);
+  const content = maybeKeepTextContent(output);
+  const searchQuery =
+    extractSearchQuery(argumentsRecord) ||
+    extractSearchQuery(metadata) ||
+    extractRegexValue(/^(?:query|q|搜索词|检索词):\s*(.+)$/im, output);
 
   if (
     !outputFile &&
@@ -668,6 +802,19 @@ function extractOutputSignal(
     !truncated &&
     !offloaded
   ) {
+    if (WEB_TOOL_RE.test(normalizedName) && (preview || content)) {
+      const queryLabel = searchQuery || toolCall.name;
+      const searchLike = !/^https?:\/\//i.test(queryLabel);
+      return {
+        id: `${toolCall.id}:output-signal`,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        title: searchLike ? "联网检索摘要" : "网页访问摘要",
+        summary: queryLabel,
+        preview,
+        content,
+      };
+    }
     return null;
   }
 
@@ -745,6 +892,7 @@ function extractOutputSignal(
     title,
     summary: summaryParts.join(" / ") || "存在可观测输出信号",
     preview,
+    content,
     outputFile,
     offloadFile,
     artifactPath,
@@ -781,13 +929,14 @@ function extractFileEventFromToolCall(
   }
 
   const timestamp =
-    normalizeDate(toolCall.endTime) ?? normalizeDate(toolCall.startTime) ?? undefined;
-  const action: HarnessFileAction =
-    normalizedName.startsWith("read")
-      ? "read"
-      : normalizedName.includes("edit")
-        ? "edit"
-        : "write";
+    normalizeDate(toolCall.endTime) ??
+    normalizeDate(toolCall.startTime) ??
+    undefined;
+  const action: HarnessFileAction = normalizedName.startsWith("read")
+    ? "read"
+    : normalizedName.includes("edit")
+      ? "edit"
+      : "write";
   const sourceContent =
     action === "read"
       ? toolCall.result?.output
@@ -817,7 +966,9 @@ function extractFileEventsFromOutputSignal(
   toolCall: ToolCallState,
 ): HarnessFileEvent[] {
   const timestamp =
-    normalizeDate(toolCall.endTime) ?? normalizeDate(toolCall.startTime) ?? undefined;
+    normalizeDate(toolCall.endTime) ??
+    normalizeDate(toolCall.startTime) ??
+    undefined;
   const events: HarnessFileEvent[] = [];
 
   if (signal.outputFile) {
@@ -958,9 +1109,7 @@ function parsePlanTextToTodoItems(text: string): HarnessTodoItem[] {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .filter((line) =>
-      /^(\d+\.\s+|[-*]\s+|\[[ xX]\]\s+)/.test(line),
-    )
+    .filter((line) => /^(\d+\.\s+|[-*]\s+|\[[ xX]\]\s+)/.test(line))
     .map((line, index) => {
       const completed = /^\[[xX]\]/.test(line);
       return {
@@ -1036,7 +1185,9 @@ function deriveHarnessSessionStateFromItems(
   const safePendingApprovals = Array.isArray(pendingApprovals)
     ? pendingApprovals
     : [];
-  const sortedItems = [...items].sort((left, right) => itemTimestamp(left) - itemTimestamp(right));
+  const sortedItems = [...items].sort(
+    (left, right) => itemTimestamp(left) - itemTimestamp(right),
+  );
   const latestContextTrace =
     [...messages]
       .reverse()
@@ -1046,6 +1197,7 @@ function deriveHarnessSessionStateFromItems(
           message.contextTrace.length > 0,
       )?.contextTrace || [];
   const runtimeStatus = extractLatestRuntimeStatus(messages);
+  const activeFileWrites = extractActiveFileWrites(messages);
 
   const activity: HarnessToolActivity = {
     planning: 0,
@@ -1077,7 +1229,8 @@ function deriveHarnessSessionStateFromItems(
           kind: resolveFileKind(item.path, "artifact"),
           action: "persist",
           sourceToolName: "Artifact",
-          timestamp: normalizeDate(item.completed_at || item.updated_at) ?? undefined,
+          timestamp:
+            normalizeDate(item.completed_at || item.updated_at) ?? undefined,
           preview: buildTextPreview(item.content),
           content: maybeKeepTextContent(item.content),
           clickable: true,
@@ -1089,6 +1242,7 @@ function deriveHarnessSessionStateFromItems(
           title: "产物已写入",
           summary: fileNameFromPath(item.path),
           preview: buildTextPreview(item.content),
+          content: maybeKeepTextContent(item.content),
           artifactPath: item.path,
         });
         break;
@@ -1102,6 +1256,7 @@ function deriveHarnessSessionStateFromItems(
           title: "命令执行摘要",
           summary: item.command,
           preview: buildTextPreview(item.aggregated_output),
+          content: maybeKeepTextContent(item.aggregated_output),
           exitCode: item.exit_code,
         });
         break;
@@ -1114,19 +1269,41 @@ function deriveHarnessSessionStateFromItems(
           title: "联网检索摘要",
           summary: item.query || "联网检索",
           preview: buildTextPreview(item.output),
+          content: maybeKeepTextContent(item.output),
+        });
+        break;
+      case "turn_summary":
+        outputSignals.push({
+          id: `${item.id}:summary`,
+          toolCallId: item.id,
+          toolName: "turn_summary",
+          title: "回合决策摘要",
+          summary: item.text.split(/\r?\n/)[0] || "回合决策",
+          preview: buildTextPreview(item.text),
+          content: maybeKeepTextContent(item.text),
         });
         break;
       case "tool_call": {
         const normalizedName = normalizeToolName(item.tool_name);
         classifyToolActivity(activity, normalizedName);
         const artifactPath = pickItemPath(item);
+        const argumentRecord = asRecord(item.arguments);
+        const queryLabel = extractSearchQuery(argumentRecord);
+        const searchLike = WEB_TOOL_RE.test(normalizedName);
         outputSignals.push({
           id: `${item.id}:tool`,
           toolCallId: item.id,
           toolName: item.tool_name,
-          title: artifactPath ? "产物已写入" : "工具执行摘要",
-          summary: artifactPath || item.tool_name,
+          title: artifactPath
+            ? "产物已写入"
+            : searchLike
+              ? /^https?:\/\//i.test(queryLabel || "")
+                ? "网页访问摘要"
+                : "联网检索摘要"
+              : "工具执行摘要",
+          summary: artifactPath || queryLabel || item.tool_name,
           preview: buildTextPreview(item.output),
+          content: maybeKeepTextContent(item.output),
           artifactPath,
         });
         if (artifactPath) {
@@ -1138,7 +1315,8 @@ function deriveHarnessSessionStateFromItems(
             kind: resolveFileKind(artifactPath, "artifact"),
             action: "persist",
             sourceToolName: item.tool_name,
-            timestamp: normalizeDate(item.completed_at || item.updated_at) ?? undefined,
+            timestamp:
+              normalizeDate(item.completed_at || item.updated_at) ?? undefined,
             preview: buildTextPreview(item.output),
             content: maybeKeepTextContent(item.output),
             clickable: true,
@@ -1187,12 +1365,11 @@ function deriveHarnessSessionStateFromItems(
     }
   }
 
-  const planPhase: HarnessPlanPhase =
-    !latestPlanItem
-      ? "idle"
-      : latestPlanItem.status === "completed"
-        ? "ready"
-        : "planning";
+  const planPhase: HarnessPlanPhase = !latestPlanItem
+    ? "idle"
+    : latestPlanItem.status === "completed"
+      ? "ready"
+      : "planning";
   const hasSignals =
     runtimeStatus !== null ||
     mergedApprovals.length > 0 ||
@@ -1200,6 +1377,7 @@ function deriveHarnessSessionStateFromItems(
     planItems.length > 0 ||
     delegatedTasks.length > 0 ||
     outputSignals.length > 0 ||
+    activeFileWrites.length > 0 ||
     recentFileEvents.length > 0 ||
     Object.values(activity).some((count) => count > 0);
 
@@ -1214,7 +1392,8 @@ function deriveHarnessSessionStateFromItems(
     },
     activity,
     delegatedTasks: delegatedTasks.slice(-5).reverse(),
-    outputSignals: outputSignals.slice(-5).reverse(),
+    outputSignals: outputSignals.slice(-HARNESS_OUTPUT_SIGNAL_LIMIT).reverse(),
+    activeFileWrites,
     recentFileEvents: recentFileEvents
       .sort((left, right) => {
         const leftTime = left.timestamp?.getTime() ?? 0;
@@ -1234,6 +1413,7 @@ function deriveHarnessSessionStateFromMessages(
     ? pendingApprovals
     : [];
   const runtimeStatus = extractLatestRuntimeStatus(messages);
+  const activeFileWrites = extractActiveFileWrites(messages);
   const toolCalls = collectToolCalls(messages);
   const activity: HarnessToolActivity = {
     planning: 0,
@@ -1350,6 +1530,7 @@ function deriveHarnessSessionStateFromMessages(
     latestTodoItems.length > 0 ||
     delegatedTasks.length > 0 ||
     outputSignals.length > 0 ||
+    activeFileWrites.length > 0 ||
     recentFileEvents.length > 0 ||
     Object.values(activity).some((count) => count > 0);
 
@@ -1364,7 +1545,8 @@ function deriveHarnessSessionStateFromMessages(
     },
     activity,
     delegatedTasks: delegatedTasks.slice(-5).reverse(),
-    outputSignals: outputSignals.slice(-5).reverse(),
+    outputSignals: outputSignals.slice(-HARNESS_OUTPUT_SIGNAL_LIMIT).reverse(),
+    activeFileWrites,
     recentFileEvents,
     hasSignals,
   };

@@ -2,10 +2,13 @@
 name: cover_generate
 description: 为文章或视频生成平台封面图，并写回主稿（封面场景优先使用本技能）。
 allowed-tools: social_generate_cover_image, proxycast_create_cover_generation_task
-argument-hint: 输入平台、标题、受众、视觉风格、尺寸要求。
-when-to-use: 用户明确要求“封面图”时使用，不要被普通配图任务替代。
-version: 1.0.1
-execution-mode: prompt
+metadata:
+  proxycast_argument_hint: 输入平台、标题、受众、视觉风格、尺寸要求。
+  proxycast_when_to_use: 用户明确要求“封面图”时使用，不要被普通配图任务替代。
+  proxycast_version: 1.1.0
+  proxycast_execution_mode: prompt
+  proxycast_surface: creator
+  proxycast_category: media
 ---
 
 你是 ProxyCast 的封面生成助手。

@@ -4,6 +4,11 @@
  * 聚合现役 Agent / Aster 流式协议的前端可消费类型与解析器。
  */
 
+import {
+  normalizeQueuedTurnSnapshot,
+  type QueuedTurnSnapshot as QueueTurnSnapshot,
+} from "./queuedTurn";
+
 /**
  * Token 使用量统计
  * Requirements: 9.5 - THE Frontend SHALL display token usage statistics after each Agent response
@@ -229,6 +234,11 @@ export type StreamEvent =
   | StreamEventArtifactSnapshot
   | StreamEventActionRequired
   | StreamEventContextTrace
+  | StreamEventRuntimeStatus
+  | StreamEventQueueAdded
+  | StreamEventQueueRemoved
+  | StreamEventQueueStarted
+  | StreamEventQueueCleared
   | StreamEventDone
   | StreamEventFinalDone
   | StreamEventWarning
@@ -356,6 +366,42 @@ export interface ContextTraceStep {
 export interface StreamEventContextTrace {
   type: "context_trace";
   steps: ContextTraceStep[];
+}
+
+export interface StreamRuntimeStatusPayload {
+  phase: "preparing" | "routing" | "context";
+  title: string;
+  detail: string;
+  checkpoints?: string[];
+}
+
+export interface StreamEventRuntimeStatus {
+  type: "runtime_status";
+  status: StreamRuntimeStatusPayload;
+}
+
+export interface StreamEventQueueAdded {
+  type: "queue_added";
+  session_id: string;
+  queued_turn: QueueTurnSnapshot;
+}
+
+export interface StreamEventQueueRemoved {
+  type: "queue_removed";
+  session_id: string;
+  queued_turn_id: string;
+}
+
+export interface StreamEventQueueStarted {
+  type: "queue_started";
+  session_id: string;
+  queued_turn_id: string;
+}
+
+export interface StreamEventQueueCleared {
+  type: "queue_cleared";
+  session_id: string;
+  queued_turn_ids: string[];
 }
 
 /**
@@ -492,18 +538,36 @@ export function parseStreamEvent(data: unknown): StreamEvent | null {
         result: event.result as ToolExecutionResult,
       };
     case "artifact_snapshot":
-    case "ArtifactSnapshot":
+    case "ArtifactSnapshot": {
+      const nestedArtifact =
+        event.artifact && typeof event.artifact === "object"
+          ? (event.artifact as Record<string, unknown>)
+          : undefined;
       return {
         type: "artifact_snapshot",
         artifact: {
           artifactId: String(
-            event.artifact_id || event.artifactId || event.id || "artifact-unknown",
+            nestedArtifact?.artifactId ||
+              nestedArtifact?.artifact_id ||
+              event.artifact_id ||
+              event.artifactId ||
+              event.id ||
+              "artifact-unknown",
           ),
-          filePath: (event.file_path as string) || (event.filePath as string),
-          content: event.content as string | undefined,
-          metadata: event.metadata as Record<string, unknown> | undefined,
+          filePath:
+            (nestedArtifact?.filePath as string | undefined) ||
+            (nestedArtifact?.file_path as string | undefined) ||
+            (event.file_path as string | undefined) ||
+            (event.filePath as string | undefined),
+          content:
+            (nestedArtifact?.content as string | undefined) ||
+            (event.content as string | undefined),
+          metadata:
+            (nestedArtifact?.metadata as Record<string, unknown> | undefined) ||
+            (event.metadata as Record<string, unknown> | undefined),
         },
       };
+    }
     case "action_required": {
       const actionData =
         (event.data as Record<string, unknown> | undefined) || {};
@@ -573,6 +637,58 @@ export function parseStreamEvent(data: unknown): StreamEvent | null {
         type: "context_trace",
         steps: Array.isArray(event.steps)
           ? (event.steps as ContextTraceStep[])
+          : [],
+      };
+    case "runtime_status": {
+      const status =
+        event.status && typeof event.status === "object"
+          ? (event.status as Record<string, unknown>)
+          : null;
+      const phase = status?.phase;
+      return {
+        type: "runtime_status",
+        status: {
+          phase:
+            phase === "preparing" || phase === "routing" || phase === "context"
+              ? phase
+              : "routing",
+          title: typeof status?.title === "string" ? status.title : "",
+          detail: typeof status?.detail === "string" ? status.detail : "",
+          checkpoints: Array.isArray(status?.checkpoints)
+            ? (status?.checkpoints as string[])
+            : undefined,
+        },
+      };
+    }
+    case "queue_added": {
+      const queuedTurn = normalizeQueuedTurnSnapshot(event.queued_turn);
+      if (!queuedTurn) {
+        return null;
+      }
+      return {
+        type: "queue_added",
+        session_id: (event.session_id as string) || "",
+        queued_turn: queuedTurn,
+      };
+    }
+    case "queue_removed":
+      return {
+        type: "queue_removed",
+        session_id: (event.session_id as string) || "",
+        queued_turn_id: (event.queued_turn_id as string) || "",
+      };
+    case "queue_started":
+      return {
+        type: "queue_started",
+        session_id: (event.session_id as string) || "",
+        queued_turn_id: (event.queued_turn_id as string) || "",
+      };
+    case "queue_cleared":
+      return {
+        type: "queue_cleared",
+        session_id: (event.session_id as string) || "",
+        queued_turn_ids: Array.isArray(event.queued_turn_ids)
+          ? (event.queued_turn_ids as string[])
           : [],
       };
     case "final_done":

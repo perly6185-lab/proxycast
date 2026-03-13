@@ -64,10 +64,14 @@ const EventLogItem: React.FC<{ event: SchedulerEvent }> = ({ event }) => {
     switch (event.type) {
       case "started":
         return `🚀 开始执行 ${event.totalTasks} 个任务`;
+      case "queueRejected":
+        return `🚫 任务被拒绝: 请求 ${event.requested}，队列上限 ${event.limit}`;
       case "taskStarted":
         return `▶️ 任务 ${event.taskId} (${event.taskType}) 开始`;
       case "taskCompleted":
         return `✅ 任务 ${event.taskId} 完成 (${event.durationMs}ms)`;
+      case "taskTimedOut":
+        return `⏱️ 任务 ${event.taskId} 超时 (${event.timeoutMs}ms)`;
       case "taskFailed":
         return `❌ 任务 ${event.taskId} 失败: ${event.error}`;
       case "taskRetry":

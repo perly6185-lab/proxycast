@@ -2,6 +2,24 @@ use super::app_type::AppType;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
+
+const SKILL_FRONTMATTER_NAME: &str = "name";
+const SKILL_FRONTMATTER_DESCRIPTION: &str = "description";
+const SKILL_FRONTMATTER_LICENSE: &str = "license";
+const SKILL_FRONTMATTER_METADATA: &str = "metadata";
+const SKILL_FRONTMATTER_ALLOWED_TOOLS: &str = "allowed-tools";
+const SKILL_FRONTMATTER_ALLOWED_TOOLS_ALIAS: &str = "allowed_tools";
+const LEGACY_PROXYCAST_TOP_LEVEL_FIELDS: &[&str] = &[
+    "argument-hint",
+    "argument_hint",
+    "when-to-use",
+    "when_to_use",
+    "execution-mode",
+    "steps-json",
+    "provider",
+    "disable-model-invocation",
+];
 
 pub const VIDEO_GENERATE_SKILL_DIRECTORY: &str = "video_generate";
 pub const BROADCAST_GENERATE_SKILL_DIRECTORY: &str = "broadcast_generate";
@@ -34,6 +52,14 @@ pub enum SkillSourceKind {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillCatalogSource {
+    Project,
+    User,
+    Remote,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
     pub key: String,
@@ -45,12 +71,28 @@ pub struct Skill {
     pub installed: bool,
     #[serde(rename = "sourceKind")]
     pub source_kind: SkillSourceKind,
+    #[serde(rename = "catalogSource")]
+    pub catalog_source: SkillCatalogSource,
     #[serde(rename = "repoOwner", skip_serializing_if = "Option::is_none")]
     pub repo_owner: Option<String>,
     #[serde(rename = "repoName", skip_serializing_if = "Option::is_none")]
     pub repo_name: Option<String>,
     #[serde(rename = "repoBranch", skip_serializing_if = "Option::is_none")]
     pub repo_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
+    #[serde(
+        rename = "allowedTools",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub allowed_tools: Vec<String>,
+    #[serde(rename = "resourceSummary", skip_serializing_if = "Option::is_none")]
+    pub resource_summary: Option<SkillResourceSummary>,
+    #[serde(rename = "standardCompliance", skip_serializing_if = "Option::is_none")]
+    pub standard_compliance: Option<SkillStandardCompliance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +113,309 @@ pub struct SkillState {
 pub struct SkillMetadata {
     pub name: Option<String>,
     pub description: Option<String>,
+    pub license: Option<String>,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SkillResourceSummary {
+    #[serde(rename = "hasScripts")]
+    pub has_scripts: bool,
+    #[serde(rename = "hasReferences")]
+    pub has_references: bool,
+    #[serde(rename = "hasAssets")]
+    pub has_assets: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SkillStandardCompliance {
+    #[serde(rename = "isStandard")]
+    pub is_standard: bool,
+    #[serde(
+        rename = "validationErrors",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub validation_errors: Vec<String>,
+    #[serde(
+        rename = "deprecatedFields",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub deprecated_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SkillPackageInspection {
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+    #[serde(rename = "allowedTools", default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(rename = "resourceSummary")]
+    pub resource_summary: SkillResourceSummary,
+    #[serde(rename = "standardCompliance")]
+    pub standard_compliance: SkillStandardCompliance,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedSkillManifest {
+    pub metadata: SkillMetadata,
+    pub compliance: SkillStandardCompliance,
+    pub raw_frontmatter: serde_yaml::Value,
+}
+
+impl ParsedSkillManifest {
+    pub fn metadata_value(&self, key: &str) -> Option<&str> {
+        self.metadata.metadata.get(key).map(|value| value.as_str())
+    }
+
+    pub fn raw_string(&self, key: &str) -> Option<String> {
+        let mapping = self.raw_frontmatter.as_mapping()?;
+        yaml_mapping_get(mapping, key).and_then(yaml_scalar_to_string)
+    }
+
+    pub fn raw_bool(&self, key: &str) -> Option<bool> {
+        let mapping = self.raw_frontmatter.as_mapping()?;
+        yaml_mapping_get(mapping, key).and_then(yaml_scalar_to_bool)
+    }
+}
+
+pub fn split_skill_frontmatter(content: &str) -> Option<(&str, &str)> {
+    let content = content.trim_start_matches('\u{feff}');
+    let regex = regex::Regex::new(r"(?s)\A---\s*\n(?P<frontmatter>.*?)\n---\s*(?:\n|$)").ok()?;
+    let captures = regex.captures(content)?;
+    let frontmatter = captures.name("frontmatter")?.as_str();
+    let body_start = captures.get(0)?.end();
+    let body = content.get(body_start..).unwrap_or("");
+    Some((frontmatter, body))
+}
+
+pub fn parse_skill_manifest_from_content(content: &str) -> Result<ParsedSkillManifest, String> {
+    let Some((frontmatter, _body)) = split_skill_frontmatter(content) else {
+        return Ok(ParsedSkillManifest {
+            metadata: SkillMetadata {
+                name: None,
+                description: None,
+                license: None,
+                metadata: HashMap::new(),
+                allowed_tools: Vec::new(),
+            },
+            compliance: SkillStandardCompliance {
+                is_standard: false,
+                validation_errors: vec!["缺少以 --- 包裹的 YAML frontmatter".to_string()],
+                deprecated_fields: Vec::new(),
+            },
+            raw_frontmatter: serde_yaml::Value::Null,
+        });
+    };
+
+    let raw_frontmatter = serde_yaml::from_str::<serde_yaml::Value>(frontmatter)
+        .map_err(|error| format!("解析 YAML frontmatter 失败: {error}"))?;
+    let mapping = raw_frontmatter
+        .as_mapping()
+        .ok_or_else(|| "YAML frontmatter 顶层必须是对象".to_string())?;
+
+    let mut validation_errors = Vec::new();
+    let mut deprecated_fields = Vec::new();
+
+    let name = required_string_field(
+        mapping,
+        SKILL_FRONTMATTER_NAME,
+        &mut validation_errors,
+        "缺少必填字段 `name`",
+    );
+    let description = required_string_field(
+        mapping,
+        SKILL_FRONTMATTER_DESCRIPTION,
+        &mut validation_errors,
+        "缺少必填字段 `description`",
+    );
+    let license = optional_string_field(mapping, SKILL_FRONTMATTER_LICENSE, &mut validation_errors);
+    let allowed_tools = parse_allowed_tools_field(mapping, &mut validation_errors);
+    let metadata = parse_metadata_field(mapping, &mut validation_errors);
+
+    for field in LEGACY_PROXYCAST_TOP_LEVEL_FIELDS {
+        if yaml_mapping_get(mapping, field).is_some() {
+            deprecated_fields.push((*field).to_string());
+        }
+    }
+
+    deprecated_fields.sort();
+    deprecated_fields.dedup();
+
+    let compliance = SkillStandardCompliance {
+        is_standard: validation_errors.is_empty(),
+        validation_errors,
+        deprecated_fields,
+    };
+
+    Ok(ParsedSkillManifest {
+        metadata: SkillMetadata {
+            name,
+            description,
+            license,
+            metadata,
+            allowed_tools,
+        },
+        compliance,
+        raw_frontmatter,
+    })
+}
+
+pub fn summarize_skill_resources_dir(skill_dir: &Path) -> SkillResourceSummary {
+    SkillResourceSummary {
+        has_scripts: skill_dir.join("scripts").is_dir(),
+        has_references: skill_dir.join("references").is_dir(),
+        has_assets: skill_dir.join("assets").is_dir(),
+    }
+}
+
+fn required_string_field(
+    mapping: &serde_yaml::Mapping,
+    key: &str,
+    validation_errors: &mut Vec<String>,
+    missing_error: &str,
+) -> Option<String> {
+    match yaml_mapping_get(mapping, key) {
+        Some(value) => match yaml_scalar_to_string(value) {
+            Some(parsed) if !parsed.trim().is_empty() => Some(parsed),
+            Some(_) => {
+                validation_errors.push(format!("字段 `{key}` 不能为空"));
+                None
+            }
+            None => {
+                validation_errors.push(format!("字段 `{key}` 必须是字符串"));
+                None
+            }
+        },
+        None => {
+            validation_errors.push(missing_error.to_string());
+            None
+        }
+    }
+}
+
+fn optional_string_field(
+    mapping: &serde_yaml::Mapping,
+    key: &str,
+    validation_errors: &mut Vec<String>,
+) -> Option<String> {
+    let value = yaml_mapping_get(mapping, key)?;
+
+    match yaml_scalar_to_string(value) {
+        Some(parsed) if !parsed.trim().is_empty() => Some(parsed),
+        Some(_) => None,
+        None => {
+            validation_errors.push(format!("字段 `{key}` 必须是字符串"));
+            None
+        }
+    }
+}
+
+fn parse_allowed_tools_field(
+    mapping: &serde_yaml::Mapping,
+    validation_errors: &mut Vec<String>,
+) -> Vec<String> {
+    let Some(value) = yaml_mapping_get(mapping, SKILL_FRONTMATTER_ALLOWED_TOOLS)
+        .or_else(|| yaml_mapping_get(mapping, SKILL_FRONTMATTER_ALLOWED_TOOLS_ALIAS))
+    else {
+        return Vec::new();
+    };
+
+    match value {
+        serde_yaml::Value::String(single) => split_allowed_tools_csv(single),
+        serde_yaml::Value::Sequence(values) => {
+            let mut tools = Vec::new();
+            for item in values {
+                match yaml_scalar_to_string(item) {
+                    Some(tool) if !tool.trim().is_empty() => tools.push(tool),
+                    _ => validation_errors
+                        .push("字段 `allowed-tools` 只能包含字符串条目".to_string()),
+                }
+            }
+            tools
+        }
+        _ => {
+            validation_errors.push("字段 `allowed-tools` 必须是字符串或字符串数组".to_string());
+            Vec::new()
+        }
+    }
+}
+
+fn split_allowed_tools_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn parse_metadata_field(
+    mapping: &serde_yaml::Mapping,
+    validation_errors: &mut Vec<String>,
+) -> HashMap<String, String> {
+    let Some(value) = yaml_mapping_get(mapping, SKILL_FRONTMATTER_METADATA) else {
+        return HashMap::new();
+    };
+
+    let Some(meta_mapping) = value.as_mapping() else {
+        validation_errors.push("字段 `metadata` 必须是键值对象".to_string());
+        return HashMap::new();
+    };
+
+    let mut metadata = HashMap::new();
+    for (raw_key, raw_value) in meta_mapping {
+        let Some(key) = yaml_scalar_to_string(raw_key) else {
+            validation_errors.push("字段 `metadata` 的 key 必须是字符串".to_string());
+            continue;
+        };
+
+        match yaml_scalar_to_string(raw_value) {
+            Some(value) => {
+                metadata.insert(key, value);
+            }
+            None => {
+                validation_errors.push(format!("字段 `metadata.{key}` 必须是字符串、数字或布尔值"))
+            }
+        }
+    }
+
+    metadata
+}
+
+fn yaml_mapping_get<'a>(
+    mapping: &'a serde_yaml::Mapping,
+    key: &str,
+) -> Option<&'a serde_yaml::Value> {
+    mapping.get(serde_yaml::Value::String(key.to_string()))
+}
+
+fn yaml_scalar_to_string(value: &serde_yaml::Value) -> Option<String> {
+    match value {
+        serde_yaml::Value::String(value) => Some(value.clone()),
+        serde_yaml::Value::Number(value) => Some(value.to_string()),
+        serde_yaml::Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn yaml_scalar_to_bool(value: &serde_yaml::Value) -> Option<bool> {
+    match value {
+        serde_yaml::Value::Bool(value) => Some(*value),
+        serde_yaml::Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "enabled" => Some(true),
+            "false" | "0" | "no" | "disabled" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 impl Default for SkillRepo {
