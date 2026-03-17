@@ -227,9 +227,9 @@ mod tests {
     }
 
     fn clear_tool_calling_envs() {
-        std::env::remove_var(ENV_TOOLCALL_V2_ENABLED);
-        std::env::remove_var(ENV_TOOLCALL_V2_DYNAMIC_FILTERING);
-        std::env::remove_var(ENV_TOOLCALL_V2_NATIVE_INPUT_EXAMPLES);
+        std::env::remove_var(ENV_TOOLCALL_V2_ENABLED[0]);
+        std::env::remove_var(ENV_TOOLCALL_V2_DYNAMIC_FILTERING[0]);
+        std::env::remove_var(ENV_TOOLCALL_V2_NATIVE_INPUT_EXAMPLES[0]);
     }
 
     #[test]
@@ -258,9 +258,9 @@ mod tests {
             native_input_examples: false,
         });
 
-        std::env::set_var(ENV_TOOLCALL_V2_ENABLED, "true");
-        std::env::set_var(ENV_TOOLCALL_V2_DYNAMIC_FILTERING, "1");
-        std::env::set_var(ENV_TOOLCALL_V2_NATIVE_INPUT_EXAMPLES, "on");
+        std::env::set_var(ENV_TOOLCALL_V2_ENABLED[0], "true");
+        std::env::set_var(ENV_TOOLCALL_V2_DYNAMIC_FILTERING[0], "1");
+        std::env::set_var(ENV_TOOLCALL_V2_NATIVE_INPUT_EXAMPLES[0], "on");
 
         assert!(tool_calling_v2_enabled());
         assert!(tool_calling_dynamic_filtering_enabled());

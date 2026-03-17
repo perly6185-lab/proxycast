@@ -2188,11 +2188,12 @@ impl WorkspaceSandboxedBashTool {
         config
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn quote_shell(value: &str) -> String {
         format!("'{}'", value.replace('\'', "'\"'\"'"))
     }
 
-    fn build_shell_command(&self, command: &str, context: &ToolContext) -> (String, Vec<String>) {
+    fn build_shell_command(&self, command: &str, _context: &ToolContext) -> (String, Vec<String>) {
         #[cfg(target_os = "windows")]
         {
             return (
@@ -2208,7 +2209,7 @@ impl WorkspaceSandboxedBashTool {
 
         #[cfg(not(target_os = "windows"))]
         {
-            let working_dir = context.working_directory.to_string_lossy().to_string();
+            let working_dir = _context.working_directory.to_string_lossy().to_string();
             let wrapped_command = format!("cd {} && {}", Self::quote_shell(&working_dir), command);
             ("sh".to_string(), vec!["-lc".to_string(), wrapped_command])
         }

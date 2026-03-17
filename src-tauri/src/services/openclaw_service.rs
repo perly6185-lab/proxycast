@@ -22,8 +22,6 @@ use serde_json::{json, Map, Value};
 use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
 use std::ffi::OsString;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -55,6 +53,7 @@ const NPM_MIRROR_CN: &str = "https://registry.npmmirror.com";
 const NODE_MIN_VERSION: (u64, u64, u64) = (22, 12, 0);
 const OPENCLAW_PROGRESS_LOG_LIMIT: usize = 400;
 const OPENCLAW_INSTALLER_USER_AGENT: &str = "Lime-OpenClaw";
+#[cfg(not(target_os = "windows"))]
 const OPENCLAW_TEMP_CARGO_CHECK_DIR: &str = "/tmp/lime-cargo-check";
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -546,7 +545,10 @@ impl OpenClawService {
             return Ok(result);
         }
 
-        self.ensure_dependency_ready(app, dependency).await
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.ensure_dependency_ready(app, dependency).await
+        }
     }
 
     pub async fn cleanup_temp_artifacts(
@@ -2772,6 +2774,7 @@ async fn trigger_macos_command_line_tools_install() -> Result<String, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
 async fn trigger_macos_command_line_tools_install() -> Result<String, String> {
     Err("当前平台不支持拉起 macOS 开发者工具安装器。".to_string())
 }
@@ -3066,6 +3069,7 @@ async fn terminate_sysinfo_processes(system: &mut System, target_pids: &[Pid]) {
     }
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn parse_lsof_listener_pids(output: &str) -> Vec<u32> {
     let mut pids = output
         .lines()
@@ -3858,6 +3862,7 @@ fn shell_command_escape_for(platform: ShellPlatform, value: &str) -> String {
     core_shell_command_escape_for(platform, value)
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn shell_command_escape(value: &str) -> String {
     shell_command_escape_for(current_shell_platform(), value)
 }
@@ -3871,6 +3876,7 @@ fn shell_path_assignment_for(platform: ShellPlatform, binary_path: &str) -> Stri
     core_shell_path_assignment_for(platform, binary_path)
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn shell_path_assignment(binary_path: &str) -> String {
     shell_path_assignment_for(current_shell_platform(), binary_path)
 }
@@ -4828,6 +4834,7 @@ async fn read_binary_semver(path: &Path) -> Option<(u64, u64, u64)> {
     parse_semver(stdout.trim()).or_else(|| parse_semver(stderr.trim()))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn select_best_semver_candidate(
     candidates: Vec<(PathBuf, Option<(u64, u64, u64)>)>,
 ) -> Option<PathBuf> {
@@ -5912,10 +5919,6 @@ mod tests {
 /// 从 Windows 注册表读取最新的 PATH 环境变量并刷新当前进程
 #[cfg(target_os = "windows")]
 fn refresh_windows_path_from_registry() -> Result<(), String> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr;
-
     unsafe {
         let mut combined_path = String::new();
 

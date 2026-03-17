@@ -494,6 +494,7 @@ fn get_skill_key(app_type: &AppType, directory: &str) -> String {
 }
 
 /// 解析指定应用的技能列表（供 dispatcher 等非 Tauri command 场景调用）
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn resolve_skills_for_app(
     db: &DbConnection,
     skill_service: &Arc<SkillService>,

@@ -22,8 +22,8 @@
 
 ### 📦 Windows 下载说明
 
-- `Lime_*_x64-online-setup.exe`：默认推荐，体积更小，安装时按需下载 WebView2
-- `Lime_*_x64-offline-setup.exe`：适用于离线、内网或受限网络环境
+- `Lime_*_x64-offline-setup.exe`：推荐优先使用，内置 WebView2 离线安装器，安装更完整
+- `Lime_*_x64-online-setup.exe`：体积更小，适合网络稳定且可访问微软下载源的环境
 - 如果在线安装失败，请改用离线安装包
 
 ---

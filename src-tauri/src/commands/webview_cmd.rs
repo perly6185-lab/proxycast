@@ -936,6 +936,7 @@ pub async fn open_chrome_profile_window(
     .await
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn open_chrome_profile_window_global(
     app: AppHandle,
     app_state: AppState,
@@ -1049,6 +1050,7 @@ async fn ensure_managed_chrome_profile_with_manager(
     Ok(session)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn ensure_managed_chrome_profile_global(
     profile_key: String,
     url: Option<String>,
@@ -1064,6 +1066,7 @@ pub async fn get_chrome_profile_sessions(
     Ok(list_alive_profile_sessions(state.0.clone()).await)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn get_chrome_profile_sessions_global() -> Result<Vec<ChromeProfileSessionInfo>, String> {
     Ok(list_alive_profile_sessions(shared_chrome_profile_manager()).await)
 }
@@ -1076,6 +1079,7 @@ pub async fn close_chrome_profile_session(
     close_chrome_profile_session_with_manager(state.0.clone(), profile_key).await
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn close_chrome_profile_session_global(profile_key: String) -> Result<bool, String> {
     close_chrome_profile_session_with_manager(shared_chrome_profile_manager(), profile_key).await
 }
@@ -1128,6 +1132,7 @@ pub async fn get_chrome_bridge_endpoint_info(
     get_chrome_bridge_endpoint_info_with_state(app_state.inner().clone()).await
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn get_chrome_bridge_endpoint_info_global(
     app_state: AppState,
 ) -> Result<ChromeBridgeEndpointInfo, String> {
@@ -1161,6 +1166,7 @@ pub async fn get_chrome_bridge_status() -> Result<ChromeBridgeStatusSnapshot, St
         .await)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn get_chrome_bridge_status_global() -> Result<ChromeBridgeStatusSnapshot, String> {
     get_chrome_bridge_status().await
 }
@@ -1181,6 +1187,7 @@ pub async fn get_browser_backend_policy() -> Result<BrowserBackendPolicy, String
     Ok(BROWSER_BACKEND_POLICY.read().await.clone())
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn get_browser_backend_policy_global() -> Result<BrowserBackendPolicy, String> {
     get_browser_backend_policy().await
 }
@@ -1198,6 +1205,7 @@ pub async fn set_browser_backend_policy(
     Ok(normalized)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn set_browser_backend_policy_global(
     policy: BrowserBackendPolicy,
 ) -> Result<BrowserBackendPolicy, String> {
@@ -1274,6 +1282,7 @@ pub async fn get_browser_backends_status(
     })
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn get_browser_backends_status_global() -> Result<BrowserBackendsStatusSnapshot, String> {
     let policy = BROWSER_BACKEND_POLICY.read().await.clone();
     let bridge_status = chrome_bridge::chrome_bridge_hub()
@@ -1351,6 +1360,7 @@ pub async fn list_cdp_targets(
         .await
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn list_cdp_targets_global(
     request: ListCdpTargetsRequest,
 ) -> Result<Vec<CdpTargetInfo>, String> {
@@ -1379,6 +1389,7 @@ pub async fn open_cdp_session(
         .await
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn open_cdp_session_global(
     request: OpenCdpSessionRequest,
 ) -> Result<CdpSessionState, String> {
@@ -1407,6 +1418,7 @@ pub async fn close_cdp_session(request: BrowserSessionStateRequest) -> Result<bo
     Ok(true)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn close_cdp_session_global(request: BrowserSessionStateRequest) -> Result<bool, String> {
     close_cdp_session(request).await
 }
@@ -1425,6 +1437,7 @@ pub async fn start_browser_stream(
     Ok(state)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn start_browser_stream_global(
     app: AppHandle,
     request: StartBrowserStreamRequest,
@@ -1443,6 +1456,7 @@ pub async fn stop_browser_stream(
     Ok(state)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn stop_browser_stream_global(
     request: StopBrowserStreamRequest,
 ) -> Result<CdpSessionState, String> {
@@ -1461,6 +1475,7 @@ pub async fn get_browser_session_state(
     Ok(state)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn get_browser_session_state_global(
     db: DbConnection,
     request: BrowserSessionStateRequest,
@@ -1484,6 +1499,7 @@ pub async fn take_over_browser_session(
     Ok(state)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn take_over_browser_session_global(
     db: DbConnection,
     request: UpdateBrowserSessionControlRequest,
@@ -1507,6 +1523,7 @@ pub async fn release_browser_session(
     Ok(state)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn release_browser_session_global(
     db: DbConnection,
     request: UpdateBrowserSessionControlRequest,
@@ -1530,6 +1547,7 @@ pub async fn resume_browser_session(
     Ok(state)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn resume_browser_session_global(
     db: DbConnection,
     request: UpdateBrowserSessionControlRequest,
@@ -1551,6 +1569,7 @@ pub async fn get_browser_event_buffer(
     Ok(EventBufferSnapshotResponse::from(snapshot))
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn get_browser_event_buffer_global(
     request: BrowserEventBufferRequest,
 ) -> Result<EventBufferSnapshotResponse, String> {
@@ -1597,6 +1616,7 @@ pub async fn get_browser_action_audit_logs(
     Ok(result)
 }
 
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn get_browser_action_audit_logs_global(
     limit: Option<usize>,
 ) -> Result<Vec<BrowserActionAuditRecord>, String> {
@@ -1726,6 +1746,7 @@ pub async fn browser_execute_action_with_manager(
 }
 
 /// 使用全局 profile manager 执行动作（供 Agent 工具复用）
+#[cfg_attr(any(test, not(debug_assertions)), allow(dead_code))]
 pub async fn browser_execute_action_global(
     request: BrowserActionRequest,
 ) -> Result<BrowserActionResult, String> {

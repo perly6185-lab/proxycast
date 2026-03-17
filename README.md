@@ -126,8 +126,8 @@ brew install --cask lime
 
 从 [Releases](https://github.com/aiclientproxy/lime/releases) 下载对应平台安装包。
 
-- Windows 用户默认优先下载 `Lime_*_x64-online-setup.exe`（NSIS 在线安装器，体积更小）
-- 如果处于离线、内网或受限网络环境，请改用 `Lime_*_x64-offline-setup.exe`
+- Windows 用户优先下载 `Lime_*_x64-offline-setup.exe`（NSIS 离线安装器，内置 WebView2，安装更完整）
+- 如果只想下载更小的安装器，且当前网络可稳定访问微软下载源，再选择 `Lime_*_x64-online-setup.exe`
 - 如被 SmartScreen 拦截，属于未签名或签名信誉不足的 Windows 常见提示，不代表安装包必然损坏
 
 ---
