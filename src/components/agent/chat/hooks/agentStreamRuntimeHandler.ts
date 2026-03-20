@@ -28,6 +28,11 @@ import {
   handleToolStartEvent,
 } from "./agentStreamEventProcessor";
 import type { AgentRuntimeAdapter } from "./agentRuntimeAdapter";
+import {
+  buildFailedAgentMessageContent,
+  buildFailedAgentRuntimeStatus,
+  formatAgentRuntimeStatusSummary,
+} from "../utils/agentRuntimeStatus";
 
 type MessageParts = NonNullable<Message["contentParts"]>;
 
@@ -155,6 +160,49 @@ export function handleTurnStreamEvent({
     playTypewriterSound,
     appendThinkingToParts,
   } = callbacks;
+
+  const markFailedTimelineState = (errorMessage: string) => {
+    const failedAt = new Date().toISOString();
+    const failedRuntimeStatus = buildFailedAgentRuntimeStatus(errorMessage);
+
+    setThreadTurns((prev) => {
+      const runningTurn =
+        prev.find((turn) => turn.id === optimisticTurnId) ||
+        [...prev]
+          .reverse()
+          .find(
+            (turn) =>
+              turn.thread_id === activeSessionId && turn.status === "running",
+          );
+
+      if (!runningTurn) {
+        return prev;
+      }
+
+      return upsertThreadTurnState(prev, {
+        ...runningTurn,
+        status: "failed",
+        error_message: errorMessage,
+        completed_at: runningTurn.completed_at || failedAt,
+        updated_at: failedAt,
+      });
+    });
+
+    setThreadItems((prev) => {
+      const optimisticItem = prev.find((item) => item.id === optimisticItemId);
+      if (!optimisticItem || optimisticItem.type !== "turn_summary") {
+        return prev;
+      }
+
+      return upsertThreadItemState(prev, {
+        ...optimisticItem,
+        status: "failed",
+        completed_at: optimisticItem.completed_at || failedAt,
+        updated_at: failedAt,
+        text: formatAgentRuntimeStatusSummary(failedRuntimeStatus),
+      });
+    });
+  };
 
   switch (data.type) {
     case "thread_started":
@@ -411,9 +459,8 @@ export function handleTurnStreamEvent({
       break;
     }
 
-    case "error":
-      clearOptimisticItem();
-      clearOptimisticTurn();
+    case "error": {
+      markFailedTimelineState(data.message);
       removeQueuedTurnState(requestState.queuedTurnId ? [requestState.queuedTurnId] : []);
       finishRequestLog(requestState, {
         eventType: "chat_request_error",
@@ -421,6 +468,7 @@ export function handleTurnStreamEvent({
         error: data.message,
       });
       observer?.onError?.(data.message);
+      const failedRuntimeStatus = buildFailedAgentRuntimeStatus(data.message);
       if (
         data.message.includes("429") ||
         data.message.toLowerCase().includes("rate limit")
@@ -435,9 +483,11 @@ export function handleTurnStreamEvent({
             ? {
                 ...updateMessageArtifactsStatus(msg, "error"),
                 isThinking: false,
-                content:
-                  requestState.accumulatedContent || `错误: ${data.message}`,
-                runtimeStatus: undefined,
+                content: buildFailedAgentMessageContent(
+                  data.message,
+                  requestState.accumulatedContent || msg.content,
+                ),
+                runtimeStatus: failedRuntimeStatus,
               }
             : msg,
         ),
@@ -445,6 +495,7 @@ export function handleTurnStreamEvent({
       clearActiveStreamIfMatch(eventName);
       disposeListener();
       break;
+    }
 
     case "warning": {
       if (data.code === WORKSPACE_PATH_AUTO_CREATED_WARNING_CODE) {

@@ -273,18 +273,7 @@ import {
   buildGeneralAgentSystemPrompt,
   resolveAgentChatMode,
 } from "./utils/generalAgentPrompt";
-import {
-  buildTeamDefinitionLabel,
-  buildTeamDefinitionSummary,
-  createTeamDefinitionFromPreset,
-  listBuiltinTeamDefinitions,
-  type TeamDefinition,
-} from "./utils/teamDefinitions";
-import {
-  loadCustomTeams,
-  loadSelectedTeamReference,
-  persistSelectedTeam,
-} from "./utils/teamStorage";
+import { useSelectedTeamPreference } from "./hooks/useSelectedTeamPreference";
 import {
   areBrowserAssistSessionStatesEqual,
   clearBrowserAssistSessionState,
@@ -360,22 +349,6 @@ function normalizeInitialTheme(value?: string): ThemeType {
     return value as ThemeType;
   }
   return "general";
-}
-
-function resolvePersistedSelectedTeam(theme?: string | null): TeamDefinition | null {
-  const selection = loadSelectedTeamReference(theme);
-  if (!selection) {
-    return null;
-  }
-
-  if (selection.source === "builtin") {
-    return (
-      listBuiltinTeamDefinitions().find((team) => team.id === selection.id) ||
-      null
-    );
-  }
-
-  return loadCustomTeams().find((team) => team.id === selection.id) || null;
 }
 
 function shouldPreserveGeneralArtifact(artifact: Artifact): boolean {
@@ -2591,9 +2564,6 @@ export function AgentChatWorkspace({
 
   // 内容创作相关状态
   const [activeTheme, setActiveTheme] = useState<string>(normalizedEntryTheme);
-  const [selectedTeam, setSelectedTeam] = useState<TeamDefinition | null>(() =>
-    resolvePersistedSelectedTeam(normalizedEntryTheme),
-  );
   const [creationMode, setCreationMode] = useState<CreationMode>(
     initialCreationMode ?? "guided",
   );
@@ -2741,6 +2711,14 @@ export function AgentChatWorkspace({
     setThemeWorkbenchCreationTaskEvents,
   ] = useState<ThemeWorkbenchCreationTaskEvent[]>([]);
   const documentEditorFocusedRef = useRef(false);
+  const {
+    selectedTeam,
+    setSelectedTeam: handleSelectTeam,
+    enableSuggestedTeam: handleEnableSuggestedTeam,
+    preferredTeamPresetId,
+    selectedTeamLabel,
+    selectedTeamSummary,
+  } = useSelectedTeamPreference(activeTheme);
 
   useEffect(() => {
     setActiveContentTarget(projectId, contentId, canvasState?.type ?? null);
@@ -2850,52 +2828,6 @@ export function AgentChatWorkspace({
 
   // 工作流状态（仅在内容创作模式下使用）
   const mappedTheme = activeTheme as ThemeType;
-  const preferredTeamPresetId = useMemo(
-    () =>
-      selectedTeam?.presetId?.trim() ||
-      (selectedTeam?.source === "builtin" ? selectedTeam.id : undefined),
-    [selectedTeam],
-  );
-  const selectedTeamLabel = useMemo(
-    () => buildTeamDefinitionLabel(selectedTeam) || undefined,
-    [selectedTeam],
-  );
-  const selectedTeamSummary = useMemo(
-    () => buildTeamDefinitionSummary(selectedTeam) || undefined,
-    [selectedTeam],
-  );
-
-  useEffect(() => {
-    setSelectedTeam(resolvePersistedSelectedTeam(activeTheme));
-  }, [activeTheme]);
-
-  useEffect(() => {
-    persistSelectedTeam(selectedTeam, activeTheme);
-  }, [activeTheme, selectedTeam]);
-
-  const handleSelectTeam = useCallback(
-    (team: TeamDefinition | null) => {
-      persistSelectedTeam(team, activeTheme);
-      setSelectedTeam(team);
-    },
-    [activeTheme],
-  );
-
-  const handleEnableSuggestedTeam = useCallback(
-    (suggestedPresetId?: string) => {
-      const resolvedPresetId = suggestedPresetId?.trim();
-      if (!resolvedPresetId) {
-        return;
-      }
-
-      const suggestedTeam = createTeamDefinitionFromPreset(resolvedPresetId);
-      if (suggestedTeam) {
-        persistSelectedTeam(suggestedTeam, activeTheme);
-        setSelectedTeam(suggestedTeam);
-      }
-    },
-    [activeTheme],
-  );
 
   useEffect(() => {
     setRuntimeStyleSelection({

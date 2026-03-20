@@ -15,6 +15,11 @@ function buildExecutionLabel(strategy: AsterExecutionStrategy): string {
   }
 }
 
+function normalizeRuntimeErrorDetail(errorMessage: string): string {
+  const detail = errorMessage.trim();
+  return detail || "执行链路返回失败，请查看详情后重试。";
+}
+
 export function buildInitialAgentRuntimeStatus(options: {
   executionStrategy: AsterExecutionStrategy;
   webSearch?: boolean;
@@ -81,4 +86,41 @@ export function buildActionResumeRuntimeStatus(): AgentRuntimeStatus {
     detail: "补充信息已回填到当前执行链路，正在恢复后续步骤。",
     checkpoints: ["补充信息已确认", "已唤醒当前执行链路", "等待下一条执行事件"],
   };
+}
+
+export function buildFailedAgentRuntimeStatus(
+  errorMessage: string,
+): AgentRuntimeStatus {
+  return {
+    phase: "failed",
+    title: "当前执行失败",
+    detail: normalizeRuntimeErrorDetail(errorMessage),
+    checkpoints: ["已保留当前回合过程", "可修正问题后重试", "如需继续可补充更明确的输入"],
+  };
+}
+
+export function buildFailedAgentMessageContent(
+  errorMessage: string,
+  partialContent?: string,
+): string {
+  const failureText = `执行失败：${normalizeRuntimeErrorDetail(errorMessage)}`;
+  const trimmedPartialContent = partialContent?.trim();
+  return trimmedPartialContent
+    ? `${trimmedPartialContent}\n\n${failureText}`
+    : failureText;
+}
+
+export function formatAgentRuntimeStatusSummary(
+  status?: AgentRuntimeStatus | null,
+): string {
+  if (!status?.title) {
+    return "Agent 正在准备执行";
+  }
+
+  const lines = [status.title.trim()];
+  if (status.detail?.trim()) {
+    lines.push(status.detail.trim());
+  }
+
+  return lines.join("\n\n");
 }

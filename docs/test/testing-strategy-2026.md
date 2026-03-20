@@ -14,7 +14,6 @@
 - `package.json`：当前统一测试命令入口
 - `scripts/local-ci.mjs`：当前本地智能校验入口
 - `scripts/report-legacy-surfaces.mjs`：当前 legacy / compat 回流护栏
-- `.github/workflows/pr-gate.yml`：当前 PR 自动门禁入口
 
 ### compat
 
@@ -39,11 +38,10 @@
 - 桥接基础测试已经存在：`src/lib/dev-bridge/safeInvoke.test.ts`、`src/lib/tauri-mock/core.test.ts`
 - legacy 治理护栏已经存在：`npm run governance:legacy-report`
 - 旧权限表面治理护栏已经补齐：`src/lib/governance/legacyToolPermissionGuard.test.ts` + `npm run governance:legacy-report`
-- 跨层命令契约检查基础版已经落地：`npm run test:contracts` 已进入 `scripts/local-ci.mjs` 与 `.github/workflows/pr-gate.yml`
+- 跨层命令契约检查基础版已经落地：`npm run test:contracts` 已进入 `scripts/local-ci.mjs`
 - 命令契约延期例外已经收口：`agent_terminal_command_response`、`agent_term_scrollback_response` 已退出 `runtimeGatewayCommands`，改为 `dead-candidate` 治理监控
 - 首条自包含 smoke 已落地：`npm run smoke:workspace-ready` 可自动校验 DevBridge 就绪、默认 workspace 获取、目录修复与路径回查
 - 测试文档事实源已经收口：`docs/test/README.md`、`docs/test/e2e-tests.md`、`docs/aiprompts/playwright-e2e.md` 已按“索引 / 总览 / 详细事实源”分层
-- PR 自动门禁已经补齐：`.github/workflows/pr-gate.yml` 已覆盖前端、bridge、Rust 三类基础检查
 
 ## 3. 当前仍未解决的问题优先级
 

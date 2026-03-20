@@ -142,7 +142,7 @@ export interface WriteArtifactContext {
 }
 
 export interface AgentRuntimeStatus {
-  phase: "preparing" | "routing" | "context";
+  phase: "preparing" | "routing" | "context" | "failed";
   title: string;
   detail: string;
   checkpoints?: string[];

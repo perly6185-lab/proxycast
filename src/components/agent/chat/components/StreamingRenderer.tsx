@@ -8,6 +8,7 @@
 import React, { memo, useMemo, useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import {
+  AlertTriangle,
   ChevronDown,
   ExternalLink,
   FileText,
@@ -567,37 +568,88 @@ const RUNTIME_PHASE_LABELS: Record<AgentRuntimeStatus["phase"], string> = {
   preparing: "准备中",
   routing: "回合建立中",
   context: "上下文装载中",
+  failed: "执行失败",
 };
 
 const AgentRuntimeStatusBlock: React.FC<{ status: AgentRuntimeStatus }> = ({
   status,
-}) => (
-  <div className="rounded-2xl border border-border/70 bg-muted/30 px-4 py-3">
-    <div className="mb-2 flex items-center gap-2">
-      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary">
-        <Sparkles className="h-4 w-4" />
+}) => {
+  const failed = status.phase === "failed";
+
+  return (
+    <div
+      className={cn(
+        "rounded-2xl border px-4 py-3",
+        failed
+          ? "border-rose-200 bg-rose-50/90"
+          : "border-border/70 bg-muted/30",
+      )}
+    >
+      <div className="mb-2 flex items-center gap-2">
+        <div
+          className={cn(
+            "flex h-7 w-7 items-center justify-center rounded-full",
+            failed ? "bg-rose-100 text-rose-600" : "bg-primary/10 text-primary",
+          )}
+        >
+          {failed ? (
+            <AlertTriangle className="h-4 w-4" />
+          ) : (
+            <Sparkles className="h-4 w-4" />
+          )}
+        </div>
+        <div
+          className={cn(
+            "text-sm font-medium",
+            failed ? "text-rose-900" : "text-foreground",
+          )}
+        >
+          {status.title}
+        </div>
+        <div
+          className={cn(
+            "ml-auto inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs",
+            failed
+              ? "border-rose-200 bg-white text-rose-700"
+              : "border-border/70 bg-background/80 text-muted-foreground",
+          )}
+        >
+          {failed ? (
+            <AlertTriangle className="h-3 w-3" />
+          ) : (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          )}
+          {RUNTIME_PHASE_LABELS[status.phase]}
+        </div>
       </div>
-      <div className="text-sm font-medium text-foreground">{status.title}</div>
-      <div className="ml-auto inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/80 px-2.5 py-0.5 text-xs text-muted-foreground">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        {RUNTIME_PHASE_LABELS[status.phase]}
+      <div
+        className={cn(
+          "text-sm",
+          failed ? "text-rose-700" : "text-muted-foreground",
+        )}
+      >
+        {status.detail}
       </div>
+      {status.checkpoints && status.checkpoints.length > 0 ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {status.checkpoints.map((item) => (
+            <span
+              key={item}
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-xs",
+                failed
+                  ? "border-rose-200 bg-white text-rose-700"
+                  : "border-border/60 bg-background/80 text-muted-foreground",
+              )}
+            >
+              {item}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
-    <div className="text-sm text-muted-foreground">{status.detail}</div>
-    {status.checkpoints && status.checkpoints.length > 0 ? (
-      <div className="mt-3 flex flex-wrap gap-2">
-        {status.checkpoints.map((item) => (
-          <span
-            key={item}
-            className="rounded-full border border-border/60 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground"
-          >
-            {item}
-          </span>
-        ))}
-      </div>
-    ) : null}
-  </div>
-);
+  );
+};
 
 /**
  * 流式消息渲染组件

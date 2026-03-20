@@ -12,6 +12,7 @@ const {
   mockUseThemeContextWorkspace,
   mockUseTopicBranchBoard,
   mockUseTeamWorkspaceRuntime,
+  mockUseCompatSubagentRuntime,
   mockGetProject,
   mockGetDefaultProject,
   mockGetOrCreateDefaultProject,
@@ -48,6 +49,7 @@ const {
   mockUseThemeContextWorkspace: vi.fn(),
   mockUseTopicBranchBoard: vi.fn(),
   mockUseTeamWorkspaceRuntime: vi.fn(),
+  mockUseCompatSubagentRuntime: vi.fn(),
   mockGetProject: vi.fn(),
   mockGetDefaultProject: vi.fn(),
   mockGetOrCreateDefaultProject: vi.fn(),
@@ -148,6 +150,7 @@ vi.mock("./hooks", () => ({
   useThemeContextWorkspace: mockUseThemeContextWorkspace,
   useTopicBranchBoard: mockUseTopicBranchBoard,
   useTeamWorkspaceRuntime: mockUseTeamWorkspaceRuntime,
+  useCompatSubagentRuntime: mockUseCompatSubagentRuntime,
 }));
 
 vi.mock("./hooks/useSessionFiles", () => ({
@@ -982,6 +985,15 @@ beforeEach(() => {
     liveRuntimeBySessionId: {},
     liveActivityBySessionId: {},
     activityRefreshVersionBySessionId: {},
+  });
+  mockUseCompatSubagentRuntime.mockReturnValue({
+    isRunning: false,
+    progress: null,
+    events: [],
+    result: null,
+    error: null,
+    recentActivity: [],
+    hasSignals: false,
   });
   mockCanvasWorkbenchLayoutState.renderPreview = false;
 
@@ -4356,5 +4368,95 @@ describe("AgentChatPage legacy 问卷 A2UI", () => {
     expect(latestInputbarProps?.pendingA2UIForm?.id).toBe(
       "action-request-req-action-required",
     );
+  });
+
+  it("真实 action_required 已提交后，输入区应显示补充信息确认提示而不是继续停留在表单态", async () => {
+    mockUseAgentChatUnified.mockImplementation(
+      ({ workspaceId }: { workspaceId: string }) => {
+        observedWorkspaceIds.push(workspaceId);
+        return {
+          providerType: "kiro",
+          setProviderType: vi.fn(),
+          model: "mock-model",
+          setModel: vi.fn(),
+          executionStrategy: "auto",
+          setExecutionStrategy: vi.fn(),
+          messages: [
+            {
+              id: "msg-user-submitted",
+              role: "user",
+              content: "继续推进当前任务",
+              timestamp: new Date("2026-03-15T09:02:00.000Z"),
+            },
+            {
+              id: "msg-assistant-submitted",
+              role: "assistant",
+              content: "已收到补充信息，正在继续推进。",
+              timestamp: new Date("2026-03-15T09:02:10.000Z"),
+              actionRequests: [
+                {
+                  requestId: "req-submitted-action",
+                  actionType: "ask_user",
+                  prompt: "请选择执行模式",
+                  questions: [{ question: "你希望如何执行？" }],
+                  status: "submitted",
+                  submittedResponse: '{"answer":"自动执行（Auto）"}',
+                  submittedUserData: {
+                    answer: "自动执行（Auto）",
+                  },
+                },
+              ],
+            },
+          ],
+          isSending: false,
+          sendMessage: sharedSendMessageMock,
+          stopSending: vi.fn(async () => undefined),
+          clearMessages: vi.fn(),
+          deleteMessage: vi.fn(),
+          editMessage: vi.fn(),
+          handlePermissionResponse: vi.fn(),
+          triggerAIGuide: sharedTriggerAIGuideMock,
+          topics: [
+            {
+              id: "topic-a",
+              title: "话题 A",
+              updatedAt: Date.now(),
+            },
+          ],
+          sessionId: "session-1",
+          switchTopic: sharedSwitchTopicMock,
+          deleteTopic: vi.fn(),
+          renameTopic: vi.fn(),
+          workspacePathMissing: false,
+          fixWorkspacePathAndRetry: vi.fn(),
+          dismissWorkspacePathError: vi.fn(),
+        };
+      },
+    );
+
+    renderPage({
+      projectId: "project-action-required-submitted",
+      theme: "general",
+      lockTheme: true,
+    });
+    await flushEffects(10);
+
+    const latestInputbarProps = mockInputbar.mock.calls.at(-1)?.[0] as
+      | {
+          pendingA2UIForm?: {
+            id?: string;
+          } | null;
+          a2uiSubmissionNotice?: {
+            title?: string;
+            summary?: string;
+          } | null;
+        }
+      | undefined;
+
+    expect(latestInputbarProps?.pendingA2UIForm ?? null).toBeNull();
+    expect(latestInputbarProps?.a2uiSubmissionNotice).toMatchObject({
+      title: "补充信息已确认",
+      summary: "自动执行（Auto）",
+    });
   });
 });

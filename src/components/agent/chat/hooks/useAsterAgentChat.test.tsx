@@ -920,6 +920,48 @@ describe("useAsterAgentChat thread timeline", () => {
     }
   });
 
+  it("submitTurn 失败时应保留失败回合与失败消息，而不是清空当前过程", async () => {
+    const workspaceId = "ws-thread-submit-failed";
+    seedSession(workspaceId, "session-thread-submit-failed");
+    mockSubmitAgentRuntimeTurn.mockRejectedValueOnce(new Error("429 rate limit"));
+    const harness = mountHook(workspaceId);
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("帮我开始执行", [], false, false, false, "react");
+      });
+
+      const assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.content).toContain("执行失败：429 rate limit");
+      expect(assistantMessage?.runtimeStatus).toMatchObject({
+        phase: "failed",
+        title: "当前执行失败",
+      });
+      expect(harness.getValue().turns).toEqual([
+        expect.objectContaining({
+          status: "failed",
+          error_message: "429 rate limit",
+        }),
+      ]);
+      expect(harness.getValue().threadItems).toEqual([
+        expect.objectContaining({
+          type: "turn_summary",
+          status: "failed",
+        }),
+      ]);
+      expect(mockToast.warning).toHaveBeenCalledWith("请求过于频繁，请稍后重试");
+    } finally {
+      harness.unmount();
+    }
+  });
+
   it("应接收 turn/item 生命周期事件并写入运行态", async () => {
     const workspaceId = "ws-thread-timeline";
     seedSession(workspaceId, "session-thread-timeline");
@@ -1001,6 +1043,70 @@ describe("useAsterAgentChat thread timeline", () => {
       expect(harness.getValue().threadItems).toHaveLength(1);
       expect(harness.getValue().threadItems[0]?.type).toBe("plan");
       expect(harness.getValue().threadItems[0]?.status).toBe("completed");
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  it("stream error 事件时应保留失败消息与失败回合", async () => {
+    const workspaceId = "ws-thread-stream-error";
+    seedSession(workspaceId, "session-thread-stream-error");
+    const harness = mountHook(workspaceId);
+    const stream = captureTurnStream();
+
+    try {
+      await flushEffects();
+
+      await act(async () => {
+        await harness
+          .getValue()
+          .sendMessage("请开始处理", [], false, false, false, "react");
+      });
+
+      act(() => {
+        stream.emit({
+          type: "turn_started",
+          turn: {
+            id: "turn-stream-error-1",
+            thread_id: "session-thread-stream-error",
+            prompt_text: "请开始处理",
+            status: "running",
+            started_at: "2026-03-20T10:00:00.000Z",
+            created_at: "2026-03-20T10:00:00.000Z",
+            updated_at: "2026-03-20T10:00:00.000Z",
+          },
+        });
+        stream.emit({
+          type: "error",
+          message: "模型执行失败",
+        });
+      });
+
+      const assistantMessage = [...harness.getValue().messages]
+        .reverse()
+        .find((msg) => msg.role === "assistant");
+
+      expect(assistantMessage?.content).toContain("执行失败：模型执行失败");
+      expect(assistantMessage?.runtimeStatus).toMatchObject({
+        phase: "failed",
+        title: "当前执行失败",
+      });
+      expect(harness.getValue().turns).toEqual([
+        expect.objectContaining({
+          id: "turn-stream-error-1",
+          status: "failed",
+          error_message: "模型执行失败",
+        }),
+      ]);
+      expect(harness.getValue().threadItems).toEqual([
+        expect.objectContaining({
+          id: expect.stringContaining("turn-summary:"),
+          type: "turn_summary",
+          status: "failed",
+          turn_id: "turn-stream-error-1",
+        }),
+      ]);
+      expect(mockToast.error).toHaveBeenCalledWith("响应错误: 模型执行失败");
     } finally {
       harness.unmount();
     }

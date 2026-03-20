@@ -112,7 +112,7 @@ npm run bridge:health -- --timeout-ms 120000
 - 假设 `tauri-driver` 仍是推荐路径
 - 假设浏览器 E2E 已进入 CI 标准门禁
 
-当前 PR 门禁以 `.github/workflows/pr-gate.yml` 为准；完整浏览器主链路 smoke 仍属于后续建设项，详见 `docs/test/testing-strategy-2026.md`。
+当前浏览器主链路 smoke 仍属于后续建设项，详见 `docs/test/testing-strategy-2026.md`。
 
 ## 7. 给后续 Agent 的交接要求
 

@@ -400,6 +400,24 @@ describe("HarnessStatusPanel", () => {
     expect(document.body.textContent).toContain("等待首个模型事件");
   });
 
+  it("runtimeStatus 为 failed 时应展示失败阶段与失败详情", () => {
+    renderPanel({
+      harnessState: createHarnessState({
+        runtimeStatus: {
+          phase: "failed",
+          title: "当前执行失败",
+          detail: "429 rate limit",
+          checkpoints: ["已保留当前回合过程"],
+        },
+      }),
+    });
+
+    expect(document.body.textContent).toContain("执行阶段");
+    expect(document.body.textContent).toContain("失败");
+    expect(document.body.textContent).toContain("当前执行失败");
+    expect(document.body.textContent).toContain("429 rate limit");
+  });
+
   it("存在 selectedTeam 时应在工作台展示当前 Team 配置", () => {
     renderPanel({
       selectedTeamLabel: "前端联调团队",

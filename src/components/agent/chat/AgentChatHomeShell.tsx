@@ -30,16 +30,7 @@ import {
 } from "./utils/chatToolPreferences";
 import { isTeamRuntimeRecommendation } from "./utils/contextualRecommendations";
 import { normalizeProjectId } from "./utils/topicProjectResolution";
-import {
-  createTeamDefinitionFromPreset,
-  listBuiltinTeamDefinitions,
-  type TeamDefinition,
-} from "./utils/teamDefinitions";
-import {
-  loadCustomTeams,
-  loadSelectedTeamReference,
-  persistSelectedTeam,
-} from "./utils/teamStorage";
+import { useSelectedTeamPreference } from "./hooks/useSelectedTeamPreference";
 
 const SUPPORTED_ENTRY_THEMES: ThemeType[] = [
   "general",
@@ -159,22 +150,6 @@ function normalizeInitialTheme(value?: string): ThemeType {
     return value as ThemeType;
   }
   return "general";
-}
-
-function resolvePersistedSelectedTeam(theme?: string | null): TeamDefinition | null {
-  const selection = loadSelectedTeamReference(theme);
-  if (!selection) {
-    return null;
-  }
-
-  if (selection.source === "builtin") {
-    return (
-      listBuiltinTeamDefinitions().find((team) => team.id === selection.id) ||
-      null
-    );
-  }
-
-  return loadCustomTeams().find((team) => team.id === selection.id) || null;
 }
 
 function scheduleDeferredHomeEnhancement(task: () => void): () => void {
@@ -302,9 +277,6 @@ export function AgentChatHomeShell({
   const [creationMode, setCreationMode] = useState<CreationMode>(
     initialCreationMode ?? "guided",
   );
-  const [selectedTeam, setSelectedTeam] = useState<TeamDefinition | null>(() =>
-    resolvePersistedSelectedTeam(initialTheme),
-  );
   const [chatToolPreferences, setChatToolPreferences] =
     useState<ChatToolPreferences>(() =>
       loadChatToolPreferences(normalizedEntryTheme),
@@ -329,6 +301,11 @@ export function AgentChatHomeShell({
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(false);
   const [browserAssistLoading, setBrowserAssistLoading] = useState(false);
+  const {
+    selectedTeam,
+    setSelectedTeam: handleSelectTeam,
+    enableSuggestedTeam: handleEnableSuggestedTeam,
+  } = useSelectedTeamPreference(activeTheme);
 
   useEffect(() => {
     setActiveTheme(normalizeInitialTheme(initialTheme));
@@ -364,14 +341,6 @@ export function AgentChatHomeShell({
 
     saveChatToolPreferences(chatToolPreferences, activeTheme);
   }, [activeTheme, chatToolPreferences, chatToolPreferencesTheme]);
-
-  useEffect(() => {
-    setSelectedTeam(resolvePersistedSelectedTeam(activeTheme));
-  }, [activeTheme]);
-
-  useEffect(() => {
-    persistSelectedTeam(selectedTeam, activeTheme);
-  }, [activeTheme, selectedTeam]);
 
   useEffect(() => {
     const nextPreferences = resolvePersistedProviderModel(currentProjectId);
@@ -613,27 +582,6 @@ export function AgentChatHomeShell({
       });
     },
     [activeTheme, chatToolPreferences, handleEnterWorkspace],
-  );
-
-  const handleEnableSuggestedTeam = useCallback((suggestedPresetId?: string) => {
-    const resolvedPresetId = suggestedPresetId?.trim();
-    if (!resolvedPresetId) {
-      return;
-    }
-
-    const suggestedTeam = createTeamDefinitionFromPreset(resolvedPresetId);
-    if (suggestedTeam) {
-      persistSelectedTeam(suggestedTeam, activeTheme);
-      setSelectedTeam(suggestedTeam);
-    }
-  }, [activeTheme]);
-
-  const handleSelectTeam = useCallback(
-    (team: TeamDefinition | null) => {
-      persistSelectedTeam(team, activeTheme);
-      setSelectedTeam(team);
-    },
-    [activeTheme],
   );
 
   return (

@@ -42,8 +42,11 @@ import {
   upsertThreadTurnState,
 } from "./agentThreadState";
 import {
+  buildFailedAgentMessageContent,
+  buildFailedAgentRuntimeStatus,
   buildInitialAgentRuntimeStatus,
   buildWaitingAgentRuntimeStatus,
+  formatAgentRuntimeStatusSummary,
 } from "../utils/agentRuntimeStatus";
 import { handleTurnStreamEvent } from "./agentStreamRuntimeHandler";
 
@@ -207,22 +210,6 @@ export function useAgentStream(options: UseAgentStreamOptions) {
             : "自动路由待命",
       ],
     }),
-    [],
-  );
-
-  const buildRuntimeStatusSummary = useCallback(
-    (status?: Message["runtimeStatus"]): string => {
-      if (!status?.title) {
-        return "Agent 正在准备执行";
-      }
-
-      const lines = [status.title.trim()];
-      if (status.detail?.trim()) {
-        lines.push(status.detail.trim());
-      }
-
-      return lines.join("\n\n");
-    },
     [],
   );
 
@@ -436,6 +423,45 @@ export function useAgentStream(options: UseAgentStreamOptions) {
         setCurrentTurnId((prev) => (prev === optimisticTurnId ? null : prev));
       };
 
+      const markOptimisticFailure = (errorMessage: string) => {
+        if (expectingQueue) {
+          return;
+        }
+
+        const failedAt = new Date().toISOString();
+        const failedRuntimeStatus = buildFailedAgentRuntimeStatus(errorMessage);
+
+        setThreadTurns((prev) => {
+          const currentTurn = prev.find((turn) => turn.id === optimisticTurnId);
+          if (!currentTurn) {
+            return prev;
+          }
+
+          return upsertThreadTurnState(prev, {
+            ...currentTurn,
+            status: "failed",
+            error_message: errorMessage,
+            completed_at: currentTurn.completed_at || failedAt,
+            updated_at: failedAt,
+          });
+        });
+
+        setThreadItems((prev) => {
+          const currentItem = prev.find((item) => item.id === optimisticItemId);
+          if (!currentItem || currentItem.type !== "turn_summary") {
+            return prev;
+          }
+
+          return upsertThreadItemState(prev, {
+            ...currentItem,
+            status: "failed",
+            completed_at: currentItem.completed_at || failedAt,
+            updated_at: failedAt,
+            text: formatAgentRuntimeStatusSummary(failedRuntimeStatus),
+          });
+        });
+      };
+
       const disposeListener = () => {
         const registered = listenerMapRef.current.get(eventName);
         if (registered) {
@@ -469,7 +495,7 @@ export function useAgentStream(options: UseAgentStreamOptions) {
             started_at: optimisticStartedAt,
             updated_at: optimisticStartedAt,
             type: "turn_summary",
-            text: buildRuntimeStatusSummary(assistantMsg.runtimeStatus),
+            text: formatAgentRuntimeStatusSummary(assistantMsg.runtimeStatus),
           }),
         );
         setCurrentTurnId(optimisticTurnId);
@@ -534,7 +560,7 @@ export function useAgentStream(options: UseAgentStreamOptions) {
               started_at: optimisticStartedAt,
               updated_at: new Date().toISOString(),
               type: "turn_summary",
-              text: buildRuntimeStatusSummary(waitingRuntimeStatus),
+              text: formatAgentRuntimeStatusSummary(waitingRuntimeStatus),
             }),
           );
         }
@@ -653,6 +679,7 @@ export function useAgentStream(options: UseAgentStreamOptions) {
         }
         console.error("[AsterChat] 发送失败:", error);
         const errMsg = error instanceof Error ? error.message : String(error);
+        const failedRuntimeStatus = buildFailedAgentRuntimeStatus(errMsg);
         observer?.onError?.(errMsg);
         if (
           errMsg.includes("429") ||
@@ -664,16 +691,20 @@ export function useAgentStream(options: UseAgentStreamOptions) {
         } else {
           toast.error(`发送失败: ${error}`);
         }
-        clearOptimisticItem();
-        clearOptimisticTurn();
+        markOptimisticFailure(errMsg);
         removeQueuedTurnState(
           requestState.queuedTurnId ? [requestState.queuedTurnId] : [],
         );
         setMessages((prev) =>
-          prev.filter(
-            (msg) =>
-              msg.id !== assistantMsgId &&
-              (!expectingQueue || !userMsgId || msg.id !== userMsgId),
+          prev.map((msg) =>
+            msg.id === assistantMsgId
+              ? {
+                  ...updateMessageArtifactsStatus(msg, "error"),
+                  isThinking: false,
+                  content: buildFailedAgentMessageContent(errMsg, msg.content),
+                  runtimeStatus: failedRuntimeStatus,
+                }
+              : msg,
           ),
         );
         clearActiveStreamIfMatch(eventName);
@@ -686,7 +717,6 @@ export function useAgentStream(options: UseAgentStreamOptions) {
     [
       activeStreamRef,
       buildQueuedRuntimeStatus,
-      buildRuntimeStatusSummary,
       clearActiveStreamIfMatch,
       ensureSession,
       executionStrategy,

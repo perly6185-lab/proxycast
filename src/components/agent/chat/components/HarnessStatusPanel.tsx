@@ -544,6 +544,8 @@ function formatRuntimePhaseLabel(
       return "建回合中";
     case "context":
       return "装载上下文";
+    case "failed":
+      return "失败";
     default:
       return runtimeStatus.phase;
   }

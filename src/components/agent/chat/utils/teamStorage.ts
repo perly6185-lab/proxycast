@@ -1,5 +1,6 @@
 import type { TeamDefinition } from "./teamDefinitions";
 import {
+  createTeamDefinitionFromPreset,
   buildTeamSelectionReference,
   normalizeTeamDefinition,
   type TeamSelectionReference,
@@ -108,4 +109,19 @@ export function loadSelectedTeamReference(
   } catch {
     return null;
   }
+}
+
+export function resolvePersistedSelectedTeam(
+  theme?: string | null,
+): TeamDefinition | null {
+  const selection = loadSelectedTeamReference(theme);
+  if (!selection) {
+    return null;
+  }
+
+  if (selection.source === "builtin") {
+    return createTeamDefinitionFromPreset(selection.id);
+  }
+
+  return loadCustomTeams().find((team) => team.id === selection.id) || null;
 }

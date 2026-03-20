@@ -371,7 +371,7 @@ export interface StreamEventContextTrace {
 }
 
 export interface StreamRuntimeStatusPayload {
-  phase: "preparing" | "routing" | "context";
+  phase: "preparing" | "routing" | "context" | "failed";
   title: string;
   detail: string;
   checkpoints?: string[];
